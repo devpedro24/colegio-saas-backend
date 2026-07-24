@@ -103,6 +103,26 @@ class TenancyServiceProvider extends ServiceProvider
         $this->mapRoutes();
 
         $this->makeTenancyMiddlewareHighestPriority();
+
+        $this->forgetPermissionCacheOnTenancySwitch();
+    }
+
+    /**
+     * Los roles/permisos (spatie) viven en la BD de cada colegio. Al iniciar o
+     * terminar el contexto de un tenant, limpiamos la cache de permisos para que
+     * nunca se filtren permisos entre colegios (importante en comandos/colas que
+     * recorren varios tenants en un mismo proceso).
+     */
+    protected function forgetPermissionCacheOnTenancySwitch(): void
+    {
+        $forget = function () {
+            if (app()->bound(\Spatie\Permission\PermissionRegistrar::class)) {
+                app(\Spatie\Permission\PermissionRegistrar::class)->forgetCachedPermissions();
+            }
+        };
+
+        Event::listen(Events\TenancyInitialized::class, $forget);
+        Event::listen(Events\TenancyEnded::class, $forget);
     }
 
     protected function bootEvents()

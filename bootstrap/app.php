@@ -9,11 +9,16 @@ use Stancl\Tenancy\Contracts\TenantCouldNotBeIdentifiedException;
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
+        api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
+        channels: __DIR__.'/../routes/channels.php',
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        //
+        // Solo el superadministrador de plataforma (rutas centrales del panel).
+        $middleware->alias([
+            'platform' => \App\Http\Middleware\EnsurePlatformUser::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         // Un subdominio que no corresponde a ningun colegio -> 404 limpio,

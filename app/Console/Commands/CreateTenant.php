@@ -4,23 +4,16 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
-use App\Models\Tenant;
-use App\Models\User;
+use App\Services\TenantProvisioner;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
+use RuntimeException;
 
 /**
- * CU-001 — Onboardear nuevo colegio.
+ * CU-001 — Onboardear nuevo colegio (por consola).
  *
- * Provisiona un tenant completo:
- *  1. Crea el registro del colegio (estado `configuring`).
- *  2. El evento TenantCreated dispara CreateDatabase + MigrateDatabase
- *     (crea la BD PostgreSQL aislada `tenant<uuid>` y corre sus migraciones).
- *  3. Registra el subdominio `<slug>` en la tabla `domains`.
- *  4. Crea el usuario rector con contrasena temporal (RN-AU-360).
- *
- * Solo el superadministrador ejecuta esto (no hay self-service, RN-T-001).
+ * Delega el alta al servicio TenantProvisioner (misma logica que usa la API del
+ * superadministrador): crea el tenant + BD aislada, siembra el RBAC y crea el
+ * usuario rector con contrasena temporal (RN-AU-360).
  */
 class CreateTenant extends Command
 {
@@ -31,53 +24,33 @@ class CreateTenant extends Command
         {--rector-name=Rector : Nombre del rector}
         {--plan=esencial : Plan comercial (esencial|estandar|premium)}';
 
-    protected $description = 'Provisiona un nuevo colegio (tenant): BD aislada, migraciones y usuario rector (CU-001)';
+    protected $description = 'Provisiona un nuevo colegio (tenant): BD aislada, RBAC y usuario rector (CU-001)';
 
-    public function handle(): int
+    public function handle(TenantProvisioner $provisioner): int
     {
-        $slug = Str::slug($this->argument('slug'));
+        $this->info("Provisionando colegio '{$this->argument('name')}'...");
 
-        if (Tenant::where('slug', $slug)->exists()) {
-            $this->error("Ya existe un colegio con el slug '{$slug}'.");
+        try {
+            ['tenant' => $tenant, 'password' => $tempPassword] = $provisioner->provision([
+                'name' => (string) $this->argument('name'),
+                'slug' => (string) $this->argument('slug'),
+                'rector_email' => (string) $this->argument('rector_email'),
+                'rector_name' => (string) $this->option('rector-name'),
+                'plan' => (string) $this->option('plan'),
+            ]);
+        } catch (RuntimeException $exception) {
+            $this->error($exception->getMessage());
 
             return self::FAILURE;
         }
-
-        $tempPassword = Str::password(14);
-
-        $this->info("Provisionando colegio '{$this->argument('name')}' (slug: {$slug})...");
-
-        // 1 + 2. Crear tenant -> el evento TenantCreated crea y migra la BD aislada.
-        /** @var Tenant $tenant */
-        $tenant = Tenant::create([
-            'name' => $this->argument('name'),
-            'slug' => $slug,
-            'plan' => $this->option('plan'),
-            'status' => Tenant::STATUS_CONFIGURING,
-        ]);
-
-        // 3. Registrar el subdominio del colegio.
-        $tenant->domains()->create(['domain' => $slug]);
-
-        // 4. Crear el usuario rector DENTRO de la BD del tenant.
-        $tenant->run(function () use ($tempPassword) {
-            User::create([
-                'name' => $this->option('rector-name'),
-                'email' => $this->argument('rector_email'),
-                'password' => Hash::make($tempPassword),
-                'role' => 'rector',
-                'status' => 'active',
-                'must_change_password' => true,
-            ]);
-        });
 
         $this->newLine();
         $this->info('Colegio provisionado correctamente.');
         $this->table(['Campo', 'Valor'], [
             ['Tenant ID (UUID)', $tenant->id],
             ['Base de datos', 'tenant'.$tenant->id],
-            ['Subdominio', $slug.'.localhost'],
-            ['Rector', $this->argument('rector_email')],
+            ['Subdominio', $tenant->slug.'.localhost'],
+            ['Rector', (string) $this->argument('rector_email')],
             ['Contrasena temporal', $tempPassword],
         ]);
         $this->warn('Entrega la contrasena temporal al rector: debe cambiarla en el primer ingreso (RN-AU-360).');
