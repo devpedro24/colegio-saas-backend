@@ -6,6 +6,8 @@ namespace App\Http\Controllers\Api\Platform;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Support\Audit\AuditLogger;
+use App\Support\Mfa\TotpService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -20,11 +22,12 @@ use Illuminate\Validation\ValidationException;
  */
 class AuthController extends Controller
 {
-    public function login(Request $request): JsonResponse
+    public function login(Request $request, TotpService $totp): JsonResponse
     {
         $data = $request->validate([
             'email' => ['required', 'email'],
             'password' => ['required', 'string'],
+            'code' => ['nullable', 'string'],
         ]);
 
         $user = User::where('email', $data['email'])->first();
@@ -41,7 +44,29 @@ class AuthController extends Controller
             ]);
         }
 
+        // Segundo factor (MFA/TOTP): si el superadmin lo tiene confirmado, exige un
+        // codigo valido ANTES de emitir el token. Un usuario sin MFA no se ve afectado.
+        if ($user->hasTwoFactorEnabled()) {
+            $code = $data['code'] ?? null;
+
+            if (empty($code)) {
+                return response()->json([
+                    'mfa_required' => true,
+                    'message' => 'Se requiere el codigo de verificacion.',
+                ], 422);
+            }
+
+            if (! $totp->verify((string) $user->getTwoFactorSecret(), $code)) {
+                return response()->json([
+                    'mfa_required' => true,
+                    'message' => 'Codigo invalido.',
+                ], 422);
+            }
+        }
+
         $token = $user->createToken('platform')->plainTextToken;
+
+        AuditLogger::platform($user, 'LOGIN', 'auth', (string) $user->id);
 
         return response()->json([
             'token' => $token,
@@ -70,7 +95,10 @@ class AuthController extends Controller
             'id' => $user->id,
             'name' => $user->name,
             'email' => $user->email,
+            'phone' => $user->phone,
+            'google_email' => $user->google_email,
             'must_change_password' => (bool) $user->must_change_password,
+            'mfa_enabled' => $user->hasTwoFactorEnabled(),
             'roles' => [$user->role ?? 'superadmin'],
             'permissions' => [],
             'is_platform' => true,

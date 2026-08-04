@@ -35,4 +35,21 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Google OAuth (anclar cuenta de Google en ajustes de cuenta)
+    |--------------------------------------------------------------------------
+    |
+    | Credenciales de una aplicacion OAuth2 de Google (Console de Google Cloud):
+    | GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET y la redirect URI registrada debe
+    | ser <backend>/api/account/google/callback (ej. http://localhost:8000/api/...).
+    |
+    */
+
+    'google' => [
+        'client_id' => env('GOOGLE_CLIENT_ID'),
+        'client_secret' => env('GOOGLE_CLIENT_SECRET'),
+        'redirect' => null,
+    ],
+
 ];
