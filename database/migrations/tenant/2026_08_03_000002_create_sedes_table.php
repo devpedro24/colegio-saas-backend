@@ -27,7 +27,7 @@ return new class extends Migration
             $table->timestamps();
             $table->softDeletes();
 
-            $table->unique('nombre');
+            $table->unique('nombre')->whereNull('deleted_at');
         });
     }
 

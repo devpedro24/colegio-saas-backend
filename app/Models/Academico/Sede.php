@@ -13,11 +13,16 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * Sede del colegio (multi-sede). Raíz de la jerarquía
  * Sede→Jornada→Nivel→Grado→Grupo. Vive en la BD del tenant.
  *
+ * Cuando `tenant_id` no es NULL, la sede es un tenant hijo (tipo 'sede')
+ * con su propia BD, RBAC y subdominio <slug>.<subdominio-colegio>.
+ *
  * @property int                             $id
  * @property string                          $nombre
  * @property string|null                     $direccion
  * @property string|null                     $telefono
  * @property string|null                     $responsable
+ * @property string|null                     $tenant_id
+ * @property string|null                     $coordinador_email
  * @property bool                            $es_principal
  * @property string                          $estado
  * @property \Illuminate\Support\Carbon|null  $created_at
@@ -43,6 +48,8 @@ class Sede extends Model
         'direccion',
         'telefono',
         'responsable',
+        'tenant_id',
+        'coordinador_email',
         'es_principal',
         'estado',
     ];
@@ -55,6 +62,12 @@ class Sede extends Model
         return [
             'es_principal' => 'boolean',
         ];
+    }
+
+    /** True cuando esta sede es un tenant hijo (sede adicional). */
+    public function esTenantHijo(): bool
+    {
+        return $this->tenant_id !== null;
     }
 
     /**

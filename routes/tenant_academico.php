@@ -80,7 +80,7 @@ Route::middleware('can:academico.configurar')->prefix('config')->group(function 
     Route::get('/modelos-pedagogicos', [ModeloPedagogicoController::class, 'index']);
     Route::post('/modelos-pedagogicos', [ModeloPedagogicoController::class, 'store']);
     Route::put('/modelos-pedagogicos/{id}', [ModeloPedagogicoController::class, 'update']);
-    Route::delete('/modelos-pedagogicos/{id}', [MetodoAprobacionController::class, 'destroy']);
+    Route::delete('/modelos-pedagogicos/{id}', [ModeloPedagogicoController::class, 'destroy']);
 });
 
 // Jerarquía organizacional (Bloque B / Fase 1): Sede→Jornada→Nivel→Grado→

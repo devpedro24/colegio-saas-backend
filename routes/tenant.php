@@ -6,11 +6,12 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\MfaController;
 use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\UserController;
 use App\Http\Middleware\EnsureTenantActive;
+use App\Http\Middleware\InitializeTenancyByDomainOrSubdomain;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
-use Stancl\Tenancy\Middleware\InitializeTenancyByDomainOrSubdomain;
 use Stancl\Tenancy\Middleware\PreventAccessFromCentralDomains;
 
 /*
@@ -96,6 +97,15 @@ Route::middleware([
         Route::middleware('can:usuarios.ajustar_permisos')->group(function () {
             Route::get('/rbac/roles', [RoleController::class, 'index']);
             Route::put('/rbac/roles/{role}/permissions/{permission}', [RoleController::class, 'togglePermission']);
+        });
+
+        // Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion
+        // puede apuntar a una sede (tenant hijo) y se escribe en su propia BD.
+        Route::middleware('can:usuarios.gestionar')->prefix('usuarios')->group(function () {
+            Route::get('/', [UserController::class, 'index']);
+            Route::post('/', [UserController::class, 'store']);
+            Route::put('/{id}', [UserController::class, 'update']);
+            Route::delete('/{id}', [UserController::class, 'destroy']);
         });
 
         /*

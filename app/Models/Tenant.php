@@ -8,6 +8,8 @@ use Stancl\Tenancy\Contracts\TenantWithDatabase;
 use Stancl\Tenancy\Database\Concerns\HasDatabase;
 use Stancl\Tenancy\Database\Concerns\HasDomains;
 use Stancl\Tenancy\Database\Models\Tenant as BaseTenant;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * Tenant = Colegio.
@@ -52,6 +54,10 @@ class Tenant extends BaseTenant implements TenantWithDatabase
     public const PLAN_ESTANDAR = 'estandar';   // 300 - 800
     public const PLAN_PREMIUM = 'premium';     // 800 +
 
+    /** Tipo de tenant: colegio principal o sede (tenant hijo). */
+    public const TIPO_COLEGIO = 'colegio';
+    public const TIPO_SEDE = 'sede';
+
     /**
      * Columnas reales de la tabla `tenants` (el resto vive en la columna JSON `data`).
      */
@@ -65,11 +71,25 @@ class Tenant extends BaseTenant implements TenantWithDatabase
             'nit',
             'plan',
             'status',
+            'tipo',
+            'parent_id',
             'rector_temporary_password',
             'calendar',
             'locale',
             'timezone',
         ];
+    }
+
+    /** Tenant padre (el colegio) cuando este tenant es una sede. */
+    public function parent(): BelongsTo
+    {
+        return $this->belongsTo(Tenant::class, 'parent_id', 'id');
+    }
+
+    /** Sedes de este colegio (tenants hijos). */
+    public function sedes(): HasMany
+    {
+        return $this->hasMany(Tenant::class, 'parent_id', 'id');
     }
 
     /**

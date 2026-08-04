@@ -7,6 +7,7 @@
 /storage/pail
 /vendor
 /database/database.sqlite
+/database/tenant_*
 .env
 .env.backup
 .env.production
