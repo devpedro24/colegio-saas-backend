@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
 use Database\Seeders\RbacSeeder;
@@ -42,6 +43,9 @@ class TenantProvisioner
             'nit' => $data['nit'] ?? null,
             'plan' => $data['plan'] ?? Tenant::PLAN_ESENCIAL,
             'status' => Tenant::STATUS_CONFIGURING,
+            // Se guarda CIFRADA (cast 'encrypted') para poder mostrarla al
+            // superadmin mientras siga vigente (must_change_password = true).
+            'rector_temporary_password' => $tempPassword,
         ]);
 
         // Registra el subdominio del colegio.
@@ -50,6 +54,14 @@ class TenantProvisioner
         // Dentro de la BD del colegio: RBAC (sembrado desde central + plan) + rector.
         $tenant->run(function () use ($data, $tempPassword) {
             (new RbacSeeder(firstSeed: true))->run();
+
+            // Toda institucion nace con su Sede Principal (raiz de la jerarquia
+            // Sede→Jornada→Nivel→Grado→Grupo). El rector agrega mas sedes segun
+            // el limite de su plan; el superadmin tambien puede desde el panel.
+            Sede::create([
+                'nombre' => $data['name'],
+                'es_principal' => true,
+            ]);
 
             $rector = User::create([
                 'name' => $data['rector_name'] ?? 'Rector',

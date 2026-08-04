@@ -1,0 +1,80 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models\Academico;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+/**
+ * Jornada académica (mañana/tarde/noche) de una sede.
+ * Agrupa los bloques horarios. Vive en la BD del tenant.
+ *
+ * @property int                             $id
+ * @property int                             $sede_id
+ * @property string                          $nombre
+ * @property string|null                     $hora_inicio
+ * @property string|null                     $hora_fin
+ * @property string                          $estado
+ * @property \Illuminate\Support\Carbon|null  $created_at
+ * @property \Illuminate\Support\Carbon|null  $updated_at
+ * @property \Illuminate\Support\Carbon|null  $deleted_at
+ * @property-read \App\Models\Academico\Sede $sede
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Academico\BloqueHorario> $bloques
+ */
+class Jornada extends Model
+{
+    use HasFactory;
+    use SoftDeletes;
+
+    public const ESTADO_ACTIVA = 'activa';
+    public const ESTADO_INACTIVA = 'inactiva';
+
+    protected $table = 'jornadas';
+
+    /**
+     * @var list<string>
+     */
+    protected $fillable = [
+        'sede_id',
+        'nombre',
+        'hora_inicio',
+        'hora_fin',
+        'estado',
+    ];
+
+    /**
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'sede_id' => 'integer',
+        ];
+    }
+
+    /**
+     * @return BelongsTo<Sede, Jornada>
+     */
+    public function sede(): BelongsTo
+    {
+        return $this->belongsTo(Sede::class);
+    }
+
+    /**
+     * @return HasMany<BloqueHorario>
+     */
+    public function bloques(): HasMany
+    {
+        return $this->hasMany(BloqueHorario::class)->orderBy('orden');
+    }
+
+    public function estaActiva(): bool
+    {
+        return $this->estado === self::ESTADO_ACTIVA;
+    }
+}

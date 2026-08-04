@@ -65,6 +65,14 @@ class PermissionMatrix
             ['key' => 'config.escala_valorativa', 'module' => 'Configuracion del Colegio', 'action' => 'Configurar escala valorativa', 'cells' => ['rector' => 'editar']],
             ['key' => 'config.metodo_aprobacion', 'module' => 'Configuracion del Colegio', 'action' => 'Configurar metodo de aprobacion y nota minima', 'cells' => ['rector' => 'editar']],
 
+            // ---- Academico (Fase 1 Bloque A): años lectivos, periodos y configuracion ----
+            ['key' => 'academico.anos.gestionar', 'module' => 'academico', 'action' => 'anos.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
+            ['key' => 'academico.configurar', 'module' => 'academico', 'action' => 'configurar', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar']],
+
+            // ---- Academico (Fase 1 Bloque B): jerarquía organizacional ----
+            // Sede→Jornada→Nivel→Grado→Grupo + bloques horarios + espacios físicos.
+            ['key' => 'academico.estructura.gestionar', 'module' => 'academico', 'action' => 'estructura.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
+
             // ---- Usuarios y Roles ----
             ['key' => 'usuarios.gestionar', 'module' => 'Usuarios y Roles', 'action' => 'Crear / editar / desactivar usuarios', 'cells' => ['rector' => 'crud']],
             ['key' => 'usuarios.asignar_roles', 'module' => 'Usuarios y Roles', 'action' => 'Asignar roles', 'cells' => ['rector' => 'editar']],
