@@ -65,9 +65,18 @@ class Tenant extends BaseTenant implements TenantWithDatabase
             'nit',
             'plan',
             'status',
+            'rector_temporary_password',
             'calendar',
             'locale',
             'timezone',
         ];
     }
+
+    /**
+     * La contrasena temporal del rector se guarda cifrada en reposo
+     * (RN-SE-*): solo se descifra para el superadmin cuando sigue vigente.
+     */
+    protected $casts = [
+        'rector_temporary_password' => 'encrypted',
+    ];
 }

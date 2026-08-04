@@ -10,6 +10,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\TenantProvisioner;
+use App\Support\Audit\AuditLogger;
 use Database\Seeders\RbacSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -56,6 +57,22 @@ class ColegioController extends Controller
 
         PlatformDataChanged::dispatch('colegios', 'created');
 
+        AuditLogger::platform(
+            $request->user(),
+            'CREATE',
+            'colegio',
+            (string) $tenant->id,
+            null,
+            [
+                'name' => $tenant->name,
+                'slug' => $tenant->slug,
+                'plan' => $tenant->plan,
+                'status' => $tenant->status,
+            ],
+            null,
+            (string) $tenant->id,
+        );
+
         return response()->json([
             'colegio' => $this->present($tenant),
             // La contrasena temporal del rector se muestra UNA sola vez.
@@ -83,6 +100,13 @@ class ColegioController extends Controller
             'plan' => ['required', 'string', 'exists:plans,key'],
         ]);
 
+        $prev = [
+            'name' => $tenant->name,
+            'legal_name' => $tenant->legal_name,
+            'nit' => $tenant->nit,
+            'plan' => $tenant->plan,
+        ];
+
         $planChanged = $tenant->plan !== $data['plan'];
         $tenant->update($data);
 
@@ -93,6 +117,22 @@ class ColegioController extends Controller
         }
 
         PlatformDataChanged::dispatch('colegios', 'updated');
+
+        AuditLogger::platform(
+            $request->user(),
+            'UPDATE',
+            'colegio',
+            (string) $tenant->id,
+            $prev,
+            [
+                'name' => $tenant->name,
+                'legal_name' => $tenant->legal_name,
+                'nit' => $tenant->nit,
+                'plan' => $tenant->plan,
+            ],
+            null,
+            (string) $tenant->id,
+        );
 
         return response()->json(['colegio' => $this->present($tenant)]);
     }
@@ -106,11 +146,23 @@ class ColegioController extends Controller
             'status' => ['required', 'in:active,suspended'],
         ]);
 
+        $prevStatus = $tenant->status;
         $tenant->update(['status' => $data['status']]);
 
         // El rector conectado reacciona en vivo (expulsion si lo inhabilitaron).
         TenantChanged::dispatch($tenant->id, $data['status'] === 'suspended' ? 'disabled' : 'enabled');
         PlatformDataChanged::dispatch('colegios', $data['status'] === 'suspended' ? 'disabled' : 'enabled');
+
+        AuditLogger::platform(
+            $request->user(),
+            $data['status'] === 'suspended' ? 'SUSPEND' : 'ENABLE',
+            'colegio',
+            (string) $tenant->id,
+            ['status' => $prevStatus],
+            ['status' => $tenant->status],
+            null,
+            (string) $tenant->id,
+        );
 
         return response()->json(['colegio' => $this->present($tenant)]);
     }
@@ -124,6 +176,7 @@ class ColegioController extends Controller
             'plan' => ['required', 'string', 'exists:plans,key'],
         ]);
 
+        $prevPlan = $tenant->plan;
         $tenant->update(['plan' => $data['plan']]);
 
         // Re-siembra spatie del colegio con el nuevo plan (preserva configurables del rector).
@@ -132,7 +185,67 @@ class ColegioController extends Controller
         TenantChanged::dispatch($tenant->id, 'plan');
         PlatformDataChanged::dispatch('colegios', 'updated');
 
+        AuditLogger::platform(
+            $request->user(),
+            'UPDATE',
+            'colegio.plan',
+            (string) $tenant->id,
+            ['plan' => $prevPlan],
+            ['plan' => $tenant->plan],
+            null,
+            (string) $tenant->id,
+        );
+
         return response()->json(['colegio' => $this->present($tenant)]);
+    }
+
+    /**
+     * Consulta (sin invalidar) la contraseña temporal vigente del rector.
+     *
+     * - 'temporal': el rector aun no la cambio y hay una guardada cifrada ->
+     *               se descifra y devuelve (solo al superadmin del panel).
+     * - 'changed' : el rector ya inicio sesion y cambio su clave -> la temporal
+     *               ya no funciona; el panel debe ofrecer reestablecerla.
+     * - 'none'    : no hay clave guardada (colegios anteriores a la columna) o
+     *               cayo en una situacion no recuperable; se regenara una nueva.
+     */
+    public function rectorPassword(string $id): JsonResponse
+    {
+        $tenant = Tenant::findOrFail($id);
+
+        $rectorEmail = null;
+        $mustChange = false;
+        $tenant->run(function () use (&$rectorEmail, &$mustChange) {
+            $rector = User::where('role', 'rector')->orderBy('id')->first();
+            if ($rector) {
+                $rectorEmail = $rector->email;
+                $mustChange = (bool) $rector->must_change_password;
+            }
+        });
+
+        if ($rectorEmail === null) {
+            return response()->json([
+                'status' => 'none',
+                'rector_email' => null,
+                'rector_password' => null,
+            ]);
+        }
+
+        $stored = $tenant->rector_temporary_password;
+
+        if ($mustChange && $stored !== null) {
+            return response()->json([
+                'status' => 'temporal',
+                'rector_email' => $rectorEmail,
+                'rector_password' => $stored,
+            ]);
+        }
+
+        return response()->json([
+            'status' => $mustChange ? 'none' : 'changed',
+            'rector_email' => $rectorEmail,
+            'rector_password' => null,
+        ]);
     }
 
     /**
@@ -160,6 +273,9 @@ class ColegioController extends Controller
         if ($rectorEmail === null) {
             return response()->json(['message' => 'El colegio no tiene un rector.'], 422);
         }
+
+        // Guarda la nueva temporal CIFRADA para poder mostrarla mientras vija.
+        $tenant->update(['rector_temporary_password' => $password]);
 
         return response()->json([
             'colegio' => $this->present($tenant),
