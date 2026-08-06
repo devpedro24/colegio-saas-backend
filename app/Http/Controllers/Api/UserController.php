@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api;
 
+use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
@@ -13,6 +15,8 @@ use App\Support\Audit\AuditLogger;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -26,23 +30,25 @@ use Illuminate\Validation\Rule;
  */
 class UserController extends Controller
 {
-    /** Lista los usuarios del colegio + de cada sede (tenant hijo) activa. */
-    public function index(): JsonResponse
-    {
-        $colegio = tenant();
+    use PaginatesRequests;
 
+    /** Lista los usuarios del colegio + de cada sede (tenant hijo) activa. */
+    public function index(Request $request): JsonResponse
+    {
         $principales = User::query()
             ->with('roles:id,name')
             ->whereNull('deleted_at')
+            ->where('id', '!=', $request->user()->id)
+            ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
             ->orderBy('name')
-            ->get()
-            ->map(fn (User $u) => $this->serialize($u))
-            ->values();
+            ->paginate($this->resolvePerPage($request))
+            ->through(fn (User $u) => $this->serialize($u));
 
-        $sedes = Sede::query()
-            ->whereNotNull('tenant_id')
-            ->orderBy('nombre')
-            ->get();
+        // La tabla `sedes` solo existe en la BD del colegio principal: dentro
+        // de un tenant hijo no hay sub-sedes que consolidar.
+        $sedes = Schema::hasTable('sedes')
+            ? Sede::query()->whereNotNull('tenant_id')->orderBy('nombre')->get()
+            : collect();
 
         $deSedes = collect();
         foreach ($sedes as $sede) {
@@ -56,16 +62,23 @@ class UserController extends Controller
                 return User::query()
                     ->with('roles:id,name')
                     ->whereNull('deleted_at')
+                    ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
                     ->orderBy('name')
                     ->get()
                     ->map(fn (User $u) => $this->serialize($u, $sede))
-                    ->values();
+                    ->values()
+                    ->toBase();
             });
 
             $deSedes = $deSedes->merge($usuarioSede);
         }
 
-        return response()->json(['data' => $principales->merge($deSedes)->values()]);
+        // Conserva la logica de merge: los usuarios de sede se adjuntan al final.
+        $principales->setCollection(
+            collect($principales->items())->merge($deSedes)->values(),
+        );
+
+        return $this->paginatedResponse($principales);
     }
 
     /** Crea un usuario en el colegio o en la sede indicada. */
@@ -87,6 +100,8 @@ class UserController extends Controller
 
             AuditLogger::tenant($request->user(), 'CREATE', 'usuario', $res['id'], null, $res);
 
+            $this->syncCoordinadorEmail($sede->id, $data['role'] ?? '', $data['email'] ?? null, $data['name'] ?? null);
+
             return response()->json([
                 'data' => $res['data'],
                 'password' => $res['password'],
@@ -106,10 +121,17 @@ class UserController extends Controller
             'role' => $data['role'],
             'status' => User::STATUS_ACTIVE,
             'must_change_password' => true,
+            'temporary_password' => $password,
         ]);
         $user->assignRole($data['role']);
 
+        $this->syncCoordinadorEmail($sede?->id ?? null, $data['role'], $user->email);
+
         AuditLogger::tenant($request->user(), 'CREATE', 'usuario', (string) $user->id, null, $this->serialize($user));
+
+        try {
+            TenantDataChanged::dispatch('usuario', 'created', $user->name);
+        } catch (\Throwable) {}
 
         return response()->json([
             'data' => $this->serialize($user),
@@ -161,7 +183,13 @@ class UserController extends Controller
             $usuario->syncRoles([$data['role']]);
         }
 
+        $this->syncCoordinadorEmail($data['sede_id'] ?? null, $data['role'] ?? $usuario->role, $usuario->email, $usuario->name);
+
         AuditLogger::tenant($request->user(), 'UPDATE', 'usuario', (string) $usuario->id, $prev, $this->serialize($usuario));
+
+        try {
+            TenantDataChanged::dispatch('usuario', 'updated', $usuario->name);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => $this->serialize($usuario)]);
     }
@@ -195,7 +223,95 @@ class UserController extends Controller
 
         AuditLogger::tenant($request->user(), 'DELETE', 'usuario', (string) $usuario->id, $prev, null);
 
+        try {
+            TenantDataChanged::dispatch('usuario', 'deleted', $usuario->name);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => null]);
+    }
+
+    /**
+     * Resuelve al usuario por ID, opcionalmente dentro de la BD de una sede
+     * (`?sede_id=X`) usando runIn, y ejecuta el callback dentro del contexto
+     * correcto. Devuelve el usuario + la contrasena generada.
+     *
+     * @return array{user: User, password: string}
+     */
+    private function resolveAndUpdate(Request $request, $id, bool $readOnly = false): array
+    {
+        $sedeId = $request->query('sede_id');
+        $password = $readOnly ? '' : Str::password(12);
+
+        if ($sedeId !== null) {
+            $sede = $this->sedeDestino((int) $sedeId);
+            if ($sede instanceof Sede) {
+                $hijo = Tenant::find($sede->tenant_id);
+                if ($hijo !== null) {
+                    $user = $hijo->run(function () use ($id, $password, $readOnly) {
+                        $u = User::findOrFail((int) $id);
+                        if (! $readOnly) {
+                            $u->update([
+                                'password' => Hash::make($password),
+                                'temporary_password' => $password,
+                                'must_change_password' => true,
+                            ]);
+                        }
+                        return $u->fresh();
+                    });
+                    return ['user' => $user, 'password' => $password ?: null];
+                }
+            }
+        }
+
+        $user = User::findOrFail((int) $id);
+        if (! $readOnly) {
+            $user->update([
+                'password' => Hash::make($password),
+                'temporary_password' => $password,
+                'must_change_password' => true,
+            ]);
+        }
+
+        return ['user' => $user, 'password' => $password ?: null];
+    }
+
+    /** GET /usuarios/{id}/temporal-password — estado de la clave temporal. */
+    public function temporalPassword(Request $request, $id): JsonResponse
+    {
+        ['user' => $user] = $this->resolveAndUpdate($request, $id, readOnly: true);
+
+        if ($user->must_change_password && $user->temporary_password !== null) {
+            return response()->json([
+                'status' => 'temporal',
+                'email' => $user->email,
+                'password' => $user->temporary_password,
+            ]);
+        }
+
+        if ($user->must_change_password) {
+            return response()->json([
+                'status' => 'none',
+                'email' => $user->email,
+                'password' => null,
+            ]);
+        }
+
+        return response()->json([
+            'status' => 'changed',
+            'email' => $user->email,
+            'password' => null,
+        ]);
+    }
+
+    /** POST /usuarios/{id}/reset-password — regenera la clave temporal. */
+    public function resetPassword(Request $request, $id): JsonResponse
+    {
+        ['user' => $user, 'password' => $password] = $this->resolveAndUpdate($request, $id);
+
+        return response()->json([
+            'data' => $this->serialize($user),
+            'password' => $password,
+        ]);
     }
 
     /**
@@ -223,6 +339,12 @@ class UserController extends Controller
     {
         if ($sedeId === null) {
             return null;
+        }
+
+        // En la BD de un tenant hijo (sede) no existe la tabla `sedes`: no hay
+        // sub-sedes que elegir dentro de una sede.
+        if (! Schema::hasTable('sedes')) {
+            return ['message' => 'Esta sede no admite sub-sedes.'];
         }
 
         $sede = Sede::find($sedeId);
@@ -286,6 +408,7 @@ class UserController extends Controller
                 'role' => $data['role'],
                 'status' => User::STATUS_ACTIVE,
                 'must_change_password' => true,
+                'temporary_password' => $password,
             ]);
             $user->assignRole($data['role']);
 
@@ -378,6 +501,31 @@ class UserController extends Controller
             'sede_id' => $sede?->id,
             'sede_nombre' => $sede?->nombre,
             'tenant_id' => $sede?->tenant_id,
+            'temporary_password' => $user->must_change_password ? $user->temporary_password : null,
         ];
+    }
+
+    /**
+     * Sincroniza `coordinador_email` en la tabla `sedes` cuando se asigna o
+     * desasigna un usuario con rol de coordinacion a una sede.
+     */
+    private function syncCoordinadorEmail(?int $sedeId, string $role, ?string $email, ?string $name = null): void
+    {
+        if ($sedeId === null) {
+            return;
+        }
+
+        if (! in_array($role, ['coord_combinado', 'coord_academico', 'coord_convivencia'], true)) {
+            return;
+        }
+
+        // El listado de sedes muestra el ultimo coordinador asignado.
+        if (Schema::hasTable('sedes')) {
+            $update = ['coordinador_email' => $email];
+            if ($name !== null) {
+                $update['coordinador_name'] = $name;
+            }
+            Sede::where('id', $sedeId)->update($update);
+        }
     }
 }

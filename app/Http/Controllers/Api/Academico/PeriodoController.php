@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
 use App\Support\Audit\AuditLogger;
@@ -74,6 +75,11 @@ class PeriodoController extends Controller
             $this->snapshot($periodo),
         );
 
+        
+        try {
+            TenantDataChanged::dispatch('periodo', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $this->present($periodo)], 201);
     }
 
@@ -125,6 +131,10 @@ class PeriodoController extends Controller
             $this->snapshot($periodo),
         );
 
+        try {
+            TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $this->present($periodo)]);
     }
 
@@ -153,6 +163,11 @@ class PeriodoController extends Controller
             $prev,
             null,
         );
+
+        
+        try {
+            TenantDataChanged::dispatch('periodo', 'deleted', $periodo->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }
@@ -184,6 +199,11 @@ class PeriodoController extends Controller
             'Apertura del periodo (planificado → abierto).',
         );
 
+        
+        try {
+            TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $this->present($periodo)]);
     }
 
@@ -208,6 +228,11 @@ class PeriodoController extends Controller
             $this->snapshot($periodo),
             'Cierre del periodo (abierto → cerrado).',
         );
+
+        
+        try {
+            TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => $this->present($periodo)]);
     }

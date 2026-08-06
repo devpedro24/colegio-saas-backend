@@ -16,8 +16,10 @@ use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
 use Database\Seeders\RbacSeeder;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -45,10 +47,15 @@ class SedeProvisioner
     {
         $slug = Str::slug($data['slug']);
 
-        $domain = $slug.'.'.$colegio->slug;
+        $colegioDomain = $colegio->domains()->first()?->domain;
+        if ($colegioDomain === null) {
+            $colegioDomain = $colegio->slug . '.localhost';
+        }
 
-        if (Tenant::where('slug', $slug)->exists()) {
-            throw new RuntimeException("Ya existe una sede con el slug '{$slug}'.");
+        $domain = $slug.'.'.$colegioDomain;
+
+        if (Tenant::where('slug', $slug)->where('parent_id', $colegio->id)->exists()) {
+            throw new RuntimeException("Ya existe una sede con el slug '{$slug}' en este colegio.");
         }
 
         if ($colegio->domains()->where('domain', $domain)->exists()) {
@@ -56,8 +63,12 @@ class SedeProvisioner
         }
 
         // Snapshot de la configuracion del colegio ANTES de crear el hijo:
-        // dentro de $tenant->run() la conexion seria la del hijo.
-        $snapshot = $snapshotPreCapturado ?? $this->capturarConfiguracion($colegio, $data['heredar']);
+        // dentro de $tenant->run() la conexion seria la del hijo. Solo se
+        // captura cuando herdar=true y no llega una captura hecha fuera.
+        $snapshot = $snapshotPreCapturado;
+        if ($snapshot === null && ($data['heredar'] ?? false)) {
+            $snapshot = $this->capturarConfiguracion($colegio, true);
+        }
 
         $tempPassword = Str::password(14);
 
@@ -83,26 +94,23 @@ class SedeProvisioner
         // <sede>.<colegio>.localhost (middleware propio de identificacion).
         $sede->domains()->create(['domain' => $domain]);
 
-        // Dentro de la BD de la sede: RBAC + sede principal + coordinador
+        // Dentro de la BD de la sede: RBAC + (opcional) coordinador
         // + (opcional) configuracion heredada del colegio.
         $sede->run(function () use ($data, $tempPassword, $snapshot) {
             (new RbacSeeder(firstSeed: true))->run();
 
-            Sede::create([
-                'nombre' => $data['name'],
-                'es_principal' => true,
-            ]);
+            if (! empty($data['coordinador_email'])) {
+                $coordinador = User::create([
+                    'name' => $data['coordinador_name'] ?? 'Coordinador',
+                    'email' => $data['coordinador_email'],
+                    'password' => Hash::make($tempPassword),
+                    'role' => 'coord_combinado',
+                    'status' => 'active',
+                    'must_change_password' => true,
+                ]);
 
-            $coordinador = User::create([
-                'name' => $data['coordinador_name'] ?? 'Coordinador',
-                'email' => $data['coordinador_email'],
-                'password' => Hash::make($tempPassword),
-                'role' => 'rector',
-                'status' => 'active',
-                'must_change_password' => true,
-            ]);
-
-            $coordinador->assignRole('rector');
+                $coordinador->assignRole('coord_combinado');
+            }
 
             if ($snapshot !== null) {
                 $this->applySnapshot($snapshot);
@@ -113,7 +121,10 @@ class SedeProvisioner
         // ConfigurationGate del colegio principal).
         $sede->update(['status' => Tenant::STATUS_ACTIVE]);
 
-        return ['tenant' => $sede, 'password' => $tempPassword];
+        return [
+            'tenant' => $sede,
+            'password' => ! empty($data['coordinador_email']) ? $tempPassword : null,
+        ];
     }
 
     /**
@@ -163,6 +174,32 @@ class SedeProvisioner
     }
 
     /**
+     * Elimina de la BD del tenant hijo todo lo relacionado con sedes: la tabla
+     * `sedes` (solo vive en el colegio principal) y las columnas que la
+     * referencian en la jerarquia organizacional. La BD recién migrada esta
+     * vacia, asi que la operacion es segura.
+     */
+    protected function limpiarEsquemaSede(): void
+    {
+        foreach (['jornadas', 'grupos', 'espacios_fisicos'] as $tabla) {
+            if (! Schema::hasTable($tabla) || ! Schema::hasColumn($tabla, 'sede_id')) {
+                continue;
+            }
+
+            Schema::table($tabla, function (Blueprint $table) {
+                $table->dropForeign(['sede_id']);
+            });
+            Schema::table($tabla, function (Blueprint $table) {
+                $table->dropColumn('sede_id');
+            });
+        }
+
+        if (Schema::hasTable('sedes')) {
+            Schema::dropIfExists('sedes');
+        }
+    }
+
+    /**
      * Captura la configuracion heredable del colegio. Detecta si ya estamos
      * dentro del contexto del colegio (rector) y evita un `run()` anidado de
      * Stancl; desde contexto central usa `$colegio->run()`.
@@ -205,101 +242,88 @@ class SedeProvisioner
      *
      * @param  array<string, mixed>  $snapshot
      */
-    protected function applySnapshot(array $snapshot): void
+    public function applySnapshot(array $snapshot): void
     {
         $anoMap = [];
-        foreach ($snapshot['anos'] as $ano) {
-            $nuevo = AnoLectivo::create([
-                'nombre' => $ano['nombre'],
-                'tipo_calendario' => $ano['tipo_calendario'],
-                'fecha_inicio' => $ano['fecha_inicio'],
-                'fecha_fin' => $ano['fecha_fin'],
-                'num_periodos' => $ano['num_periodos'],
-                'tiene_quinto_periodo' => $ano['tiene_quinto_periodo'],
-                'estado' => $ano['estado'],
-            ]);
-            $anoMap[$ano['id']] = $nuevo->id;
+        if (isset($snapshot['anos'])) {
+            foreach ($snapshot['anos'] as $ano) {
+                $nuevo = AnoLectivo::firstOrCreate(
+                    ['nombre' => $ano['nombre']],
+                    [
+                        'tipo_calendario' => $ano['tipo_calendario'],
+                        'fecha_inicio' => $ano['fecha_inicio'],
+                        'fecha_fin' => $ano['fecha_fin'],
+                        'num_periodos' => $ano['num_periodos'],
+                        'tiene_quinto_periodo' => $ano['tiene_quinto_periodo'],
+                        'estado' => $ano['estado'],
+                    ],
+                );
+                $anoMap[$ano['id']] = $nuevo->id;
 
-            foreach ($ano['periodos'] ?? [] as $periodo) {
-                Periodo::create([
-                    'ano_lectivo_id' => $nuevo->id,
-                    'nombre' => $periodo['nombre'],
-                    'orden' => $periodo['orden'],
-                    'fecha_inicio' => $periodo['fecha_inicio'],
-                    'fecha_fin' => $periodo['fecha_fin'],
-                    'peso' => $periodo['peso'],
-                    'estado' => $periodo['estado'],
-                ]);
+                foreach ($ano['periodos'] ?? [] as $periodo) {
+                    Periodo::firstOrCreate(
+                        ['ano_lectivo_id' => $nuevo->id, 'nombre' => $periodo['nombre']],
+                        [
+                            'orden' => $periodo['orden'],
+                            'fecha_inicio' => $periodo['fecha_inicio'],
+                            'fecha_fin' => $periodo['fecha_fin'],
+                            'peso' => $periodo['peso'],
+                            'estado' => $periodo['estado'],
+                        ],
+                    );
+                }
             }
         }
 
-        foreach ($snapshot['escalas'] as $escala) {
-            EscalaValorativa::create([
-                'ano_lectivo_id' => $anoMap[$escala['ano_lectivo_id']] ?? $escala['ano_lectivo_id'],
-                'nivel_educativo' => $escala['nivel_educativo'],
-                'nombre' => $escala['nombre'],
-                'tipo' => $escala['tipo'],
-                'valor_min' => $escala['valor_min'],
-                'valor_max' => $escala['valor_max'],
-                'decimales' => $escala['decimales'],
-            ]);
+        if (isset($snapshot['escalas'])) {
+            foreach ($snapshot['escalas'] as $escala) {
+                EscalaValorativa::firstOrCreate(
+                    ['ano_lectivo_id' => $anoMap[$escala['ano_lectivo_id']] ?? $escala['ano_lectivo_id'], 'nombre' => $escala['nombre'], 'nivel_educativo' => $escala['nivel_educativo']],
+                    ['tipo' => $escala['tipo'], 'valor_min' => $escala['valor_min'], 'valor_max' => $escala['valor_max'], 'decimales' => $escala['decimales']],
+                );
+            }
         }
 
-        foreach ($snapshot['metodos'] as $metodo) {
-            MetodoAprobacion::create([
-                'ano_lectivo_id' => $anoMap[$metodo['ano_lectivo_id']] ?? $metodo['ano_lectivo_id'],
-                'calculo_nota' => $metodo['calculo_nota'],
-                'nota_minima' => $metodo['nota_minima'],
-                'ambito' => $metodo['ambito'],
-            ]);
+        if (isset($snapshot['metodos'])) {
+            foreach ($snapshot['metodos'] as $metodo) {
+                MetodoAprobacion::firstOrCreate(
+                    ['ano_lectivo_id' => $anoMap[$metodo['ano_lectivo_id']] ?? $metodo['ano_lectivo_id'], 'ambito' => $metodo['ambito']],
+                    ['calculo_nota' => $metodo['calculo_nota'], 'nota_minima' => $metodo['nota_minima']],
+                );
+            }
         }
 
-        foreach ($snapshot['modelos'] as $modelo) {
-            ModeloPedagogico::create([
-                'ano_lectivo_id' => $anoMap[$modelo['ano_lectivo_id']] ?? $modelo['ano_lectivo_id'],
-                'nivel_educativo' => $modelo['nivel_educativo'],
-                'docente_unico' => $modelo['docente_unico'],
-                'salon_fijo' => $modelo['salon_fijo'],
-                'tiene_director_grupo' => $modelo['tiene_director_grupo'],
-            ]);
+        if (isset($snapshot['modelos'])) {
+            foreach ($snapshot['modelos'] as $modelo) {
+                ModeloPedagogico::firstOrCreate(
+                    ['ano_lectivo_id' => $anoMap[$modelo['ano_lectivo_id']] ?? $modelo['ano_lectivo_id'], 'nivel_educativo' => $modelo['nivel_educativo']],
+                    ['docente_unico' => $modelo['docente_unico'], 'salon_fijo' => $modelo['salon_fijo'], 'tiene_director_grupo' => $modelo['tiene_director_grupo']],
+                );
+            }
         }
 
-        if (($datos = $snapshot['datos']) !== null) {
-            DatosInstitucionales::create([
-                'nombre' => $datos['nombre'],
-                'nit' => $datos['nit'],
-                'resolucion_men' => $datos['resolucion_men'],
-                'direccion' => $datos['direccion'],
-                'telefono' => $datos['telefono'],
-                'correo' => $datos['correo'],
-                // Los logos/isotipo NO se copian: apuntarian al storage del
-                // colegio (aislado por FilesystemTenancyBootstrapper); cada
-                // sede sube los suyos.
-                'logo_principal' => null,
-                'logo_documentos' => null,
-                'isotipo' => null,
-                'colores' => $datos['colores'],
-            ]);
+        if (isset($snapshot['datos']) && ($datos = $snapshot['datos']) !== null) {
+            DatosInstitucionales::firstOrCreate(
+                ['nombre' => $datos['nombre']],
+                ['nit' => $datos['nit'], 'resolucion_men' => $datos['resolucion_men'], 'direccion' => $datos['direccion'], 'telefono' => $datos['telefono'], 'correo' => $datos['correo'], 'logo_principal' => null, 'logo_documentos' => null, 'isotipo' => null, 'colores' => $datos['colores']],
+            );
         }
 
         $nivelMap = [];
-        foreach ($snapshot['niveles'] as $nivel) {
-            $nuevoNivel = Nivel::create([
-                'nivel_educativo' => $nivel['nivel_educativo'],
-                'nombre' => $nivel['nombre'],
-                'orden' => $nivel['orden'],
-                'estado' => $nivel['estado'],
-            ]);
-            $nivelMap[$nivel['id']] = $nuevoNivel->id;
+        if (isset($snapshot['niveles'])) {
+            foreach ($snapshot['niveles'] as $nivel) {
+                $nuevoNivel = Nivel::firstOrCreate(
+                    ['nivel_educativo' => $nivel['nivel_educativo'], 'nombre' => $nivel['nombre']],
+                    ['orden' => $nivel['orden'], 'estado' => $nivel['estado']],
+                );
+                $nivelMap[$nivel['id']] = $nuevoNivel->id;
 
-            foreach ($nivel['grados'] ?? [] as $grado) {
-                Grado::create([
-                    'nivel_id' => $nuevoNivel->id,
-                    'nombre' => $grado['nombre'],
-                    'codigo' => $grado['codigo'],
-                    'orden' => $grado['orden'],
-                    'estado' => $grado['estado'],
-                ]);
+                foreach ($nivel['grados'] ?? [] as $grado) {
+                    Grado::firstOrCreate(
+                        ['nivel_id' => $nuevoNivel->id, 'codigo' => $grado['codigo']],
+                        ['nombre' => $grado['nombre'], 'orden' => $grado['orden'], 'estado' => $grado['estado']],
+                    );
+                }
             }
         }
     }

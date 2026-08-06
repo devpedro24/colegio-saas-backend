@@ -47,21 +47,56 @@ class Sede extends Model
         'nombre',
         'direccion',
         'telefono',
-        'responsable',
-        'tenant_id',
+        'coordinador_name',
         'coordinador_email',
-        'es_principal',
+        'tenant_id',
         'estado',
     ];
+
+    /**
+     * @var list<string>
+     */
+    protected $hidden = ['hashed_id'];
+
+    /**
+     * @var list<string>
+     */
+    protected $appends = ['hashed_id'];
 
     /**
      * @return array<string, string>
      */
     protected function casts(): array
     {
-        return [
-            'es_principal' => 'boolean',
-        ];
+        return [];
+    }
+
+    /** ID opaco para URLs publicas (evita exponer el auto-increment). */
+    public function getHashedIdAttribute(): string
+    {
+        return rtrim(strtr(base64_encode((string) $this->id), '+/', '-_'), '=');
+    }
+
+    /**
+     * Resuelve una sede por ID numerico, hashed_id (base64url) o hashed_id
+     * legacy con padding `=`.
+     */
+    public function resolveRouteBinding($value, $field = null): ?static
+    {
+        if (is_numeric($value)) {
+            return $this->newQuery()->where('id', (int) $value)->first();
+        }
+
+        $decoded = base64_decode(
+            strtr((string) $value, '-_', '+/') . str_repeat('=', (4 - strlen((string) $value) % 4) % 4),
+            true,
+        );
+
+        if ($decoded !== false && is_numeric($decoded)) {
+            return $this->newQuery()->where('id', (int) $decoded)->first();
+        }
+
+        return null;
     }
 
     /** True cuando esta sede es un tenant hijo (sede adicional). */

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\Grado;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -61,6 +62,10 @@ class GradoController extends Controller
 
         AuditLogger::tenant($request->user(), 'CREATE', 'grado', (string) $grado->id, null, $this->snapshot($grado));
 
+        try {
+            TenantDataChanged::dispatch('grado', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $grado->load('nivel:id,nombre,nivel_educativo')], 201);
     }
 
@@ -93,6 +98,10 @@ class GradoController extends Controller
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'grado', (string) $grado->id, $prev, $this->snapshot($grado));
 
+        try {
+            TenantDataChanged::dispatch('grado', 'updated', $grado->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $grado->load('nivel:id,nombre,nivel_educativo')]);
     }
 
@@ -105,6 +114,10 @@ class GradoController extends Controller
         $grado->delete();
 
         AuditLogger::tenant($request->user(), 'DELETE', 'grado', (string) $grado->id, $prev, null);
+
+        try {
+            TenantDataChanged::dispatch('grado', 'deleted', $grado->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

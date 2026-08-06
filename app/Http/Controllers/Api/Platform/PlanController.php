@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\Platform;
 
 use App\Events\PlatformDataChanged;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Plan;
 use App\Plans\PlanCatalog;
 use Illuminate\Http\JsonResponse;
@@ -21,19 +22,24 @@ use Illuminate\Validation\Rule;
  */
 class PlanController extends Controller
 {
+    use PaginatesRequests;
+
     /** Lista los planes + el catalogo cerrado de features y limites. */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $planes = Plan::query()
+        $result = Plan::query()
             ->orderBy('sort_order')
             ->orderBy('id')
-            ->get()
-            ->map(fn (Plan $plan) => $this->present($plan));
+            ->paginate($this->resolvePerPage($request))
+            ->through(fn (Plan $plan) => $this->present($plan));
 
-        return response()->json([
-            'data' => $planes,
-            'catalog' => $this->catalog(),
-        ]);
+        $response = $this->paginatedResponse($result);
+        $response->setData(array_merge(
+            $response->getData(true),
+            ['catalog' => $this->catalog()],
+        ));
+
+        return $response;
     }
 
     /** Crea un plan nuevo. */

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Models\Tenant;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -11,6 +12,10 @@ use Illuminate\Support\Facades\Schema;
  *
  * Un colegio puede operar una o más sedes (campus). Cada sede es la raíz de
  * la jerarquía organizacional Sede→Jornada→Nivel→Grado→Grupo.
+ *
+ * Las sedes SOLO viven en la BD del colegio principal: en la BD de un tenant
+ * hijo (`tipo = sede`) esta tabla NO se crea. El listado de sedes de ese
+ * tenant devuelve vacío (SedeController contempla la tabla ausente).
  */
 return new class extends Migration
 {

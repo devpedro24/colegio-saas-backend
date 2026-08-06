@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\EscalaValorativa;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
@@ -67,6 +68,10 @@ class EscalaValorativaController extends Controller
         // Gate de operabilidad: si este bloque completa la config minima, activa.
         ConfigurationGate::maybeActivate($request->user());
 
+        try {
+            TenantDataChanged::dispatch('escala', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $escala], $existente ? 200 : 201);
     }
 
@@ -87,6 +92,10 @@ class EscalaValorativaController extends Controller
             $prev,
             $escala->only(array_keys($data)),
         );
+
+        try {
+            TenantDataChanged::dispatch('escala', 'updated', $escala->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => $escala]);
     }
@@ -125,6 +134,10 @@ class EscalaValorativaController extends Controller
             $prev,
             null,
         );
+
+        try {
+            TenantDataChanged::dispatch('escala', 'deleted', $escala->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

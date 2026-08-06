@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Platform;
 
+use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Services\SedeProvisioner;
@@ -12,6 +14,7 @@ use App\Support\Audit\AuditLogger;
 use App\Support\Sedes\SedeLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use RuntimeException;
 
@@ -30,28 +33,29 @@ use RuntimeException;
  */
 class ColegioSedeController extends Controller
 {
+    use PaginatesRequests;
+
     public function __construct(private readonly SedeProvisioner $provisioner) {}
 
     /** Lista las sedes del colegio (principal primero). */
-    public function index(string $id): JsonResponse
+    public function index(Request $request, string $id): JsonResponse
     {
         $tenant = Tenant::findOrFail($id);
 
         // Se serializa DENTRO de $tenant->run(): al terminar, Stancl desconecta
         // la conexion del tenant y un modelo colgado no puede acceder a fechas.
-        $sedes = $tenant->run(function () {
+        $result = $tenant->run(function () use ($request) {
             return Sede::query()
-                ->orderByDesc('es_principal')
+                ->orderByRaw('tenant_id IS NULL DESC')
                 ->orderBy('nombre')
-                ->get()
-                ->map(fn (Sede $sede) => $this->snapshot($sede))
-                ->values();
+                ->paginate($this->resolvePerPage($request))
+                ->through(fn (Sede $sede) => $this->snapshot($sede));
         });
 
         // Fuera del run: enriquece con los datos del tenant hijo (central).
-        $sedes = $sedes->map(fn (array $sede) => $this->enrich($sede));
+        $result->setCollection($result->getCollection()->map(fn (array $sede) => $this->enrich($sede)));
 
-        return response()->json(['data' => $sedes]);
+        return $this->paginatedResponse($result);
     }
 
     /** Crea una sede en el colegio (con tenant hijo si se indica slug). */
@@ -62,22 +66,12 @@ class ColegioSedeController extends Controller
         $data = $request->validate([
             'nombre' => ['required', 'string', 'max:120'],
             'slug' => ['nullable', 'string', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
-            'direccion' => ['nullable', 'string', 'max:255'],
-            'telefono' => ['nullable', 'string', 'max:60'],
-            'responsable' => ['nullable', 'string', 'max:120'],
+            'direccion' => [Rule::when($request->isMethod('post'), 'required'), 'string', 'max:255'],
             'coordinador_email' => ['nullable', 'email', 'max:255'],
             'coordinador_name' => ['nullable', 'string', 'max:120'],
             'heredar' => ['nullable', 'boolean'],
-            'es_principal' => ['nullable', 'boolean'],
             'estado' => ['nullable', Rule::in([Sede::ESTADO_ACTIVA, Sede::ESTADO_INACTIVA])],
         ]);
-
-        if (! empty($data['slug']) && empty($data['coordinador_email'])) {
-            return response()->json([
-                'message' => 'El coordinador de la sede es obligatorio (correo).',
-            ], 422);
-        }
-
         $error = null;
         $sede = null;
         $tenant->run(function () use ($data, &$sede, &$error) {
@@ -93,17 +87,11 @@ class ColegioSedeController extends Controller
                 return;
             }
 
-            if ($data['es_principal'] ?? false) {
-                Sede::query()->update(['es_principal' => false]);
-            }
-
             $sede = Sede::create([
                 'nombre' => $data['nombre'],
                 'direccion' => $data['direccion'] ?? null,
-                'telefono' => $data['telefono'] ?? null,
-                'responsable' => $data['responsable'] ?? null,
+                'coordinador_name' => $data['coordinador_name'] ?? null,
                 'coordinador_email' => $data['coordinador_email'] ?? null,
-                'es_principal' => $data['es_principal'] ?? false,
                 'estado' => $data['estado'] ?? Sede::ESTADO_ACTIVA,
             ]);
         });
@@ -114,15 +102,22 @@ class ColegioSedeController extends Controller
 
         $password = null;
 
-        if (! empty($data['slug']) && ! ($data['es_principal'] ?? false)) {
+        if (! empty($data['slug'])) {
             try {
                 $res = $this->provisioner->provisionAndAttach($tenant, $sede, [
                     'slug' => $data['slug'],
-                    'coordinador_email' => $data['coordinador_email'],
+                    'name' => $data['nombre'],
+                    'coordinador_email' => $data['coordinador_email'] ?? null,
                     'coordinador_name' => $data['coordinador_name'] ?? null,
-                    'heredar' => (bool) ($data['heredar'] ?? true),
+                    'heredar' => false,
                 ]);
                 $password = $res['password'];
+                try {
+                    \App\Events\SedeCreada::dispatch((string) $sede->id, (string) $tenant->id);
+                    TenantDataChanged::dispatch('sede', 'created', $data['nombre']);
+                } catch (\Throwable $e) {
+                    Log::warning('[WS] SedeCreada dispatch platform failed', ['error' => $e->getMessage()]);
+                }
             } catch (RuntimeException $e) {
                 // Rollback: la sede creada sin tenant no puede quedar huerfana.
                 $tenant->run(fn () => $sede->forceDelete());
@@ -158,9 +153,6 @@ class ColegioSedeController extends Controller
         $data = $request->validate([
             'nombre' => ['required', 'string', 'max:120'],
             'direccion' => ['nullable', 'string', 'max:255'],
-            'telefono' => ['nullable', 'string', 'max:60'],
-            'responsable' => ['nullable', 'string', 'max:120'],
-            'es_principal' => ['nullable', 'boolean'],
             'estado' => ['nullable', Rule::in([Sede::ESTADO_ACTIVA, Sede::ESTADO_INACTIVA])],
         ]);
 
@@ -184,18 +176,15 @@ class ColegioSedeController extends Controller
 
             $prev = $this->snapshot($sede);
 
-            if ($data['es_principal'] ?? false) {
-                Sede::query()->where('id', '!=', $sede->id)->update(['es_principal' => false]);
-            }
-
             $sede->update([
                 'nombre' => $data['nombre'],
                 'direccion' => $data['direccion'] ?? $sede->direccion,
-                'telefono' => $data['telefono'] ?? $sede->telefono,
-                'responsable' => $data['responsable'] ?? $sede->responsable,
-                'es_principal' => $data['es_principal'] ?? $sede->es_principal,
                 'estado' => $data['estado'] ?? $sede->estado,
             ]);
+
+            try {
+                TenantDataChanged::dispatch('sede', 'updated', $sede->nombre);
+            } catch (\Throwable) {}
         });
 
         if ($error !== null) {
@@ -235,7 +224,12 @@ class ColegioSedeController extends Controller
 
             $prev = $this->snapshot($sede);
             $tenantIdHijo = $sede->tenant_id;
+            $nombre = $sede->nombre;
             $sede->delete();
+
+            try {
+                TenantDataChanged::dispatch('sede', 'deleted', $nombre);
+            } catch (\Throwable) {}
         });
 
         if ($error !== null) {
@@ -272,13 +266,13 @@ class ColegioSedeController extends Controller
 
         return [
             'id' => $sede->id,
+            'hashed_id' => $sede->hashed_id,
             'nombre' => $sede->nombre,
             'direccion' => $sede->direccion,
             'telefono' => $sede->telefono,
-            'responsable' => $sede->responsable,
+            'coordinador_name' => $sede->coordinador_name,
             'coordinador_email' => $sede->coordinador_email,
             'tenant_id' => $sede->tenant_id,
-            'es_principal' => $sede->es_principal,
             'estado' => $sede->estado,
         ];
     }

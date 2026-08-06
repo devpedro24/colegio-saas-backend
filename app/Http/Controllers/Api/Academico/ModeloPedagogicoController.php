@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\ModeloPedagogico;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
@@ -67,6 +68,10 @@ class ModeloPedagogicoController extends Controller
         // Gate de operabilidad: si este bloque completa la config minima, activa.
         ConfigurationGate::maybeActivate($request->user());
 
+        try {
+            TenantDataChanged::dispatch('modelo', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $modelo], $existente ? 200 : 201);
     }
 
@@ -87,6 +92,10 @@ class ModeloPedagogicoController extends Controller
             $prev,
             $modelo->only(array_keys($data)),
         );
+
+        try {
+            TenantDataChanged::dispatch('modelo', 'updated', $modelo->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => $modelo]);
     }
@@ -123,6 +132,10 @@ class ModeloPedagogicoController extends Controller
             $prev,
             null,
         );
+
+        try {
+            TenantDataChanged::dispatch('modelo', 'deleted', $modelo->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

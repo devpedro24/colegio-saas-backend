@@ -51,6 +51,9 @@ class User extends Authenticatable
     public const STATUS_INACTIVE = 'inactive';
     public const STATUS_DELETED = 'deleted';
 
+    /** Email del usuario sombra que el superadministrador usa al suplantar un colegio. */
+    public const PLATFORM_SUPERADMIN_EMAIL = 'superadmin@plataforma.local';
+
     /** Transiciones permitidas (D-USER-FSM). */
     public const TRANSITIONS = [
         self::STATUS_PENDING => [self::STATUS_ACTIVE],
@@ -79,6 +82,7 @@ class User extends Authenticatable
         'google_id',
         'google_email',
         'google_linked_at',
+        'temporary_password',
     ];
 
     /**
@@ -108,6 +112,7 @@ class User extends Authenticatable
             'google_linked_at' => 'datetime',
             // El secreto TOTP se cifra EN REPOSO (pendiente de Fase 0).
             'two_factor_secret' => 'encrypted',
+            'temporary_password' => 'encrypted',
         ];
     }
 
@@ -118,6 +123,17 @@ class User extends Authenticatable
     public function hasTwoFactorEnabled(): bool
     {
         return $this->two_factor_confirmed_at !== null;
+    }
+
+    /**
+     * true cuando el usuario es el sombra del superadministrador (suplantacion
+     * RN-RT-402). El superadmin SIEMPRE puede todo: los gates de permisos lo
+     * dejan pasar (ver Gate::before en AppServiceProvider) y el frontend
+     * expone `is_superadmin` para no bloquear la UI.
+     */
+    public function esSuperadminPlataforma(): bool
+    {
+        return $this->email === self::PLATFORM_SUPERADMIN_EMAIL;
     }
 
     /**

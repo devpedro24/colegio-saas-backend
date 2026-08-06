@@ -27,7 +27,7 @@ use Illuminate\Support\Str;
 class ImpersonationController extends Controller
 {
     /** Email/identidad fijos del usuario sombra dentro de cada colegio. */
-    private const SHADOW_EMAIL = 'superadmin@plataforma.local';
+    private const SHADOW_EMAIL = User::PLATFORM_SUPERADMIN_EMAIL;
     private const SHADOW_NAME = 'Superadministrador (plataforma)';
     private const SHADOW_ROLE = 'rector';
     private const TOKEN_NAME = 'impersonation';
@@ -155,12 +155,14 @@ class ImpersonationController extends Controller
             ->whereNull('ended_at')
             ->update(['ended_at' => Carbon::now('UTC')]);
 
-        // Dentro del colegio: revoca los tokens de suplantacion y audita.
+        // Dentro del colegio: revoca los tokens de suplantacion, elimina el
+        // usuario sombra (no debe quedar rastro en la BD del colegio) y audita.
         $tenant->run(function () use ($superadmin, $tenant) {
             $shadow = User::where('email', self::SHADOW_EMAIL)->first();
 
             if ($shadow !== null) {
                 $shadow->tokens()->where('name', self::TOKEN_NAME)->delete();
+                $shadow->forceDelete();
             }
 
             AuditLogger::tenant(

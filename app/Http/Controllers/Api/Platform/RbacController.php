@@ -28,10 +28,10 @@ class RbacController extends Controller
     public function catalog(): JsonResponse
     {
         return response()->json([
-            'roles' => RbacRole::orderBy('sort_order')->orderBy('id')->get()
-                ->map(fn (RbacRole $r) => $this->presentRole($r)),
             'permissions' => RbacPermission::orderBy('sort_order')->orderBy('id')->get()
                 ->map(fn (RbacPermission $p) => $this->presentPermission($p)),
+            'roles' => RbacRole::orderBy('sort_order')->orderBy('id')->get()
+                ->map(fn (RbacRole $r) => $this->presentRole($r)),
             'matrix' => RbacMatrixCell::all()->map(fn (RbacMatrixCell $c) => [
                 'role_key' => $c->role_key,
                 'permission_key' => $c->permission_key,

@@ -8,11 +8,15 @@ use App\Models\Tenant;
 use Illuminate\Support\Str;
 
 /**
- * Nombre de la base de datos PostgreSQL de un colegio.
+ * Nombre de la base de datos PostgreSQL de un colegio o de una sede.
  *
- * Patron: `tenant_<nombre del colegio slugificado>_<id corto>`.
+ * Patron colegio: `tenant_<nombre del colegio slugificado>_<id corto>`.
  * Ejemplo: Tenant "Colegio San Jose" con id `k7x2m9p4qr` ->
  *          `tenant_colegio_san_jose_k7x2m9p4qr`.
+ *
+ * Patron sede (tenant hijo): `tenant_<slug del colegio padre>_<slug de la sede>_<id corto>`.
+ * Ejemplo: Sede "Sede Norte" del "Colegio San Jose" con id `a1b2c3d4e5` ->
+ *          `tenant_colegio_san_jose_sede_norte_a1b2c3d4e5`.
  *
  * Los tenants existentes creados antes del id corto conservan un UUID como
  * clave interna; para no contaminar el nombre de BD con 36 caracteres, el
@@ -56,6 +60,15 @@ class TenantDatabaseName
         $slug = Str::slug($name, '_', 'es');
         if ($slug === '') {
             $slug = 'colegio';
+        }
+
+        // Sedes (tenants hijos): el nombre de BD incorpora el slug del colegio
+        // padre para que sea legible y no colisione con el de otras sedes:
+        // `tenant_<slug colegio>_<slug sede>_<id>`.
+        $parent = $tenant?->parent;
+        if ($parent !== null && $parent->exists && ($parent->name ?? null) !== null) {
+            $parentSlug = Str::slug($parent->name, '_', 'es') ?: 'colegio';
+            $slug = $slug === 'colegio' ? $parentSlug : $parentSlug.'_'.$slug;
         }
 
         $base = 'tenant_'.$slug.'_'.$id;

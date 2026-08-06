@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Plan;
 use App\Models\Rbac\RbacMatrixCell;
 use App\Models\Rbac\RbacPermission;
 use App\Models\Rbac\RbacRole;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Request;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
@@ -25,14 +27,17 @@ use Spatie\Permission\Models\Role;
  */
 class RoleController extends Controller
 {
+    use PaginatesRequests;
+
     /** Devuelve la matriz efectiva del colegio: roles x permisos por modulo. */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
         $planFeatures = $this->planFeatures();
 
         // Catalogo central.
         $rbacRoles = RbacRole::orderBy('sort_order')->orderBy('id')->get();
-        $permissions = RbacPermission::orderBy('sort_order')->orderBy('id')->get();
+        $permissionsPaginator = RbacPermission::orderBy('sort_order')->orderBy('id')
+            ->paginate($this->resolvePerPage($request));
         $matrix = RbacMatrixCell::all()->groupBy('role_key');
 
         // Estado real de grants en el tenant.
@@ -41,7 +46,7 @@ class RoleController extends Controller
         $roles = $rbacRoles->map(fn (RbacRole $r) => ['key' => $r->key, 'label' => $r->label])->values();
 
         $modules = [];
-        foreach ($permissions as $perm) {
+        foreach ($permissionsPaginator as $perm) {
             $feature = $perm->feature_key;
             $planAllowed = $feature === null || in_array($feature, $planFeatures, true);
 
@@ -80,10 +85,20 @@ class RoleController extends Controller
             $moduleList[] = ['module' => $moduleName, 'permissions' => $permissionList];
         }
 
-        return response()->json([
-            'roles' => $roles,
-            'modules' => $moduleList,
-        ]);
+        $paginator = new LengthAwarePaginator(
+            $moduleList,
+            $permissionsPaginator->total(),
+            $permissionsPaginator->perPage(),
+            $permissionsPaginator->currentPage(),
+        );
+
+        $response = $this->paginatedResponse($paginator);
+        $response->setData(array_merge(
+            $response->getData(true),
+            ['roles' => $roles],
+        ));
+
+        return $response;
     }
 
     /** Activa/desactiva un permiso CONFIGURABLE (y permitido por el plan) para un rol. */

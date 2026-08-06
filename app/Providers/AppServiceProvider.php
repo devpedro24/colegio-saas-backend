@@ -2,9 +2,11 @@
 
 namespace App\Providers;
 
+use App\Models\User;
 use App\Support\Storage\FileScanner;
 use App\Support\Storage\NullScanner;
 use App\Tenancy\TenantDatabaseName;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Stancl\Tenancy\DatabaseConfig;
 
@@ -34,5 +36,9 @@ class AppServiceProvider extends ServiceProvider
         DatabaseConfig::generateDatabaseNamesUsing(
             fn ($tenant) => TenantDatabaseName::for($tenant)
         );
+
+        // El superadministrador suplantando un colegio PUEDE TODO (RN-RT-402):
+        // el usuario sombra atraviesa cualquier gate de permiso de la ruta.
+        Gate::before(fn (User $user) => $user->esSuperadminPlataforma() ? true : null);
     }
 }

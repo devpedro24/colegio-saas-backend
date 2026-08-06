@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\Nivel;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -52,6 +53,10 @@ class NivelController extends Controller
 
         AuditLogger::tenant($request->user(), 'CREATE', 'nivel', (string) $nivel->id, null, $this->snapshot($nivel));
 
+        try {
+            TenantDataChanged::dispatch('nivel', 'created', $data['nivel_educativo']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $nivel], 201);
     }
 
@@ -72,6 +77,10 @@ class NivelController extends Controller
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'nivel', (string) $nivel->id, $prev, $this->snapshot($nivel));
 
+        try {
+            TenantDataChanged::dispatch('nivel', 'updated', $nivel->nivel_educativo);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $nivel]);
     }
 
@@ -84,6 +93,10 @@ class NivelController extends Controller
         $nivel->delete();
 
         AuditLogger::tenant($request->user(), 'DELETE', 'nivel', (string) $nivel->id, $prev, null);
+
+        try {
+            TenantDataChanged::dispatch('nivel', 'deleted', $nivel->nivel_educativo);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\Jornada;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
@@ -68,6 +69,10 @@ class JornadaController extends Controller
         // si con esto se completa la config minima, el colegio pasa a activo.
         ConfigurationGate::maybeActivate($request->user());
 
+        try {
+            TenantDataChanged::dispatch('jornada', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $jornada->load('sede:id,nombre')], 201);
     }
 
@@ -100,6 +105,10 @@ class JornadaController extends Controller
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'jornada', (string) $jornada->id, $prev, $this->snapshot($jornada));
 
+        try {
+            TenantDataChanged::dispatch('jornada', 'updated', $jornada->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $jornada->load('sede:id,nombre')]);
     }
 
@@ -112,6 +121,10 @@ class JornadaController extends Controller
         $jornada->delete();
 
         AuditLogger::tenant($request->user(), 'DELETE', 'jornada', (string) $jornada->id, $prev, null);
+
+        try {
+            TenantDataChanged::dispatch('jornada', 'deleted', $jornada->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

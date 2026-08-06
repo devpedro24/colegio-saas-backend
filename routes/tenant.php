@@ -71,6 +71,11 @@ Route::middleware([
     // consentimiento). No puede ir bajo auth:sanctum.
     Route::get('/account/google/callback', [AccountController::class, 'googleCallback']);
 
+    // Ruta PUBLICA para verificar que el tenant existe (el frontend la usa
+    // antes de mostrar el login: si devuelve 404, la URL no pertenece a
+    // ningun colegio registrado).
+    Route::get('/tenant-status', fn () => response()->json(['ok' => true]));
+
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
@@ -106,6 +111,8 @@ Route::middleware([
             Route::post('/', [UserController::class, 'store']);
             Route::put('/{id}', [UserController::class, 'update']);
             Route::delete('/{id}', [UserController::class, 'destroy']);
+            Route::get('/{id}/temporal-password', [UserController::class, 'temporalPassword']);
+            Route::post('/{id}/reset-password', [UserController::class, 'resetPassword']);
         });
 
         /*

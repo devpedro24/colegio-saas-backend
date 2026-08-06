@@ -16,6 +16,8 @@ use App\Http\Controllers\Api\Academico\NivelController;
 use App\Http\Controllers\Api\Academico\PeriodoController;
 use App\Http\Controllers\Api\Academico\SedeController;
 use App\Http\Controllers\Api\Platform\StorageController;
+use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\UserController;
 use App\Services\ConfigurationGate;
 use Illuminate\Support\Facades\Route;
 
@@ -92,6 +94,7 @@ Route::middleware('can:academico.estructura.gestionar')->prefix('estructura')->g
     Route::get('/sedes/{id}', [SedeController::class, 'show']);
     Route::put('/sedes/{id}', [SedeController::class, 'update']);
     Route::delete('/sedes/{id}', [SedeController::class, 'destroy']);
+        Route::post('/sedes/{id}/heredar', [SedeController::class, 'heredar']);
 
     // Jornadas (pertenecen a una sede)
     Route::get('/jornadas', [JornadaController::class, 'index']);
@@ -140,3 +143,15 @@ Route::middleware('can:academico.estructura.gestionar')->prefix('estructura')->g
 // del colegio (o el superadmin suplantando) puede subir a su cuota. La descarga
 // se hace con URL firmada generada por StorageService (ruta central).
 Route::post('/archivos', [StorageController::class, 'store']);
+
+// Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion
+// puede apuntar a una sede (tenant hijo) y se escribe en su propia BD.
+// Disponible tanto por subdominio como por header X-Tenant (suplantacion).
+Route::middleware('can:usuarios.gestionar')->prefix('usuarios')->group(function () {
+    Route::get('/', [UserController::class, 'index']);
+    Route::post('/', [UserController::class, 'store']);
+    Route::put('/{id}', [UserController::class, 'update']);
+    Route::delete('/{id}', [UserController::class, 'destroy']);
+    Route::get('/{id}/temporal-password', [UserController::class, 'temporalPassword']);
+    Route::post('/{id}/reset-password', [UserController::class, 'resetPassword']);
+});

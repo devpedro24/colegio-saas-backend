@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\EspacioFisico;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -60,6 +61,10 @@ class EspacioFisicoController extends Controller
 
         AuditLogger::tenant($request->user(), 'CREATE', 'espacio_fisico', (string) $espacio->id, null, $this->snapshot($espacio));
 
+        try {
+            TenantDataChanged::dispatch('espacio_fisico', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $espacio->load('sede:id,nombre')], 201);
     }
 
@@ -86,6 +91,10 @@ class EspacioFisicoController extends Controller
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'espacio_fisico', (string) $espacio->id, $prev, $this->snapshot($espacio));
 
+        try {
+            TenantDataChanged::dispatch('espacio_fisico', 'updated', $espacio->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $espacio->load('sede:id,nombre')]);
     }
 
@@ -98,6 +107,10 @@ class EspacioFisicoController extends Controller
         $espacio->delete();
 
         AuditLogger::tenant($request->user(), 'DELETE', 'espacio_fisico', (string) $espacio->id, $prev, null);
+
+        try {
+            TenantDataChanged::dispatch('espacio_fisico', 'deleted', $espacio->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

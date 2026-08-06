@@ -7,13 +7,16 @@ namespace App\Http\Controllers\Api\Platform;
 use App\Events\PlatformDataChanged;
 use App\Events\TenantChanged;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\TenantProvisioner;
 use App\Support\Audit\AuditLogger;
+use App\Tenancy\TenantDatabaseName;
 use Database\Seeders\RbacSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -24,15 +27,18 @@ use RuntimeException;
  */
 class ColegioController extends Controller
 {
-    /** Lista todos los colegios. */
-    public function index(): JsonResponse
-    {
-        $colegios = Tenant::query()
-            ->orderByDesc('created_at')
-            ->get()
-            ->map(fn (Tenant $tenant) => $this->present($tenant));
+    use PaginatesRequests;
 
-        return response()->json(['data' => $colegios]);
+    /** Lista todos los colegios (las sedes/tenants hijo quedan fuera). */
+    public function index(Request $request): JsonResponse
+    {
+        $result = Tenant::query()
+            ->where('tipo', '!=', Tenant::TIPO_SEDE)
+            ->orderByDesc('created_at')
+            ->paginate($this->resolvePerPage($request))
+            ->through(fn (Tenant $tenant) => $this->present($tenant));
+
+        return $this->paginatedResponse($result);
     }
 
     /** Crea (provisiona) un colegio nuevo. */
@@ -95,22 +101,56 @@ class ColegioController extends Controller
 
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
+            'slug' => ['nullable', 'string', 'max:120', 'regex:/^[a-z0-9-]+$/'],
             'legal_name' => ['nullable', 'string', 'max:255'],
             'nit' => ['nullable', 'string', 'max:60'],
             'plan' => ['required', 'string', 'exists:plans,key'],
         ]);
 
-        $prev = [
-            'name' => $tenant->name,
-            'legal_name' => $tenant->legal_name,
-            'nit' => $tenant->nit,
-            'plan' => $tenant->plan,
-        ];
+        $slugChanged = !empty($data['slug']) && $data['slug'] !== $tenant->slug;
+        $nameChanged = $data['name'] !== $tenant->name;
+
+        // Guardamos el nombre de BD ACTUAL antes de cualquier cambio.
+        $oldDbName = $tenant->getInternal('db_name') ?? TenantDatabaseName::for($tenant);
+
+        if ($slugChanged) {
+            if (Tenant::where('slug', $data['slug'])->where('id', '!=', $tenant->id)->exists()) {
+                return response()->json(['message' => 'Ya existe un colegio con ese identificador.'], 422);
+            }
+
+            $tenant->update(['slug' => $data['slug']]);
+            $tenant->domains()->update(['domain' => $data['slug']]);
+
+            foreach ($tenant->sedes as $sede) {
+                $sede->domains()->update(['domain' => $sede->slug . '.' . $data['slug']]);
+            }
+        }
+
+        $updateData = ['name' => $data['name'], 'plan' => $data['plan']];
+        if (isset($data['legal_name'])) $updateData['legal_name'] = $data['legal_name'];
+        if (isset($data['nit'])) $updateData['nit'] = $data['nit'];
 
         $planChanged = $tenant->plan !== $data['plan'];
-        $tenant->update($data);
+        $tenant->update($updateData);
 
-        // Si cambio el plan, re-sincroniza el RBAC del colegio (aplica el gating).
+        // Si cambio el nombre o el slug, la BD debe renombrarse.
+        if ($slugChanged || $nameChanged) {
+            $newDbName = TenantDatabaseName::for($tenant->fresh());
+            if ($newDbName !== $oldDbName) {
+                $this->renameDatabase($tenant, $oldDbName, $newDbName);
+            }
+
+            // Las sedes heredan el nombre del colegio en su DB naming.
+            foreach ($tenant->sedes as $sede) {
+                $oldSedeDb = $sede->getInternal('db_name') ?? TenantDatabaseName::for($sede);
+                $newSedeDb = TenantDatabaseName::for($sede->fresh());
+                if ($newSedeDb !== $oldSedeDb) {
+                    $this->renameDatabase($sede, $oldSedeDb, $newSedeDb);
+                }
+            }
+        }
+
+        // Si cambio el plan, re-sincroniza el RBAC del colegio.
         if ($planChanged) {
             $tenant->run(fn () => (new RbacSeeder())->run());
             TenantChanged::dispatch($tenant->id, 'plan');
@@ -123,9 +163,16 @@ class ColegioController extends Controller
             'UPDATE',
             'colegio',
             (string) $tenant->id,
-            $prev,
+            [
+                'name' => $tenant->getOriginal('name') ?? '',
+                'slug' => $tenant->getOriginal('slug') ?? '',
+                'legal_name' => $tenant->getOriginal('legal_name'),
+                'nit' => $tenant->getOriginal('nit'),
+                'plan' => $tenant->getOriginal('plan'),
+            ],
             [
                 'name' => $tenant->name,
+                'slug' => $tenant->slug,
                 'legal_name' => $tenant->legal_name,
                 'nit' => $tenant->nit,
                 'plan' => $tenant->plan,
@@ -135,6 +182,26 @@ class ColegioController extends Controller
         );
 
         return response()->json(['colegio' => $this->present($tenant)]);
+    }
+
+    private function renameDatabase(Tenant $tenant, string $oldDbName, string $newDbName): void
+    {
+        $central = DB::connection(config('tenancy.database.central_connection'));
+
+        if ($central->table('pg_database')->where('datname', $newDbName)->exists()) {
+            return; // ya renombrada o colision, no hacer nada
+        }
+
+        // Cierra conexiones activas a la BD vieja.
+        $central->statement(
+            'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ? AND pid <> pg_backend_pid()',
+            [$oldDbName],
+        );
+
+        $central->statement('ALTER DATABASE "'.$oldDbName.'" RENAME TO "'.$newDbName.'"');
+
+        // Persiste el nuevo nombre para futuros arranques.
+        $tenant->setInternal('db_name', $newDbName)->save();
     }
 
     /** Cambia el estado del colegio (activar / suspender). */

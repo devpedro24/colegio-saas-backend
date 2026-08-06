@@ -55,14 +55,6 @@ class TenantProvisioner
         $tenant->run(function () use ($data, $tempPassword) {
             (new RbacSeeder(firstSeed: true))->run();
 
-            // Toda institucion nace con su Sede Principal (raiz de la jerarquia
-            // Sede→Jornada→Nivel→Grado→Grupo). El rector agrega mas sedes segun
-            // el limite de su plan; el superadmin tambien puede desde el panel.
-            Sede::create([
-                'nombre' => $data['name'],
-                'es_principal' => true,
-            ]);
-
             $rector = User::create([
                 'name' => $data['rector_name'] ?? 'Rector',
                 'email' => $data['rector_email'],

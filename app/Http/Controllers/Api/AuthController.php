@@ -101,6 +101,7 @@ class AuthController extends Controller
             'mfa_enabled' => $user->hasTwoFactorEnabled(),
             'roles' => $user->getRoleNames()->values(),
             'permissions' => $user->getAllPermissions()->pluck('name')->values(),
+            'is_superadmin' => $user->esSuperadminPlataforma(),
         ];
     }
 }

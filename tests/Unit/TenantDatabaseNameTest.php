@@ -82,6 +82,26 @@ class TenantDatabaseNameTest extends TestCase
     }
 
     #[Test]
+    public function nombre_bd_de_sede_incluye_el_slug_del_colegio_padre(): void
+    {
+        $colegio = $this->tenantWith('Colegio San Jose', 'k7x2m9p4qr');
+        $colegio->exists = true;
+
+        $sede = $this->tenantWith('Sede Norte', 'a1b2c3d4e5');
+        $sede->setRelation('parent', $colegio);
+
+        $this->assertSame(
+            'tenant_colegio_san_jose_sede_norte_a1b2c3d4e5',
+            TenantDatabaseName::for($sede)
+        );
+
+        $this->assertSame(
+            'tenant_colegio_san_jose_k7x2m9p4qr',
+            TenantDatabaseName::for($colegio)
+        );
+    }
+
+    #[Test]
     public function nombre_bd_sin_tenant_usa_valores_por_defecto(): void
     {
         $name = TenantDatabaseName::for(null);

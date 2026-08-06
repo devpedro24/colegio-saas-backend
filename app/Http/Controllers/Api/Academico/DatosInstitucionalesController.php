@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\DatosInstitucionales;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
@@ -65,6 +66,10 @@ class DatosInstitucionalesController extends Controller
 
         // Gate de operabilidad: si este bloque completa la config minima, activa.
         ConfigurationGate::maybeActivate($request->user());
+
+        try {
+            TenantDataChanged::dispatch('datos_institucionales', 'updated', $datos->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => $datos]);
     }

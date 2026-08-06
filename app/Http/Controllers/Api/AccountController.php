@@ -330,6 +330,7 @@ class AccountController extends Controller
             'roles' => tenant() ? $user->getRoleNames()->values() : [$user->role ?? 'superadmin'],
             'permissions' => tenant() ? $user->getAllPermissions()->pluck('name')->values() : [],
             'is_platform' => tenant() === null,
+            'is_superadmin' => $user->esSuperadminPlataforma(),
         ];
     }
 

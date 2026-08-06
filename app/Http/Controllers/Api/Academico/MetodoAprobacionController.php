@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\MetodoAprobacion;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
@@ -61,6 +62,10 @@ class MetodoAprobacionController extends Controller
         // Gate de operabilidad: si este bloque completa la config minima, activa.
         ConfigurationGate::maybeActivate($request->user());
 
+        try {
+            TenantDataChanged::dispatch('metodo', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $metodo], $existente ? 200 : 201);
     }
 
@@ -81,6 +86,10 @@ class MetodoAprobacionController extends Controller
             $prev,
             $metodo->only(array_keys($data)),
         );
+
+        try {
+            TenantDataChanged::dispatch('metodo', 'updated', $metodo->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => $metodo]);
     }
@@ -116,6 +125,10 @@ class MetodoAprobacionController extends Controller
             $prev,
             null,
         );
+
+        try {
+            TenantDataChanged::dispatch('metodo', 'deleted', $metodo->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\BloqueHorario;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -63,6 +64,10 @@ class BloqueHorarioController extends Controller
 
         AuditLogger::tenant($request->user(), 'CREATE', 'bloque_horario', (string) $bloque->id, null, $this->snapshot($bloque));
 
+        try {
+            TenantDataChanged::dispatch('bloque_horario', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $bloque->load('jornada:id,nombre,sede_id')], 201);
     }
 
@@ -91,6 +96,10 @@ class BloqueHorarioController extends Controller
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'bloque_horario', (string) $bloque->id, $prev, $this->snapshot($bloque));
 
+        try {
+            TenantDataChanged::dispatch('bloque_horario', 'updated', $bloque->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $bloque->load('jornada:id,nombre,sede_id')]);
     }
 
@@ -103,6 +112,10 @@ class BloqueHorarioController extends Controller
         $bloque->delete();
 
         AuditLogger::tenant($request->user(), 'DELETE', 'bloque_horario', (string) $bloque->id, $prev, null);
+
+        try {
+            TenantDataChanged::dispatch('bloque_horario', 'deleted', $bloque->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

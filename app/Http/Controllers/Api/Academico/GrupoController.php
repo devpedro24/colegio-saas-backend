@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\Grupo;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -77,6 +78,10 @@ class GrupoController extends Controller
 
         AuditLogger::tenant($request->user(), 'CREATE', 'grupo', (string) $grupo->id, null, $this->snapshot($grupo));
 
+        try {
+            TenantDataChanged::dispatch('grupo', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $grupo->load(['grado:id,nombre', 'anoLectivo:id,nombre', 'jornada:id,nombre', 'sede:id,nombre'])], 201);
     }
 
@@ -116,6 +121,10 @@ class GrupoController extends Controller
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'grupo', (string) $grupo->id, $prev, $this->snapshot($grupo));
 
+        try {
+            TenantDataChanged::dispatch('grupo', 'updated', $grupo->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $grupo->load(['grado:id,nombre', 'anoLectivo:id,nombre', 'jornada:id,nombre', 'sede:id,nombre'])]);
     }
 
@@ -128,6 +137,10 @@ class GrupoController extends Controller
         $grupo->delete();
 
         AuditLogger::tenant($request->user(), 'DELETE', 'grupo', (string) $grupo->id, $prev, null);
+
+        try {
+            TenantDataChanged::dispatch('grupo', 'deleted', $grupo->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
     }

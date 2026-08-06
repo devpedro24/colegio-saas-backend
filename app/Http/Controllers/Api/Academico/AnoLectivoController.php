@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Events\TenantDataChanged;
 use App\Models\Academico\AnoLectivo;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
@@ -80,6 +81,10 @@ class AnoLectivoController extends Controller
         // bloque 'calendario'; si con esto se completa la config minima, activa.
         ConfigurationGate::maybeActivate($request->user());
 
+        try {
+            TenantDataChanged::dispatch('ano_lectivo', 'created', $data['nombre']);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $this->present($ano)], 201);
     }
 
@@ -140,6 +145,10 @@ class AnoLectivoController extends Controller
             $this->snapshot($ano),
         );
 
+        try {
+            TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $this->present($ano)]);
     }
 
@@ -178,6 +187,11 @@ class AnoLectivoController extends Controller
             'Inicio del año lectivo (planificado → en_curso).',
         );
 
+        
+        try {
+            TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
+        } catch (\Throwable) {}
+
         return response()->json(['data' => $this->present($ano)]);
     }
 
@@ -202,6 +216,11 @@ class AnoLectivoController extends Controller
             $this->snapshot($ano),
             'Cierre del año lectivo (en_curso → cerrado).',
         );
+
+        
+        try {
+            TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
+        } catch (\Throwable) {}
 
         return response()->json(['data' => $this->present($ano)]);
     }
