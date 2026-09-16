@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
+use App\Events\ConfiguracionHeredada;
+use App\Events\SedeCreada;
 use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\Sede;
-use App\Models\User;
+use App\Models\Tenant;
+use App\Services\ConfigurationGate;
 use App\Services\SedeProvisioner;
 use App\Support\Audit\AuditLogger;
 use App\Support\Sedes\SedeLimits;
@@ -36,9 +39,7 @@ class SedeController extends Controller
     /** Lista las sedes (principal primero). */
     public function index(Request $request): JsonResponse
     {
-        if (! Schema::hasTable('sedes')) {
-            return response()->json(['data' => [], 'meta' => ['current_page' => 1, 'last_page' => 1, 'per_page' => 5, 'total' => 0]]);
-        }
+        $this->assertPrincipalTenant();
 
         $result = Sede::query()
             ->orderByRaw('tenant_id IS NULL DESC')
@@ -52,6 +53,7 @@ class SedeController extends Controller
     /** Detalle de una sede. */
     public function show($id): JsonResponse
     {
+        $this->assertPrincipalTenant();
         $sede = $this->findSede($id);
 
         return response()->json(['data' => $this->enrich($this->snapshot($sede))]);
@@ -60,8 +62,10 @@ class SedeController extends Controller
     /** Crea una sede (con tenant hijo si se indica slug). */
     public function store(Request $request): JsonResponse
     {
+        $colegio = $this->assertPrincipalTenant();
+
         // Gating SaaS: el plan limita la cantidad de sedes (esencial=1, estandar=5).
-        if (SedeLimits::alLimite()) {
+        if (SedeLimits::alLimite($colegio)) {
             return response()->json([
                 'message' => 'El plan del colegio permite máximo '.(string) SedeLimits::maxSedes().' sede(s).',
             ], 422);
@@ -69,7 +73,7 @@ class SedeController extends Controller
 
         $data = $request->validate([
             'nombre' => ['required', 'string', 'max:120', Rule::unique('sedes', 'nombre')->where(fn ($q) => $q->whereNull('deleted_at'))],
-            'slug' => ['nullable', 'string', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
+            'slug' => ['required', 'string', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
             'direccion' => ['nullable', 'string', 'max:255'],
             'telefono' => ['nullable', 'string', 'max:60'],
             'responsable' => ['nullable', 'string', 'max:120'],
@@ -85,59 +89,56 @@ class SedeController extends Controller
             'telefono' => $data['telefono'] ?? null,
             'coordinador_name' => $data['coordinador_name'] ?? null,
             'coordinador_email' => $data['coordinador_email'] ?? null,
-            'estado' => $data['estado'] ?? Sede::ESTADO_ACTIVA,
+            'estado' => Sede::ESTADO_INACTIVA,
         ]);
 
         $password = null;
 
-        if (! empty($data['slug'])) {
+        try {
+            $heredar = (bool) ($data['heredar'] ?? true);
+            $snapshot = $this->provisioner->capturarConfiguracion($colegio, $heredar);
+
+            // Stancl no soporta de forma segura run() anidados entre padre e
+            // hijo. Provisionamos desde central y restauramos siempre al padre.
+            tenancy()->end();
             try {
-                $colegio = tenant();
-
-                // Snapshot dentro del contexto actual del colegio y provision
-                // del hijo DESDE contexto central (evita run() anidado).
-                $snapshot = $this->provisioner->capturarConfiguracion(
-                    $colegio,
-                    (bool) ($data['heredar'] ?? true),
-                );
-
-                tenancy()->end();
-
-                try {
-                    $res = $this->provisioner->provision($colegio, [
-                        'slug' => $data['slug'],
-                        'name' => $data['nombre'],
-                        'coordinador_email' => $data['coordinador_email'] ?? null,
-                        'coordinador_name' => $data['coordinador_name'] ?? null,
-                        'heredar' => (bool) ($data['heredar'] ?? true),
-                    ], $snapshot);
-                    $password = $res['password'];
-                } finally {
-                    tenancy()->initialize($colegio);
-                }
-
-$sede->update([
-                    'tenant_id' => $res['tenant']->id,
+                $res = $this->provisioner->provisionAndAttach($colegio, $sede, [
+                    'slug' => $data['slug'],
+                    'name' => $data['nombre'],
                     'coordinador_email' => $data['coordinador_email'] ?? null,
                     'coordinador_name' => $data['coordinador_name'] ?? null,
-                ]);
-            } catch (RuntimeException $e) {
-                // Rollback: la sede no puede quedar huerfana sin tenant.
-                $sede->forceDelete();
-
-                return response()->json(['message' => $e->getMessage()], 422);
+                    'heredar' => $heredar,
+                ], $snapshot);
+                $password = $res['password'];
+            } finally {
+                tenancy()->initialize($colegio);
             }
+
+            $sede->refresh()->update([
+                'estado' => $res['tenant']->status === Tenant::STATUS_ACTIVE
+                    && ($data['estado'] ?? Sede::ESTADO_ACTIVA) === Sede::ESTADO_ACTIVA
+                        ? Sede::ESTADO_ACTIVA
+                        : Sede::ESTADO_INACTIVA,
+            ]);
+        } catch (RuntimeException $e) {
+            if (! tenancy()->initialized) {
+                tenancy()->initialize($colegio);
+            }
+            Sede::query()->whereKey($sede->getKey())->forceDelete();
+
+            return response()->json(['message' => $e->getMessage()], 422);
         }
 
         AuditLogger::tenant($request->user(), 'CREATE', 'sede', (string) $sede->id, null, $this->enrich($this->snapshot($sede)));
 
         try {
             TenantDataChanged::dispatch('sede', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         if ($sede->tenant_id !== null) {
             try {
-                \App\Events\SedeCreada::dispatch((string) $sede->id, (string) tenant()->id);
+                SedeCreada::dispatch((string) $sede->id, (string) tenant()->id);
             } catch (\Throwable $e) {
                 Log::warning('[WS] SedeCreada dispatch failed', ['error' => $e->getMessage()]);
             }
@@ -152,6 +153,7 @@ $sede->update([
     /** Edita una sede. */
     public function update(Request $request, $id): JsonResponse
     {
+        $this->assertPrincipalTenant();
         $sede = $this->findSede($id);
 
         $data = $request->validate([
@@ -162,6 +164,13 @@ $sede->update([
         ]);
 
         $prev = $this->enrich($this->snapshot($sede));
+        if (($data['estado'] ?? null) === Sede::ESTADO_ACTIVA && $sede->tenant_id !== null) {
+            $childStatus = DB::connection(config('tenancy.database.central_connection'))
+                ->table('tenants')->where('id', $sede->tenant_id)->value('status');
+            if ($childStatus !== Tenant::STATUS_ACTIVE) {
+                return response()->json(['message' => 'La sede sigue en configuracion y no puede activarse.'], 422);
+            }
+        }
         $sede->update([
             'nombre' => $data['nombre'],
             'direccion' => $data['direccion'] ?? $sede->direccion,
@@ -173,7 +182,8 @@ $sede->update([
 
         try {
             TenantDataChanged::dispatch('sede', 'updated', $sede->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->enrich($this->snapshot($sede))]);
     }
@@ -181,7 +191,11 @@ $sede->update([
     /** Elimina (soft-delete) una sede y baja su tenant hijo a cuarentena. */
     public function destroy(Request $request, $id): JsonResponse
     {
+        $this->assertPrincipalTenant();
         $sede = $this->findSede($id);
+        if ($sede->tenant_id === null) {
+            return response()->json(['message' => 'La sede principal no se puede eliminar.'], 422);
+        }
         $prev = $this->enrich($this->snapshot($sede));
 
         $sede->delete();
@@ -194,7 +208,8 @@ $sede->update([
 
         try {
             TenantDataChanged::dispatch('sede', 'deleted', $sede->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }
@@ -202,20 +217,29 @@ $sede->update([
     /** POST heredar — copia la configuracion seleccionada del colegio a una sede ya existente. */
     public function heredar(Request $request, $id): JsonResponse
     {
+        $colegio = $this->assertPrincipalTenant();
         $sede = $this->findSede($id);
 
         if ($sede->tenant_id === null) {
             return response()->json(['message' => 'Esta sede no tiene un tenant hijo.'], 422);
         }
 
-        $hijo = \App\Models\Tenant::find($sede->tenant_id);
-        if ($hijo === null || $hijo->status === \App\Models\Tenant::STATUS_IN_RETENTION) {
+        $hijo = Tenant::find($sede->tenant_id);
+        if ($hijo === null || in_array($hijo->status, [Tenant::STATUS_IN_RETENTION, Tenant::STATUS_DELETED], true)) {
             return response()->json(['message' => 'El tenant de la sede no esta disponible.'], 422);
         }
 
-        $categorias = $request->input('categorias', ['anos', 'escalas', 'metodos', 'modelos', 'datos', 'niveles']);
+        $validated = $request->validate([
+            'categorias' => ['sometimes', 'array', 'min:1'],
+            'categorias.*' => ['string', Rule::in(['anos', 'escalas', 'metodos', 'modelos', 'datos', 'niveles'])],
+        ]);
+        $categorias = array_values(array_unique($validated['categorias'] ?? ['anos', 'escalas', 'metodos', 'modelos', 'datos', 'niveles']));
+        if (array_intersect($categorias, ['escalas', 'metodos', 'modelos']) !== []) {
+            $categorias[] = 'anos';
+            $categorias = array_values(array_unique($categorias));
+        }
 
-        $snapshot = $this->provisioner->capturarConfiguracion(tenant(), true);
+        $snapshot = $this->provisioner->capturarConfiguracion($colegio, true);
         if ($snapshot === null) {
             return response()->json(['message' => 'No se pudo capturar la configuracion del colegio.'], 500);
         }
@@ -226,19 +250,42 @@ $sede->update([
             return response()->json(['message' => 'No se selecciono ninguna categoria.'], 422);
         }
 
-        $hijo->run(fn () => $this->provisioner->applySnapshot($filtrado));
+        tenancy()->end();
+        try {
+            $complete = $hijo->run(function () use ($filtrado): bool {
+                $this->provisioner->applySnapshot($filtrado);
+
+                return ConfigurationGate::isComplete();
+            });
+            $hijo->update(['status' => $complete ? Tenant::STATUS_ACTIVE : Tenant::STATUS_CONFIGURING]);
+        } finally {
+            tenancy()->initialize($colegio);
+        }
+
+        $sede->update(['estado' => $complete ? Sede::ESTADO_ACTIVA : Sede::ESTADO_INACTIVA]);
 
         $result = $this->enrich($this->snapshot($sede));
         AuditLogger::tenant($request->user(), 'HEREDAR', 'sede', (string) $sede->id, null, $result);
 
         // Broadcast para actualizar el frontend en tiempo real
         try {
-            \App\Events\ConfiguracionHeredada::dispatch($hijo->id, (string) tenant()->id);
+            ConfiguracionHeredada::dispatch($hijo->id, (string) tenant()->id);
         } catch (\Throwable $e) {
             Log::warning('[WS] ConfiguracionHeredada dispatch failed', ['error' => $e->getMessage()]);
         }
 
         return response()->json(['data' => $result]);
+    }
+
+    private function assertPrincipalTenant(): Tenant
+    {
+        $tenant = tenant();
+
+        if (! $tenant instanceof Tenant || $tenant->tipo === Tenant::TIPO_SEDE || ! Schema::hasTable('sedes')) {
+            abort(422, 'Una sede hija no puede administrar una jerarquia recursiva de sedes.');
+        }
+
+        return $tenant;
     }
 
     private function findSede($id): Sede
@@ -249,7 +296,7 @@ $sede->update([
 
         // hashed_id base64url sin padding
         $decoded = base64_decode(
-            strtr((string) $id, '-_', '+/') . str_repeat('=', (4 - strlen((string) $id) % 4) % 4),
+            strtr((string) $id, '-_', '+/').str_repeat('=', (4 - strlen((string) $id) % 4) % 4),
             true,
         );
 

@@ -29,4 +29,17 @@ class ConfigurationGateTest extends TestCase
         // Fuera de un colegio (tenant() === null) el gate debe ser un no-op.
         $this->assertNull(ConfigurationGate::maybeActivate(null));
     }
+
+    public function test_solo_completa_si_estan_los_seis_bloques_y_todos_son_true(): void
+    {
+        $checks = array_fill_keys(array_keys(ConfigurationGate::BLOCKS), true);
+
+        $this->assertTrue(ConfigurationGate::areBlocksComplete($checks));
+
+        $checks['jornadas'] = false;
+        $this->assertFalse(ConfigurationGate::areBlocksComplete($checks));
+
+        unset($checks['jornadas']);
+        $this->assertFalse(ConfigurationGate::areBlocksComplete($checks));
+    }
 }

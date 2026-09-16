@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Platform;
 
+use App\Events\SedeCreada;
 use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
@@ -42,6 +43,10 @@ class ColegioSedeController extends Controller
     {
         $tenant = Tenant::findOrFail($id);
 
+        if ($tenant->tipo === Tenant::TIPO_SEDE) {
+            return response()->json(['message' => 'Una sede hija no puede administrar sedes.'], 422);
+        }
+
         // Se serializa DENTRO de $tenant->run(): al terminar, Stancl desconecta
         // la conexion del tenant y un modelo colgado no puede acceder a fechas.
         $result = $tenant->run(function () use ($request) {
@@ -63,9 +68,13 @@ class ColegioSedeController extends Controller
     {
         $tenant = Tenant::findOrFail($id);
 
+        if ($tenant->tipo === Tenant::TIPO_SEDE) {
+            return response()->json(['message' => 'Una sede hija no puede crear sedes recursivas.'], 422);
+        }
+
         $data = $request->validate([
             'nombre' => ['required', 'string', 'max:120'],
-            'slug' => ['nullable', 'string', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
+            'slug' => ['required', 'string', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
             'direccion' => [Rule::when($request->isMethod('post'), 'required'), 'string', 'max:255'],
             'coordinador_email' => ['nullable', 'email', 'max:255'],
             'coordinador_name' => ['nullable', 'string', 'max:120'],
@@ -74,8 +83,9 @@ class ColegioSedeController extends Controller
         ]);
         $error = null;
         $sede = null;
-        $tenant->run(function () use ($data, &$sede, &$error) {
-            if (SedeLimits::alLimite()) {
+        $snapshotConfiguracion = null;
+        $tenant->run(function () use ($data, $tenant, &$sede, &$error, &$snapshotConfiguracion) {
+            if (SedeLimits::alLimite($tenant)) {
                 $error = 'El plan del colegio permite máximo '.(string) SedeLimits::maxSedes().' sede(s).';
 
                 return;
@@ -92,8 +102,13 @@ class ColegioSedeController extends Controller
                 'direccion' => $data['direccion'] ?? null,
                 'coordinador_name' => $data['coordinador_name'] ?? null,
                 'coordinador_email' => $data['coordinador_email'] ?? null,
-                'estado' => $data['estado'] ?? Sede::ESTADO_ACTIVA,
+                'estado' => Sede::ESTADO_INACTIVA,
             ]);
+
+            $snapshotConfiguracion = $this->provisioner->capturarConfiguracion(
+                $tenant,
+                (bool) ($data['heredar'] ?? true),
+            );
         });
 
         if ($error !== null) {
@@ -102,31 +117,40 @@ class ColegioSedeController extends Controller
 
         $password = null;
 
-        if (! empty($data['slug'])) {
-            try {
-                $res = $this->provisioner->provisionAndAttach($tenant, $sede, [
-                    'slug' => $data['slug'],
-                    'name' => $data['nombre'],
-                    'coordinador_email' => $data['coordinador_email'] ?? null,
-                    'coordinador_name' => $data['coordinador_name'] ?? null,
-                    'heredar' => false,
-                ]);
-                $password = $res['password'];
-                try {
-                    \App\Events\SedeCreada::dispatch((string) $sede->id, (string) $tenant->id);
-                    TenantDataChanged::dispatch('sede', 'created', $data['nombre']);
-                } catch (\Throwable $e) {
-                    Log::warning('[WS] SedeCreada dispatch platform failed', ['error' => $e->getMessage()]);
-                }
-            } catch (RuntimeException $e) {
-                // Rollback: la sede creada sin tenant no puede quedar huerfana.
-                $tenant->run(fn () => $sede->forceDelete());
+        try {
+            $res = $this->provisioner->provisionAndAttach($tenant, $sede, [
+                'slug' => $data['slug'],
+                'name' => $data['nombre'],
+                'coordinador_email' => $data['coordinador_email'] ?? null,
+                'coordinador_name' => $data['coordinador_name'] ?? null,
+                'heredar' => (bool) ($data['heredar'] ?? true),
+            ], $snapshotConfiguracion);
+            $password = $res['password'];
 
-                return response()->json(['message' => $e->getMessage()], 422);
+            $tenant->run(function () use ($sede, $res, $data): void {
+                Sede::query()->whereKey($sede->getKey())->update([
+                    'estado' => $res['tenant']->status === Tenant::STATUS_ACTIVE
+                        && ($data['estado'] ?? Sede::ESTADO_ACTIVA) === Sede::ESTADO_ACTIVA
+                            ? Sede::ESTADO_ACTIVA
+                            : Sede::ESTADO_INACTIVA,
+                ]);
+            });
+
+            try {
+                SedeCreada::dispatch((string) $sede->id, (string) $tenant->id);
+                TenantDataChanged::dispatch('sede', 'created', $data['nombre']);
+            } catch (\Throwable $e) {
+                Log::warning('[WS] SedeCreada dispatch platform failed', ['error' => $e->getMessage()]);
             }
+        } catch (RuntimeException $e) {
+            // El provisioner compensa el tenant hijo; elimina la fila local.
+            $tenant->run(fn () => Sede::query()->whereKey($sede->getKey())->forceDelete());
+
+            return response()->json(['message' => $e->getMessage()], 422);
         }
 
-        $snapshot = $this->enrich($this->snapshot($sede));
+        $localSnapshot = $tenant->run(fn (): array => $this->snapshot(Sede::findOrFail($sede->getKey())));
+        $snapshot = $this->enrich($localSnapshot);
 
         AuditLogger::platform(
             $request->user(),
@@ -142,13 +166,20 @@ class ColegioSedeController extends Controller
         return response()->json([
             'data' => $snapshot,
             'coordinador_password' => $password,
-        ], 201);
+        ], 201)->withHeaders([
+            'Cache-Control' => 'no-store, private',
+            'Pragma' => 'no-cache',
+        ]);
     }
 
     /** Edita una sede del colegio. */
     public function update(Request $request, string $id, int $sedeId): JsonResponse
     {
         $tenant = Tenant::findOrFail($id);
+
+        if ($tenant->tipo === Tenant::TIPO_SEDE) {
+            return response()->json(['message' => 'Una sede hija no puede administrar sedes.'], 422);
+        }
 
         $data = $request->validate([
             'nombre' => ['required', 'string', 'max:120'],
@@ -176,6 +207,14 @@ class ColegioSedeController extends Controller
 
             $prev = $this->snapshot($sede);
 
+            if (($data['estado'] ?? null) === Sede::ESTADO_ACTIVA && $sede->tenant_id !== null) {
+                if (Tenant::find($sede->tenant_id)?->status !== Tenant::STATUS_ACTIVE) {
+                    $error = 'La sede sigue en configuracion y no puede activarse.';
+
+                    return;
+                }
+            }
+
             $sede->update([
                 'nombre' => $data['nombre'],
                 'direccion' => $data['direccion'] ?? $sede->direccion,
@@ -184,7 +223,8 @@ class ColegioSedeController extends Controller
 
             try {
                 TenantDataChanged::dispatch('sede', 'updated', $sede->nombre);
-            } catch (\Throwable) {}
+            } catch (\Throwable) {
+            }
         });
 
         if ($error !== null) {
@@ -210,6 +250,10 @@ class ColegioSedeController extends Controller
     {
         $tenant = Tenant::findOrFail($id);
 
+        if ($tenant->tipo === Tenant::TIPO_SEDE) {
+            return response()->json(['message' => 'Una sede hija no puede administrar sedes.'], 422);
+        }
+
         $error = null;
         $prev = null;
         $tenantIdHijo = null;
@@ -222,6 +266,12 @@ class ColegioSedeController extends Controller
                 return;
             }
 
+            if ($sede->tenant_id === null) {
+                $error = 'La sede principal no se puede eliminar.';
+
+                return;
+            }
+
             $prev = $this->snapshot($sede);
             $tenantIdHijo = $sede->tenant_id;
             $nombre = $sede->nombre;
@@ -229,7 +279,8 @@ class ColegioSedeController extends Controller
 
             try {
                 TenantDataChanged::dispatch('sede', 'deleted', $nombre);
-            } catch (\Throwable) {}
+            } catch (\Throwable) {
+            }
         });
 
         if ($error !== null) {

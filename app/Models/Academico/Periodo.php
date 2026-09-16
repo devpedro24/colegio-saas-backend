@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Periodo académico (periodos-academicos.md). Vive en la BD del tenant.
@@ -15,18 +16,18 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * Pertenece a un año lectivo; los periodos son contiguos y quedan dentro del
  * rango de fechas del año (RN-PA-003). Un periodo cerrado es inmutable (RN-PA-006).
  *
- * @property int                             $id
- * @property int                             $ano_lectivo_id
- * @property string                          $nombre
- * @property int                             $orden
- * @property \Illuminate\Support\Carbon       $fecha_inicio
- * @property \Illuminate\Support\Carbon       $fecha_fin
- * @property string|null                     $peso
- * @property string                          $estado
- * @property \Illuminate\Support\Carbon|null  $created_at
- * @property \Illuminate\Support\Carbon|null  $updated_at
- * @property \Illuminate\Support\Carbon|null  $deleted_at
- * @property-read \App\Models\Academico\AnoLectivo $anoLectivo
+ * @property int $id
+ * @property int $ano_lectivo_id
+ * @property string $nombre
+ * @property int $orden
+ * @property Carbon $fecha_inicio
+ * @property Carbon $fecha_fin
+ * @property string|null $peso
+ * @property string $estado
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
+ * @property-read AnoLectivo $anoLectivo
  */
 class Periodo extends Model
 {
@@ -38,7 +39,9 @@ class Periodo extends Model
      * planificado → abierto → cerrado.
      */
     public const ESTADO_PLANIFICADO = 'planificado';
+
     public const ESTADO_ABIERTO = 'abierto';
+
     public const ESTADO_CERRADO = 'cerrado';
 
     protected $table = 'periodos';

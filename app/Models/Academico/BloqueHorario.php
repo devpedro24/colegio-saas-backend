@@ -8,23 +8,24 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Bloque horario de una jornada (bloque 1, descanso, bloque 2, ...).
  * Base del horario semanal (Bloque C). Vive en la BD del tenant.
  *
- * @property int                             $id
- * @property int                             $jornada_id
- * @property string                          $nombre
- * @property string                          $hora_inicio
- * @property string                          $hora_fin
- * @property bool                            $es_descanso
- * @property int                             $orden
- * @property string                          $estado
- * @property \Illuminate\Support\Carbon|null  $created_at
- * @property \Illuminate\Support\Carbon|null  $updated_at
- * @property \Illuminate\Support\Carbon|null  $deleted_at
- * @property-read \App\Models\Academico\Jornada $jornada
+ * @property int $id
+ * @property int $jornada_id
+ * @property string $nombre
+ * @property string $hora_inicio
+ * @property string $hora_fin
+ * @property bool $es_descanso
+ * @property int $orden
+ * @property string $estado
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
+ * @property-read Jornada $jornada
  */
 class BloqueHorario extends Model
 {
@@ -32,6 +33,7 @@ class BloqueHorario extends Model
     use SoftDeletes;
 
     public const ESTADO_ACTIVO = 'activo';
+
     public const ESTADO_INACTIVO = 'inactivo';
 
     protected $table = 'bloques_horarios';

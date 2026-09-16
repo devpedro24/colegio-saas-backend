@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\BloqueHorario;
+use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
 /**
@@ -21,7 +23,7 @@ class BloqueHorarioController extends Controller
     public function index(Request $request): JsonResponse
     {
         $bloques = BloqueHorario::query()
-            ->with('jornada:id,nombre,sede_id')
+            ->with($this->jornadaRelation())
             ->when($request->filled('jornada_id'), fn ($q) => $q->where('jornada_id', (int) $request->query('jornada_id')))
             ->orderBy('jornada_id')
             ->orderBy('orden')
@@ -33,7 +35,7 @@ class BloqueHorarioController extends Controller
     /** Detalle de un bloque. */
     public function show(int $id): JsonResponse
     {
-        return response()->json(['data' => BloqueHorario::with('jornada:id,nombre,sede_id')->findOrFail($id)]);
+        return response()->json(['data' => BloqueHorario::with($this->jornadaRelation())->findOrFail($id)]);
     }
 
     /** Crea un bloque. */
@@ -63,12 +65,14 @@ class BloqueHorarioController extends Controller
         ]);
 
         AuditLogger::tenant($request->user(), 'CREATE', 'bloque_horario', (string) $bloque->id, null, $this->snapshot($bloque));
+        ConfigurationGate::maybeActivate($request->user());
 
         try {
             TenantDataChanged::dispatch('bloque_horario', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
-        return response()->json(['data' => $bloque->load('jornada:id,nombre,sede_id')], 201);
+        return response()->json(['data' => $bloque->load($this->jornadaRelation())], 201);
     }
 
     /** Edita un bloque. */
@@ -95,12 +99,14 @@ class BloqueHorarioController extends Controller
         $bloque->update($data);
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'bloque_horario', (string) $bloque->id, $prev, $this->snapshot($bloque));
+        ConfigurationGate::maybeActivate($request->user());
 
         try {
             TenantDataChanged::dispatch('bloque_horario', 'updated', $bloque->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
-        return response()->json(['data' => $bloque->load('jornada:id,nombre,sede_id')]);
+        return response()->json(['data' => $bloque->load($this->jornadaRelation())]);
     }
 
     /** Elimina (soft-delete) un bloque. */
@@ -115,7 +121,8 @@ class BloqueHorarioController extends Controller
 
         try {
             TenantDataChanged::dispatch('bloque_horario', 'deleted', $bloque->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }
@@ -152,5 +159,12 @@ class BloqueHorarioController extends Controller
             'orden' => $bloque->orden,
             'estado' => $bloque->estado,
         ];
+    }
+
+    private function jornadaRelation(): string
+    {
+        return Schema::hasColumn('jornadas', 'sede_id')
+            ? 'jornada:id,nombre,sede_id'
+            : 'jornada:id,nombre';
     }
 }

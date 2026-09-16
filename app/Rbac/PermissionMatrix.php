@@ -26,6 +26,7 @@ class PermissionMatrix
 {
     /** Marcas de configurable en las celdas. */
     public const CONFIGURABLE = 'cfg';        // configurable, por defecto OFF
+
     public const CONFIGURABLE_ON = 'cfg_on';  // configurable, por defecto ON
 
     /** Niveles estructurales (otorgado y bloqueado). */
@@ -77,6 +78,9 @@ class PermissionMatrix
             ['key' => 'usuarios.gestionar', 'module' => 'Usuarios y Roles', 'action' => 'Crear / editar / desactivar usuarios', 'cells' => ['rector' => 'crud']],
             ['key' => 'usuarios.asignar_roles', 'module' => 'Usuarios y Roles', 'action' => 'Asignar roles', 'cells' => ['rector' => 'editar']],
             ['key' => 'usuarios.ajustar_permisos', 'module' => 'Usuarios y Roles', 'action' => 'Ajustar permisos configurables', 'cells' => ['rector' => 'editar']],
+
+            // ---- Archivos ----
+            ['key' => 'archivos.gestionar', 'module' => 'Archivos', 'action' => 'Subir y retirar archivos del colegio', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_convivencia' => 'crud', 'coord_combinado' => 'crud', 'secretaria' => 'crud']],
 
             // ---- Notas y Consolidados ----
             ['key' => 'notas.registrar_materia_asignada', 'module' => 'Notas y Consolidados', 'action' => 'Registrar/editar notas en materia asignada', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'docente' => 'editar', 'director_grupo' => 'editar']],

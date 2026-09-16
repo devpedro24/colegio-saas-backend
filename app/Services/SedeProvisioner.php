@@ -15,13 +15,16 @@ use App\Models\Academico\Periodo;
 use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Support\Sedes\SedeLimits;
 use Database\Seeders\RbacSeeder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Throwable;
 
 /**
  * Provisiona una SEDE como tenant hijo del colegio (CU-003):
@@ -39,17 +42,29 @@ class SedeProvisioner
     /**
      * @param  array{slug:string, name:string, coordinador_email:string, coordinador_name?:?string, heredar:bool}  $data
      * @param  array<string, mixed>|null  $snapshotPreCapturado  configuracion del colegio
-     *                                    capturada fuera (evita run() anidado de Stancl
-     *                                    cuando se llama desde dentro del tenant).
+     *                                                           capturada fuera (evita run() anidado de Stancl
+     *                                                           cuando se llama desde dentro del tenant).
      * @return array{tenant: Tenant, password: string}
      */
     public function provision(Tenant $colegio, array $data, ?array $snapshotPreCapturado = null): array
     {
+        if (User::isImpersonationShadowEmail($data['coordinador_email'] ?? null)) {
+            throw new RuntimeException('El correo del coordinador pertenece a un namespace tecnico reservado.');
+        }
+
+        if ($colegio->tipo === Tenant::TIPO_SEDE || $colegio->parent_id !== null) {
+            throw new RuntimeException('Una sede no puede crear sedes hijas.');
+        }
+
+        if (($violation = SedeLimits::centralViolation($colegio)) !== null) {
+            throw new RuntimeException($violation);
+        }
+
         $slug = Str::slug($data['slug']);
 
         $colegioDomain = $colegio->domains()->first()?->domain;
         if ($colegioDomain === null) {
-            $colegioDomain = $colegio->slug . '.localhost';
+            $colegioDomain = $colegio->slug;
         }
 
         $domain = $slug.'.'.$colegioDomain;
@@ -58,7 +73,8 @@ class SedeProvisioner
             throw new RuntimeException("Ya existe una sede con el slug '{$slug}' en este colegio.");
         }
 
-        if ($colegio->domains()->where('domain', $domain)->exists()) {
+        if (DB::connection(config('tenancy.database.central_connection'))
+            ->table('domains')->where('domain', $domain)->exists()) {
             throw new RuntimeException("El subdominio '{$domain}' ya esta en uso.");
         }
 
@@ -72,54 +88,67 @@ class SedeProvisioner
 
         $tempPassword = Str::password(14);
 
-        /** @var Tenant $sede */
-        $sede = Tenant::create([
-            'name' => $data['name'],
-            'slug' => $slug,
-            'legal_name' => $colegio->legal_name,
-            'nit' => $colegio->nit,
-            'plan' => $colegio->plan,
-            'status' => Tenant::STATUS_CONFIGURING,
-            'tipo' => Tenant::TIPO_SEDE,
-            'parent_id' => $colegio->id,
-            // Contrasena temporal del coordinador CIFRADA (cast 'encrypted'):
-            // el superadmin puede verla mientras siga vigente.
-            'rector_temporary_password' => $tempPassword,
-            // El slug del padre en el JSON data: evita consultas extra en el
-            // listado del panel central.
-            'data' => ['parent_slug' => $colegio->slug],
-        ]);
+        $sede = null;
 
-        // Subdominio anidado: <sede>.<colegio>. En dev se visita como
-        // <sede>.<colegio>.localhost (middleware propio de identificacion).
-        $sede->domains()->create(['domain' => $domain]);
+        try {
+            /** @var Tenant $sede */
+            $sede = Tenant::create([
+                'name' => $data['name'],
+                'slug' => $slug,
+                'legal_name' => $colegio->legal_name,
+                'nit' => $colegio->nit,
+                'plan' => $colegio->plan,
+                'status' => Tenant::STATUS_PROVISIONING,
+                'tipo' => Tenant::TIPO_SEDE,
+                'parent_id' => $colegio->id,
+                'data' => ['parent_slug' => $colegio->slug],
+            ]);
 
-        // Dentro de la BD de la sede: RBAC + (opcional) coordinador
-        // + (opcional) configuracion heredada del colegio.
-        $sede->run(function () use ($data, $tempPassword, $snapshot) {
-            (new RbacSeeder(firstSeed: true))->run();
+            $sede->domains()->create(['domain' => $domain]);
 
-            if (! empty($data['coordinador_email'])) {
-                $coordinador = User::create([
-                    'name' => $data['coordinador_name'] ?? 'Coordinador',
-                    'email' => $data['coordinador_email'],
-                    'password' => Hash::make($tempPassword),
-                    'role' => 'coord_combinado',
-                    'status' => 'active',
-                    'must_change_password' => true,
-                ]);
+            $complete = $sede->run(function () use ($data, $tempPassword, $snapshot): bool {
+                // Las reconstrucciones de tabla de SQLite ejecutan VACUUM y no
+                // pueden vivir dentro de una transaccion. En PostgreSQL el
+                // esquema se limpia antes de la transaccion de datos igualmente.
+                $this->limpiarEsquemaSede();
 
-                $coordinador->assignRole('coord_combinado');
-            }
+                return DB::transaction(function () use ($data, $tempPassword, $snapshot): bool {
+                    (new RbacSeeder(firstSeed: true))->run();
 
-            if ($snapshot !== null) {
-                $this->applySnapshot($snapshot);
-            }
-        });
+                    if (! empty($data['coordinador_email'])) {
+                        $coordinador = User::create([
+                            'name' => $data['coordinador_name'] ?? 'Coordinador',
+                            'email' => $data['coordinador_email'],
+                            'password' => Hash::make($tempPassword),
+                            'role' => 'coord_combinado',
+                            'status' => 'active',
+                            'must_change_password' => true,
+                        ]);
 
-        // Provisioning sincrono y exitoso: la sede queda operativa (patron
-        // ConfigurationGate del colegio principal).
-        $sede->update(['status' => Tenant::STATUS_ACTIVE]);
+                        $coordinador->assignRole('coord_combinado');
+                    }
+
+                    if ($snapshot !== null) {
+                        $this->applySnapshot($snapshot);
+                    }
+
+                    return ConfigurationGate::isComplete();
+                });
+            });
+
+            // Nunca se marca activa por el solo hecho de crear la BD. Si no
+            // heredo (o la captura estaba incompleta) permanece configuring.
+            $sede->update([
+                'status' => $complete ? Tenant::STATUS_ACTIVE : Tenant::STATUS_CONFIGURING,
+            ]);
+        } catch (Throwable $exception) {
+            $this->discard($sede, $slug, $colegio->id, $exception);
+
+            throw new RuntimeException(
+                'No fue posible provisionar la sede. No se conservaron recursos parciales.',
+                previous: $exception,
+            );
+        }
 
         return [
             'tenant' => $sede,
@@ -134,16 +163,26 @@ class SedeProvisioner
      * @param  array{slug:string, coordinador_email:string, coordinador_name?:?string, heredar:bool}  $data
      * @return array{tenant: Tenant, password: string}
      */
-    public function provisionAndAttach(Tenant $colegio, Sede $sede, array $data): array
+    public function provisionAndAttach(Tenant $colegio, Sede $sede, array $data, ?array $snapshotPreCapturado = null): array
     {
-        $res = $this->provision($colegio, $data);
+        $res = $this->provision($colegio, $data, $snapshotPreCapturado);
 
-        $colegio->run(function () use ($sede, $res, $data) {
-            $sede->update([
-                'tenant_id' => $res['tenant']->id,
-                'coordinador_email' => $data['coordinador_email'],
-            ]);
-        });
+        try {
+            $colegio->run(function () use ($sede, $res, $data): void {
+                DB::transaction(function () use ($sede, $res, $data): void {
+                    $attached = Sede::query()->whereKey($sede->getKey())->lockForUpdate()->firstOrFail();
+                    $attached->update([
+                        'tenant_id' => $res['tenant']->id,
+                        'coordinador_email' => $data['coordinador_email'] ?? null,
+                        'coordinador_name' => $data['coordinador_name'] ?? null,
+                    ]);
+                });
+            });
+        } catch (Throwable $exception) {
+            $this->discard($res['tenant'], (string) $res['tenant']->slug, (string) $colegio->id, $exception);
+
+            throw new RuntimeException('No fue posible vincular la sede al colegio.', previous: $exception);
+        }
 
         return $res;
     }
@@ -179,8 +218,18 @@ class SedeProvisioner
      * referencian en la jerarquia organizacional. La BD recién migrada esta
      * vacia, asi que la operacion es segura.
      */
-    protected function limpiarEsquemaSede(): void
+    public function limpiarEsquemaSede(): void
     {
+        // SQLite no puede reconstruir una tabla mientras conserva un indice
+        // que referencia la columna a eliminar. PostgreSQL acepta el DROP IF
+        // EXISTS y luego elimina cualquier indice dependiente normalmente.
+        foreach ([
+            'jornadas_sede_id_nombre_unique',
+            'espacios_fisicos_sede_id_nombre_unique',
+        ] as $index) {
+            DB::statement("DROP INDEX IF EXISTS {$index}");
+        }
+
         foreach (['jornadas', 'grupos', 'espacios_fisicos'] as $tabla) {
             if (! Schema::hasTable($tabla) || ! Schema::hasColumn($tabla, 'sede_id')) {
                 continue;
@@ -244,6 +293,12 @@ class SedeProvisioner
      */
     public function applySnapshot(array $snapshot): void
     {
+        DB::transaction(fn () => $this->applySnapshotRows($snapshot));
+    }
+
+    /** @param array<string, mixed> $snapshot */
+    private function applySnapshotRows(array $snapshot): void
+    {
         $anoMap = [];
         if (isset($snapshot['anos'])) {
             foreach ($snapshot['anos'] as $ano) {
@@ -277,8 +332,11 @@ class SedeProvisioner
 
         if (isset($snapshot['escalas'])) {
             foreach ($snapshot['escalas'] as $escala) {
+                if (! isset($anoMap[$escala['ano_lectivo_id']])) {
+                    continue;
+                }
                 EscalaValorativa::firstOrCreate(
-                    ['ano_lectivo_id' => $anoMap[$escala['ano_lectivo_id']] ?? $escala['ano_lectivo_id'], 'nombre' => $escala['nombre'], 'nivel_educativo' => $escala['nivel_educativo']],
+                    ['ano_lectivo_id' => $anoMap[$escala['ano_lectivo_id']], 'nombre' => $escala['nombre'], 'nivel_educativo' => $escala['nivel_educativo']],
                     ['tipo' => $escala['tipo'], 'valor_min' => $escala['valor_min'], 'valor_max' => $escala['valor_max'], 'decimales' => $escala['decimales']],
                 );
             }
@@ -286,8 +344,11 @@ class SedeProvisioner
 
         if (isset($snapshot['metodos'])) {
             foreach ($snapshot['metodos'] as $metodo) {
+                if (! isset($anoMap[$metodo['ano_lectivo_id']])) {
+                    continue;
+                }
                 MetodoAprobacion::firstOrCreate(
-                    ['ano_lectivo_id' => $anoMap[$metodo['ano_lectivo_id']] ?? $metodo['ano_lectivo_id'], 'ambito' => $metodo['ambito']],
+                    ['ano_lectivo_id' => $anoMap[$metodo['ano_lectivo_id']], 'ambito' => $metodo['ambito']],
                     ['calculo_nota' => $metodo['calculo_nota'], 'nota_minima' => $metodo['nota_minima']],
                 );
             }
@@ -295,8 +356,11 @@ class SedeProvisioner
 
         if (isset($snapshot['modelos'])) {
             foreach ($snapshot['modelos'] as $modelo) {
+                if (! isset($anoMap[$modelo['ano_lectivo_id']])) {
+                    continue;
+                }
                 ModeloPedagogico::firstOrCreate(
-                    ['ano_lectivo_id' => $anoMap[$modelo['ano_lectivo_id']] ?? $modelo['ano_lectivo_id'], 'nivel_educativo' => $modelo['nivel_educativo']],
+                    ['ano_lectivo_id' => $anoMap[$modelo['ano_lectivo_id']], 'nivel_educativo' => $modelo['nivel_educativo']],
                     ['docente_unico' => $modelo['docente_unico'], 'salon_fijo' => $modelo['salon_fijo'], 'tiene_director_grupo' => $modelo['tiene_director_grupo']],
                 );
             }
@@ -325,6 +389,28 @@ class SedeProvisioner
                     );
                 }
             }
+        }
+    }
+
+    private function discard(?Tenant $sede, string $slug, string $parentId, Throwable $cause): void
+    {
+        try {
+            $partial = $sede ?? Tenant::query()
+                ->where('parent_id', $parentId)
+                ->where('slug', $slug)
+                ->first();
+
+            if ($partial !== null) {
+                $partial->domains()->delete();
+                $partial->delete();
+            }
+        } catch (Throwable $cleanup) {
+            Log::critical('Fallo la compensacion del provisioning de sede.', [
+                'parent_id' => $parentId,
+                'slug' => $slug,
+                'cause' => $cause->getMessage(),
+                'cleanup_error' => $cleanup->getMessage(),
+            ]);
         }
     }
 }

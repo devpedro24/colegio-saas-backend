@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -30,6 +31,8 @@ class AccountTest extends TestCase
             'password' => Hash::make(self::PASSWORD),
             'status' => User::STATUS_ACTIVE,
             'must_change_password' => false,
+            // Las mutaciones de cuenta de plataforma estan detras del gate MFA.
+            'two_factor_confirmed_at' => now(),
         ], $attributes));
     }
 
@@ -139,5 +142,46 @@ class AccountTest extends TestCase
             'email' => $user->email,
             'password' => self::PASSWORD,
         ])->assertStatus(422)->assertJsonPath('errors.email.0', 'El usuario no esta activo.');
+    }
+
+    public function test_estado_oauth_es_de_un_solo_uso_y_no_acepta_redirect_externo(): void
+    {
+        config()->set('services.google.client_id', 'google-client-test');
+        config()->set('services.google.client_secret', 'google-secret-test');
+        config()->set('app.frontend_url', 'http://localhost:5173');
+
+        $user = $this->createSuperadmin();
+        $token = $this->createTokenFor($user);
+        $connect = $this->withHeader('Origin', 'https://evil.example')
+            ->withToken($token)
+            ->postJson('/api/account/google/connect')
+            ->assertOk();
+
+        $query = [];
+        parse_str((string) parse_url((string) $connect->json('url'), PHP_URL_QUERY), $query);
+        $this->assertArrayHasKey('state', $query);
+
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => Http::response(['access_token' => 'oauth-token']),
+            'https://www.googleapis.com/oauth2/v3/userinfo' => Http::response([
+                'sub' => 'google-user-123',
+                'email' => 'VINCULADO@EXAMPLE.COM',
+            ]),
+        ]);
+
+        $callback = '/api/account/google/callback?'.http_build_query([
+            'code' => 'codigo-unico',
+            'state' => $query['state'],
+        ]);
+
+        $this->get($callback)
+            ->assertRedirect('http://localhost:5173/account/settings?google=linked');
+        $this->assertSame('google-user-123', $user->fresh()->google_id);
+        $this->assertSame('vinculado@example.com', $user->fresh()->google_email);
+
+        // El nonce se consume antes de hablar de nuevo con Google.
+        $this->get($callback)
+            ->assertRedirect('http://localhost:5173/account/settings?google=error');
+        Http::assertSentCount(2);
     }
 }

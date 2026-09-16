@@ -4,27 +4,29 @@ declare(strict_types=1);
 
 namespace App\Models\Academico;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Jornada académica (mañana/tarde/noche) de una sede.
  * Agrupa los bloques horarios. Vive en la BD del tenant.
  *
- * @property int                             $id
- * @property int                             $sede_id
- * @property string                          $nombre
- * @property string|null                     $hora_inicio
- * @property string|null                     $hora_fin
- * @property string                          $estado
- * @property \Illuminate\Support\Carbon|null  $created_at
- * @property \Illuminate\Support\Carbon|null  $updated_at
- * @property \Illuminate\Support\Carbon|null  $deleted_at
- * @property-read \App\Models\Academico\Sede $sede
- * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Academico\BloqueHorario> $bloques
+ * @property int $id
+ * @property int $sede_id
+ * @property string $nombre
+ * @property string|null $hora_inicio
+ * @property string|null $hora_fin
+ * @property string $estado
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
+ * @property-read Sede $sede
+ * @property-read Collection<int, BloqueHorario> $bloques
  */
 class Jornada extends Model
 {
@@ -32,6 +34,7 @@ class Jornada extends Model
     use SoftDeletes;
 
     public const ESTADO_ACTIVA = 'activa';
+
     public const ESTADO_INACTIVA = 'inactiva';
 
     protected $table = 'jornadas';

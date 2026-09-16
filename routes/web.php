@@ -15,9 +15,8 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
     Route::domain($centralDomain)->group(function () {
         Route::get('/', function () {
             return response()->json([
+                'ok' => true,
                 'contexto' => 'central',
-                'plataforma' => config('app.name'),
-                'colegios' => \App\Models\Tenant::count(),
             ]);
         });
     });

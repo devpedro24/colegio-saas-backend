@@ -2,11 +2,10 @@
 
 declare(strict_types=1);
 
-use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\AccountController;
+use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\MfaController;
 use App\Http\Controllers\Api\RoleController;
-use App\Http\Controllers\Api\UserController;
 use App\Http\Middleware\EnsureTenantActive;
 use App\Http\Middleware\InitializeTenancyByDomainOrSubdomain;
 use Illuminate\Http\Request;
@@ -32,21 +31,10 @@ Route::middleware([
     PreventAccessFromCentralDomains::class,
 ])->group(function () {
     // Endpoint de diagnostico: confirma en que tenant estamos y con que BD.
-    Route::get('/', function () {
-        /** @var \App\Models\Tenant $tenant */
-        $tenant = tenant();
-
-        return response()->json([
-            'contexto' => 'tenant',
-            'colegio' => $tenant->name,
-            'slug' => $tenant->slug,
-            'tenant_id' => $tenant->id,
-            'plan' => $tenant->plan,
-            'estado' => $tenant->status,
-            'base_de_datos' => $tenant->database()->getName(),
-            'usuarios' => \App\Models\User::count(),
-        ]);
-    });
+    Route::get('/', fn () => response()->json([
+        'ok' => true,
+        'contexto' => 'tenant',
+    ]));
 });
 
 /*
@@ -65,7 +53,7 @@ Route::middleware([
     EnsureTenantActive::class,
 ])->prefix('api')->group(function () {
     // Login del colegio (rector, coordinador, etc.).
-    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
 
     // Callback de Google (anclar cuenta): PUBLICO (lo llama Google tras el
     // consentimiento). No puede ir bajo auth:sanctum.
@@ -76,12 +64,13 @@ Route::middleware([
     // ningun colegio registrado).
     Route::get('/tenant-status', fn () => response()->json(['ok' => true]));
 
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:sanctum', 'impersonation:when-present'])->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
 
         // Autorizacion de canales privados (WebSockets) del colegio (tenant actual).
-        Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request));
+        Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request))
+            ->middleware('mfa.enforced');
 
         // MFA TOTP (segundo factor) del usuario del colegio.
         Route::post('/mfa/setup', [MfaController::class, 'setup']);
@@ -91,28 +80,17 @@ Route::middleware([
         // Ajustes de cuenta del usuario autenticado (perfil, email, clave,
         // desactivacion y vinculacion de Google).
         Route::get('/account', [AccountController::class, 'index']);
-        Route::put('/account/profile', [AccountController::class, 'updateProfile']);
-        Route::post('/account/email', [AccountController::class, 'changeEmail']);
-        Route::post('/account/password', [AccountController::class, 'changePassword']);
-        Route::post('/account/deactivate', [AccountController::class, 'deactivate']);
-        Route::post('/account/google/connect', [AccountController::class, 'googleConnect']);
-        Route::delete('/account/google', [AccountController::class, 'googleUnlink']);
+        Route::put('/account/profile', [AccountController::class, 'updateProfile'])->middleware('mfa.enforced');
+        Route::post('/account/email', [AccountController::class, 'changeEmail'])->middleware('mfa.enforced');
+        Route::post('/account/password', [AccountController::class, 'changePassword'])->middleware('mfa.enforced');
+        Route::post('/account/deactivate', [AccountController::class, 'deactivate'])->middleware('mfa.enforced');
+        Route::post('/account/google/connect', [AccountController::class, 'googleConnect'])->middleware('mfa.enforced');
+        Route::delete('/account/google', [AccountController::class, 'googleUnlink'])->middleware('mfa.enforced');
 
         // RBAC: solo quien tenga el permiso 'usuarios.ajustar_permisos' (el rector).
-        Route::middleware('can:usuarios.ajustar_permisos')->group(function () {
+        Route::middleware(['mfa.enforced', 'can:usuarios.ajustar_permisos'])->group(function () {
             Route::get('/rbac/roles', [RoleController::class, 'index']);
             Route::put('/rbac/roles/{role}/permissions/{permission}', [RoleController::class, 'togglePermission']);
-        });
-
-        // Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion
-        // puede apuntar a una sede (tenant hijo) y se escribe en su propia BD.
-        Route::middleware('can:usuarios.gestionar')->prefix('usuarios')->group(function () {
-            Route::get('/', [UserController::class, 'index']);
-            Route::post('/', [UserController::class, 'store']);
-            Route::put('/{id}', [UserController::class, 'update']);
-            Route::delete('/{id}', [UserController::class, 'destroy']);
-            Route::get('/{id}/temporal-password', [UserController::class, 'temporalPassword']);
-            Route::post('/{id}/reset-password', [UserController::class, 'resetPassword']);
         });
 
         /*
@@ -122,6 +100,8 @@ Route::middleware([
          | para que ambos caminos apunten a los MISMOS controladores del colegio.
          | Aquí ya estamos bajo `api` + `auth:sanctum` + tenancy por subdominio.
          */
-        require base_path('routes/tenant_academico.php');
+        Route::middleware('mfa.enforced')->group(function () {
+            require base_path('routes/tenant_academico.php');
+        });
     });
 });

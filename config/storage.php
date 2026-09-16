@@ -12,8 +12,8 @@ declare(strict_types=1);
 |   - Cuotas de almacenamiento por PLAN (GB).
 |   - Whitelist MIME (sin ejecutables).
 |   - Tamano maximo por archivo.
-|   - Antivirus como ADAPTADOR (interface FileScanner; NullScanner aprobador
-|     hasta enchufar ClamAV).
+|   - Antivirus como ADAPTADOR (ClamAV INSTREAM en produccion; NullScanner
+|     solo para desarrollo/tests controlados).
 |   - URLs firmadas de corta vida para descarga.
 */
 
@@ -59,8 +59,15 @@ return [
     // Vida de las URLs firmadas de descarga (minutos) (RN-AC-004).
     'signed_url_minutes' => (int) env('STORAGE_SIGNED_URL_MINUTES', 15),
 
-    // Antivirus: interface a implementar; stub aprobador mientras no se enchufe
-    // ClamAV (D-STORAGE, D-ANTIVIRUS).
+    // Antivirus intercambiable. En produccion se recomienda `clamav`; los
+    // errores de conexion/timeout fallan cerrados y rechazan el upload.
     'scanner' => env('STORAGE_SCANNER', 'null'),
+
+    'clamav' => [
+        'endpoint' => env('CLAMAV_ENDPOINT', 'tcp://127.0.0.1:3310'),
+        'connect_timeout_seconds' => (float) env('CLAMAV_CONNECT_TIMEOUT_SECONDS', 3),
+        'read_timeout_seconds' => (int) env('CLAMAV_READ_TIMEOUT_SECONDS', 30),
+        'chunk_bytes' => (int) env('CLAMAV_CHUNK_BYTES', 65536),
+    ],
 
 ];

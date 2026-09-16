@@ -22,8 +22,8 @@ class TenantChanged implements ShouldBroadcastNow
     use SerializesModels;
 
     /**
-     * @param string $tenantId UUID del colegio
-     * @param string $reason   'disabled' | 'enabled' | 'plan' | 'rbac'
+     * @param  string  $tenantId  ID interno del colegio
+     * @param  string  $reason  'disabled' | 'enabled' | 'plan' | 'rbac'
      */
     public function __construct(public string $tenantId, public string $reason) {}
 

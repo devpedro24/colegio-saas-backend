@@ -63,7 +63,7 @@ class SedeTenantTest extends TestCase
     {
         $sede = $this->makeSedeTenant();
 
-        (new SedeProvisioner())->bajarPorId($sede->id);
+        (new SedeProvisioner)->bajarPorId($sede->id);
 
         $this->assertSame(Tenant::STATUS_IN_RETENTION, $sede->fresh()->status);
         $this->assertSame(0, $sede->fresh()->domains()->count());
@@ -71,7 +71,7 @@ class SedeTenantTest extends TestCase
 
     public function test_bajar_sede_con_id_null_no_falla(): void
     {
-        (new SedeProvisioner())->bajarPorId(null);
+        (new SedeProvisioner)->bajarPorId(null);
 
         $this->assertTrue(true);
     }

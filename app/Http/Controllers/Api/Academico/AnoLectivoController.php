@@ -4,13 +4,15 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\Periodo;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -83,7 +85,8 @@ class AnoLectivoController extends Controller
 
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)], 201);
     }
@@ -106,6 +109,18 @@ class AnoLectivoController extends Controller
             'num_periodos' => ['nullable', 'integer', 'min:1', 'max:12'],
             'tiene_quinto_periodo' => ['nullable', 'boolean'],
         ]);
+
+        if ($ano->estado !== AnoLectivo::ESTADO_PLANIFICADO) {
+            $estructuraCambio = $data['tipo_calendario'] !== $ano->tipo_calendario
+                || ! $ano->fecha_inicio->isSameDay($data['fecha_inicio'])
+                || ! $ano->fecha_fin->isSameDay($data['fecha_fin'])
+                || (int) ($data['num_periodos'] ?? $ano->num_periodos) !== $ano->num_periodos
+                || (bool) ($data['tiene_quinto_periodo'] ?? $ano->tiene_quinto_periodo) !== $ano->tiene_quinto_periodo;
+
+            if ($estructuraCambio) {
+                abort(422, 'La estructura del calendario no puede cambiar después de iniciar el año lectivo.');
+            }
+        }
 
         // RN-PA-007: el tipo de calendario no puede cambiar si ya hay años activos o cerrados.
         if ($data['tipo_calendario'] !== $ano->tipo_calendario) {
@@ -147,7 +162,8 @@ class AnoLectivoController extends Controller
 
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)]);
     }
@@ -158,24 +174,41 @@ class AnoLectivoController extends Controller
      */
     public function iniciar(Request $request, string $id): JsonResponse
     {
-        $ano = AnoLectivo::findOrFail($id);
+        DB::beginTransaction();
+        try {
+            $ano = AnoLectivo::query()->lockForUpdate()->findOrFail($id);
 
-        if ($ano->estado !== AnoLectivo::ESTADO_PLANIFICADO) {
-            abort(422, 'Solo un año lectivo en estado planificado puede iniciarse.');
+            if ($ano->estado !== AnoLectivo::ESTADO_PLANIFICADO) {
+                abort(422, 'Solo un año lectivo en estado planificado puede iniciarse.');
+            }
+
+            // RN-PA-001: un único año lectivo en curso a la vez.
+            $otroEnCurso = AnoLectivo::query()
+                ->where('estado', AnoLectivo::ESTADO_EN_CURSO)
+                ->where('id', '!=', $ano->id)
+                ->lockForUpdate()
+                ->first();
+
+            if ($otroEnCurso) {
+                abort(422, 'Ya existe un año lectivo en curso. Solo puede haber uno a la vez (RN-PA-001).');
+            }
+
+            $expected = $ano->num_periodos + ($ano->tiene_quinto_periodo ? 1 : 0);
+            if ($ano->periodos()->lockForUpdate()->get()->count() !== $expected) {
+                abort(422, "El año lectivo requiere {$expected} periodos configurados antes de iniciarse.");
+            }
+
+            if (! ConfigurationGate::hasCompleteCalendar($ano)) {
+                abort(422, 'Los periodos deben cubrir todo el año lectivo, en orden y sin huecos, antes de iniciarlo.');
+            }
+
+            $prev = $this->snapshot($ano);
+            $ano->update(['estado' => AnoLectivo::ESTADO_EN_CURSO]);
+            DB::commit();
+        } catch (\Throwable $exception) {
+            DB::rollBack();
+            throw $exception;
         }
-
-        // RN-PA-001: un único año lectivo en curso a la vez.
-        $otroEnCurso = AnoLectivo::query()
-            ->where('estado', AnoLectivo::ESTADO_EN_CURSO)
-            ->where('id', '!=', $ano->id)
-            ->exists();
-
-        if ($otroEnCurso) {
-            abort(422, 'Ya existe un año lectivo en curso. Solo puede haber uno a la vez (RN-PA-001).');
-        }
-
-        $prev = $this->snapshot($ano);
-        $ano->update(['estado' => AnoLectivo::ESTADO_EN_CURSO]);
 
         AuditLogger::tenant(
             $request->user(),
@@ -187,10 +220,10 @@ class AnoLectivoController extends Controller
             'Inicio del año lectivo (planificado → en_curso).',
         );
 
-        
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)]);
     }
@@ -198,14 +231,33 @@ class AnoLectivoController extends Controller
     /** Transición: en_curso → cerrado (RN-PA-006, datos inmutables tras el cierre). */
     public function cerrar(Request $request, string $id): JsonResponse
     {
-        $ano = AnoLectivo::findOrFail($id);
+        DB::beginTransaction();
+        try {
+            $ano = AnoLectivo::query()->lockForUpdate()->findOrFail($id);
 
-        if ($ano->estado !== AnoLectivo::ESTADO_EN_CURSO) {
-            abort(422, 'Solo un año lectivo en curso puede cerrarse.');
+            if ($ano->estado !== AnoLectivo::ESTADO_EN_CURSO) {
+                abort(422, 'Solo un año lectivo en curso puede cerrarse.');
+            }
+
+            $expected = $ano->num_periodos + ($ano->tiene_quinto_periodo ? 1 : 0);
+            $periodos = $ano->periodos()->lockForUpdate()->get();
+            if ($periodos->count() !== $expected || $periodos->contains(
+                fn ($periodo): bool => $periodo->estado !== Periodo::ESTADO_CERRADO,
+            )) {
+                abort(422, "Deben existir y estar cerrados los {$expected} periodos antes de cerrar el año lectivo.");
+            }
+
+            if (! ConfigurationGate::hasCompleteCalendar($ano)) {
+                abort(422, 'Los periodos deben conservar la cobertura completa y continua antes de cerrar el año lectivo.');
+            }
+
+            $prev = $this->snapshot($ano);
+            $ano->update(['estado' => AnoLectivo::ESTADO_CERRADO]);
+            DB::commit();
+        } catch (\Throwable $exception) {
+            DB::rollBack();
+            throw $exception;
         }
-
-        $prev = $this->snapshot($ano);
-        $ano->update(['estado' => AnoLectivo::ESTADO_CERRADO]);
 
         AuditLogger::tenant(
             $request->user(),
@@ -217,10 +269,10 @@ class AnoLectivoController extends Controller
             'Cierre del año lectivo (en_curso → cerrado).',
         );
 
-        
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)]);
     }

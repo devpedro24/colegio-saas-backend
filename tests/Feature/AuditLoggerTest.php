@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Jobs\PersistAuditLog;
+use App\Models\PlatformAuditLog;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Schema;
+use LogicException;
 use Tests\TestCase;
 
 /**
@@ -38,8 +40,70 @@ class AuditLoggerTest extends TestCase
         // Simula una caida del subsistema de auditoria: la tabla no existe.
         Schema::drop('platform_audit_logs');
 
-        AuditLogger::platform(null, 'CREATE', 'tenant', 'abc-123');
+        AuditLogger::platform(
+            null,
+            'UPDATE',
+            'tenant',
+            'abc-123',
+            ['status' => 'configuring'],
+            ['status' => 'active'],
+            'Configuracion completa',
+            'tenant-short-id',
+        );
 
-        Bus::assertDispatched(PersistAuditLog::class);
+        Bus::assertDispatched(PersistAuditLog::class, function (PersistAuditLog $job): bool {
+            $attributes = $job->payload['attributes'];
+
+            return $attributes['valor_previo'] === ['status' => 'configuring']
+                && $attributes['valor_nuevo'] === ['status' => 'active']
+                && $attributes['motivo'] === 'Configuracion completa'
+                && $attributes['tenant_id'] === 'tenant-short-id';
+        });
+    }
+
+    public function test_modelo_de_auditoria_rechaza_update_y_delete(): void
+    {
+        $log = PlatformAuditLog::create([
+            'accion' => 'CREATE',
+            'recurso' => 'tenant',
+        ]);
+
+        try {
+            $log->update(['accion' => 'UPDATE']);
+            $this->fail('El modelo permitio modificar evidencia.');
+        } catch (LogicException) {
+            $this->assertSame('CREATE', $log->fresh()->accion);
+        }
+
+        $this->expectException(LogicException::class);
+        $log->delete();
+    }
+
+    public function test_fallback_tenant_preserva_antes_despues_motivo_y_suplantador(): void
+    {
+        Bus::fake();
+
+        // La BD central no contiene audit_logs (esa tabla vive en el tenant),
+        // por lo que aqui se activa deliberadamente el fallback.
+        AuditLogger::tenant(
+            null,
+            'UPDATE',
+            'archivo',
+            '42',
+            ['estado' => 'activo'],
+            ['estado' => 'eliminado'],
+            'Solicitud de soporte SEC-42',
+            'admin@plataforma.test',
+        );
+
+        Bus::assertDispatched(PersistAuditLog::class, function (PersistAuditLog $job): bool {
+            $attributes = $job->payload['attributes'];
+
+            return $attributes['valor_previo'] === ['estado' => 'activo']
+                && $attributes['valor_nuevo'] === ['estado' => 'eliminado']
+                && $attributes['motivo'] === 'Solicitud de soporte SEC-42'
+                && $attributes['impersonated_by'] === 'admin@plataforma.test'
+                && ! array_key_exists('tenant_id', $attributes);
+        });
     }
 }

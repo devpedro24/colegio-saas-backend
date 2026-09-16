@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Spatie\Permission\PermissionRegistrar;
 use Stancl\JobPipeline\JobPipeline;
 use Stancl\Tenancy\Events;
 use Stancl\Tenancy\Jobs;
@@ -116,8 +118,8 @@ class TenancyServiceProvider extends ServiceProvider
     protected function forgetPermissionCacheOnTenancySwitch(): void
     {
         $forget = function () {
-            if (app()->bound(\Spatie\Permission\PermissionRegistrar::class)) {
-                app(\Spatie\Permission\PermissionRegistrar::class)->forgetCachedPermissions();
+            if (app()->bound(PermissionRegistrar::class)) {
+                app(PermissionRegistrar::class)->forgetCachedPermissions();
             }
         };
 
@@ -162,7 +164,7 @@ class TenancyServiceProvider extends ServiceProvider
         ];
 
         foreach (array_reverse($tenancyMiddleware) as $middleware) {
-            $this->app[\Illuminate\Contracts\Http\Kernel::class]->prependToMiddlewarePriority($middleware);
+            $this->app[Kernel::class]->prependToMiddlewarePriority($middleware);
         }
     }
 }

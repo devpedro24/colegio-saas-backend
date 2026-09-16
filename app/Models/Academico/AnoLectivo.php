@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace App\Models\Academico;
 
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Año lectivo del colegio (RN-PA-001..008). Vive en la BD del tenant.
@@ -16,18 +18,18 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * Agrupa los periodos académicos y define el calendario (A o B) del año.
  * Solo un año puede estar 'en_curso' a la vez (RN-PA-001).
  *
- * @property int                             $id
- * @property string                          $nombre
- * @property string                          $tipo_calendario
- * @property \Illuminate\Support\Carbon       $fecha_inicio
- * @property \Illuminate\Support\Carbon       $fecha_fin
- * @property int                             $num_periodos
- * @property bool                            $tiene_quinto_periodo
- * @property string                          $estado
- * @property \Illuminate\Support\Carbon|null  $created_at
- * @property \Illuminate\Support\Carbon|null  $updated_at
- * @property \Illuminate\Support\Carbon|null  $deleted_at
- * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Academico\Periodo> $periodos
+ * @property int $id
+ * @property string $nombre
+ * @property string $tipo_calendario
+ * @property Carbon $fecha_inicio
+ * @property Carbon $fecha_fin
+ * @property int $num_periodos
+ * @property bool $tiene_quinto_periodo
+ * @property string $estado
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
+ * @property-read Collection<int, Periodo> $periodos
  */
 class AnoLectivo extends Model
 {
@@ -39,12 +41,16 @@ class AnoLectivo extends Model
      * planificado → en_curso → cerrado → archivado.
      */
     public const ESTADO_PLANIFICADO = 'planificado';
+
     public const ESTADO_EN_CURSO = 'en_curso';
+
     public const ESTADO_CERRADO = 'cerrado';
+
     public const ESTADO_ARCHIVADO = 'archivado';
 
     /** Tipos de calendario académico soportados (periodos-academicos.md). */
     public const TIPO_A = 'A';   // febrero–noviembre; nombre "AAAA"
+
     public const TIPO_B = 'B';   // septiembre–junio; nombre "AAAA-AAAA"
 
     protected $table = 'anos_lectivos';

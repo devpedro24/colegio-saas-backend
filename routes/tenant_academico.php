@@ -16,7 +16,6 @@ use App\Http\Controllers\Api\Academico\NivelController;
 use App\Http\Controllers\Api\Academico\PeriodoController;
 use App\Http\Controllers\Api\Academico\SedeController;
 use App\Http\Controllers\Api\Platform\StorageController;
-use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\UserController;
 use App\Services\ConfigurationGate;
 use Illuminate\Support\Facades\Route;
@@ -94,7 +93,7 @@ Route::middleware('can:academico.estructura.gestionar')->prefix('estructura')->g
     Route::get('/sedes/{id}', [SedeController::class, 'show']);
     Route::put('/sedes/{id}', [SedeController::class, 'update']);
     Route::delete('/sedes/{id}', [SedeController::class, 'destroy']);
-        Route::post('/sedes/{id}/heredar', [SedeController::class, 'heredar']);
+    Route::post('/sedes/{id}/heredar', [SedeController::class, 'heredar']);
 
     // Jornadas (pertenecen a una sede)
     Route::get('/jornadas', [JornadaController::class, 'index']);
@@ -139,10 +138,12 @@ Route::middleware('can:academico.estructura.gestionar')->prefix('estructura')->g
     Route::delete('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'destroy']);
 });
 
-// Pipeline de archivos por tenant (RN-AC-001..006): cualquier usuario autenticado
-// del colegio (o el superadmin suplantando) puede subir a su cuota. La descarga
-// se hace con URL firmada generada por StorageService (ruta central).
-Route::post('/archivos', [StorageController::class, 'store']);
+// Pipeline de archivos por tenant (RN-AC-001..006): requiere el permiso
+// `archivos.gestionar`; la descarga usa una URL firmada generada por el servicio.
+Route::middleware('can:archivos.gestionar')->group(function () {
+    Route::post('/archivos', [StorageController::class, 'store']);
+    Route::delete('/archivos/{file}', [StorageController::class, 'destroy']);
+});
 
 // Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion
 // puede apuntar a una sede (tenant hijo) y se escribe en su propia BD.
@@ -152,6 +153,5 @@ Route::middleware('can:usuarios.gestionar')->prefix('usuarios')->group(function 
     Route::post('/', [UserController::class, 'store']);
     Route::put('/{id}', [UserController::class, 'update']);
     Route::delete('/{id}', [UserController::class, 'destroy']);
-    Route::get('/{id}/temporal-password', [UserController::class, 'temporalPassword']);
     Route::post('/{id}/reset-password', [UserController::class, 'resetPassword']);
 });

@@ -39,9 +39,7 @@ class PersistAuditLog implements ShouldQueue
     /**
      * @param  array{target: 'platform'|'tenant', tenant_id?: ?string, attributes: array<string,mixed>}  $payload
      */
-    public function __construct(public array $payload)
-    {
-    }
+    public function __construct(public array $payload) {}
 
     public function handle(): void
     {

@@ -8,6 +8,7 @@ use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Tenancy\TenantDatabaseName;
 use Illuminate\Console\Command;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -105,7 +106,7 @@ class RenameTenantDatabases extends Command
 
         try {
             $central->statement('ALTER DATABASE "'.$current.'" RENAME TO "'.$target.'"');
-        } catch (\Illuminate\Database\QueryException $e) {
+        } catch (QueryException $e) {
             // Postgres rechaza renombrar una BD con sesiones activas (55006):
             // se detienen y se reintenta una sola vez.
             if ($e->getPrevious() instanceof \PDOException

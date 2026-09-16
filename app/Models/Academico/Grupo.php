@@ -8,27 +8,28 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Grupo (curso concreto): grado + año lectivo + jornada (RN-JO-002).
  * Unidad sobre la que se asignan docentes y se agrupan estudiantes.
  * Vive en la BD del tenant.
  *
- * @property int                             $id
- * @property int                             $grado_id
- * @property int                             $ano_lectivo_id
- * @property int|null                        $jornada_id
- * @property int|null                        $sede_id
- * @property string                          $nombre
- * @property int|null                        $cupo_maximo
- * @property string                          $estado
- * @property \Illuminate\Support\Carbon|null  $created_at
- * @property \Illuminate\Support\Carbon|null  $updated_at
- * @property \Illuminate\Support\Carbon|null  $deleted_at
- * @property-read \App\Models\Academico\Grado $grado
- * @property-read \App\Models\Academico\AnoLectivo $anoLectivo
- * @property-read \App\Models\Academico\Jornada|null $jornada
- * @property-read \App\Models\Academico\Sede|null $sede
+ * @property int $id
+ * @property int $grado_id
+ * @property int $ano_lectivo_id
+ * @property int|null $jornada_id
+ * @property int|null $sede_id
+ * @property string $nombre
+ * @property int|null $cupo_maximo
+ * @property string $estado
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
+ * @property-read Grado $grado
+ * @property-read AnoLectivo $anoLectivo
+ * @property-read Jornada|null $jornada
+ * @property-read Sede|null $sede
  */
 class Grupo extends Model
 {
@@ -36,6 +37,7 @@ class Grupo extends Model
     use SoftDeletes;
 
     public const ESTADO_ACTIVO = 'activo';
+
     public const ESTADO_INACTIVO = 'inactivo';
 
     protected $table = 'grupos';

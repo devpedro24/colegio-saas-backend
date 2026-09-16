@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use App\Services\TenantProvisioner;
+use App\Tenancy\TenantDatabaseName;
 use Illuminate\Console\Command;
 use RuntimeException;
 
@@ -47,9 +48,9 @@ class CreateTenant extends Command
         $this->newLine();
         $this->info('Colegio provisionado correctamente.');
         $this->table(['Campo', 'Valor'], [
-            ['Tenant ID (UUID)', $tenant->id],
-            ['Base de datos', 'tenant'.$tenant->id],
-            ['Subdominio', $tenant->slug.'.localhost'],
+            ['Tenant ID', $tenant->id],
+            ['Base de datos', $tenant->getInternal('db_name') ?? TenantDatabaseName::for($tenant)],
+            ['Subdominio', $tenant->slug.'.'.config('tenancy.tenant_base_domain', 'localhost')],
             ['Rector', (string) $this->argument('rector_email')],
             ['Contrasena temporal', $tempPassword],
         ]);

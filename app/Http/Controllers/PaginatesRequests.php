@@ -28,6 +28,7 @@ use Illuminate\Http\Request;
 trait PaginatesRequests
 {
     private const ALLOWED_PER_PAGE = [5, 10, 15, 20, 25, 50];
+
     private const DEFAULT_PER_PAGE = 5;
 
     protected function resolvePerPage(Request $request): int

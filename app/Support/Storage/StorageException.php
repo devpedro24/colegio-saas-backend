@@ -12,6 +12,4 @@ use RuntimeException;
  * Extiende RuntimeException para que los controladores puedan responder 422
  * con el mensaje en espanol sin acoplar la capa de negocio.
  */
-class StorageException extends RuntimeException
-{
-}
+class StorageException extends RuntimeException {}

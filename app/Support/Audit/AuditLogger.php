@@ -6,8 +6,9 @@ namespace App\Support\Audit;
 
 use App\Jobs\PersistAuditLog;
 use App\Models\AuditLog;
-use App\Models\Impersonation;
 use App\Models\PlatformAuditLog;
+use App\Models\User;
+use App\Support\Impersonation\ImpersonationAccess;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -29,14 +30,14 @@ final class AuditLogger
     /**
      * Registra un evento de auditoria de PLATAFORMA (BD central).
      *
-     * @param  object|null              $actor   Usuario/superadmin que ejecuta la accion (o null si es el sistema).
-     * @param  string                   $accion  CREATE|UPDATE|DELETE|READ|LOGIN|SUSPEND|...
-     * @param  string                   $recurso Nombre del recurso afectado (p.ej. tenant, plan).
-     * @param  string|null              $recursoId Identificador del recurso (string: soporta uuid/int).
-     * @param  array<string,mixed>|null $prev    Estado previo del recurso.
-     * @param  array<string,mixed>|null $new     Estado nuevo del recurso.
-     * @param  string|null              $motivo  Justificacion de la accion.
-     * @param  string|null              $tenantId UUID del colegio afectado (null si es global).
+     * @param  object|null  $actor  Usuario/superadmin que ejecuta la accion (o null si es el sistema).
+     * @param  string  $accion  CREATE|UPDATE|DELETE|READ|LOGIN|SUSPEND|...
+     * @param  string  $recurso  Nombre del recurso afectado (p.ej. tenant, plan).
+     * @param  string|null  $recursoId  Identificador del recurso (string: soporta uuid/int).
+     * @param  array<string,mixed>|null  $prev  Estado previo del recurso.
+     * @param  array<string,mixed>|null  $new  Estado nuevo del recurso.
+     * @param  string|null  $motivo  Justificacion de la accion.
+     * @param  string|null  $tenantId  ID interno del colegio afectado (null si es global).
      */
     public static function platform(
         ?object $actor,
@@ -73,6 +74,9 @@ final class AuditLogger
                 'recurso' => $recurso,
                 'recurso_id' => $recursoId,
                 'tenant_id' => $tenantId,
+                'valor_previo' => $prev,
+                'valor_nuevo' => $new,
+                'motivo' => $motivo,
                 'error' => $e->getMessage(),
             ]);
 
@@ -93,20 +97,20 @@ final class AuditLogger
      * actua DENTRO del colegio suplantando al rector, se conserva su email. Se
      * puede pasar EXPLICITAMENTE (lo hace el controlador de suplantacion en los
      * eventos IMPERSONATE_*) o dejarlo en null: en ese caso se AUTORESUELVE si la
-     * peticion viene autenticada con un token Sanctum llamado 'impersonation'
-     * (usuario sombra), consultando la sesion activa en la tabla central
+     * peticion viene autenticada con un token Sanctum `impersonation:<sessionId>`
+     * (usuario sombra), consultando ESA sesion en la tabla central
      * `impersonations` del tenant actual. Asi TODA accion del colegio hecha bajo
      * suplantacion queda marcada sin tocar cada controlador. En operacion normal
      * (token 'web') queda null y no se hace ninguna consulta extra.
      *
-     * @param  object|null              $actor   Usuario del tenant que ejecuta la accion (o null si es el sistema).
-     * @param  string                   $accion  CREATE|UPDATE|DELETE|READ|LOGIN|SUSPEND|...
-     * @param  string                   $recurso Nombre del recurso afectado (p.ej. estudiante, nota).
-     * @param  string|null              $recursoId Identificador del recurso (string: soporta uuid/int).
-     * @param  array<string,mixed>|null $prev    Estado previo del recurso.
-     * @param  array<string,mixed>|null $new     Estado nuevo del recurso.
-     * @param  string|null              $motivo  Justificacion de la accion.
-     * @param  string|null              $impersonatedBy Email del superadmin detras (o null = autoresolver).
+     * @param  object|null  $actor  Usuario del tenant que ejecuta la accion (o null si es el sistema).
+     * @param  string  $accion  CREATE|UPDATE|DELETE|READ|LOGIN|SUSPEND|...
+     * @param  string  $recurso  Nombre del recurso afectado (p.ej. estudiante, nota).
+     * @param  string|null  $recursoId  Identificador del recurso (string: soporta uuid/int).
+     * @param  array<string,mixed>|null  $prev  Estado previo del recurso.
+     * @param  array<string,mixed>|null  $new  Estado nuevo del recurso.
+     * @param  string|null  $motivo  Justificacion de la accion.
+     * @param  string|null  $impersonatedBy  Email del superadmin detras (o null = autoresolver).
      */
     public static function tenant(
         ?object $actor,
@@ -142,6 +146,10 @@ final class AuditLogger
                 'accion' => $accion,
                 'recurso' => $recurso,
                 'recurso_id' => $recursoId,
+                'valor_previo' => $prev,
+                'valor_nuevo' => $new,
+                'motivo' => $motivo,
+                'impersonated_by' => $impersonatedBy ?? self::currentImpersonatedBy(),
                 'error' => $e->getMessage(),
             ]);
 
@@ -164,23 +172,30 @@ final class AuditLogger
         try {
             [$actorId, $actorEmail, $actorRol] = self::resolveActor($actor);
 
+            $attributes = [
+                'actor_id' => $actorId,
+                'actor_email' => $actorEmail,
+                'actor_rol' => $actorRol,
+                'accion' => $context['accion'] ?? null,
+                'recurso' => $context['recurso'] ?? null,
+                'recurso_id' => $context['recurso_id'] ?? null,
+                'valor_previo' => $context['valor_previo'] ?? null,
+                'valor_nuevo' => $context['valor_nuevo'] ?? null,
+                'motivo' => $context['motivo'] ?? null,
+                'ip' => self::currentIp(),
+                'user_agent' => self::currentUserAgent(),
+            ];
+
+            if ($target === 'platform') {
+                $attributes['tenant_id'] = $context['tenant_id'] ?? $tenantId;
+            } else {
+                $attributes['impersonated_by'] = $context['impersonated_by'] ?? null;
+            }
+
             PersistAuditLog::dispatch([
                 'target' => $target,
                 'tenant_id' => $tenantId,
-                'attributes' => [
-                    'actor_id' => $actorId,
-                    'actor_email' => $actorEmail,
-                    'actor_rol' => $actorRol,
-                    'accion' => $context['accion'] ?? null,
-                    'recurso' => $context['recurso'] ?? null,
-                    'recurso_id' => $context['recurso_id'] ?? null,
-                    'tenant_id' => $context['tenant_id'] ?? ($target === 'platform' ? $tenantId : null),
-                    'valor_previo' => $context['valor_previo'] ?? null,
-                    'valor_nuevo' => $context['valor_nuevo'] ?? null,
-                    'motivo' => $context['motivo'] ?? null,
-                    'ip' => self::currentIp(),
-                    'user_agent' => self::currentUserAgent(),
-                ],
+                'attributes' => $attributes,
             ]);
         } catch (\Throwable $e) {
             Log::error('AuditLogger: no se pudo encolar el fallback de auditoria', [
@@ -229,37 +244,20 @@ final class AuditLogger
      * Resuelve el email del superadmin detras de una accion cuando la peticion
      * viene autenticada con el token de suplantacion (usuario sombra 'rector').
      *
-     * Se apoya en el nombre del token Sanctum ('impersonation') para NO gravar
-     * las operaciones normales (token 'web' -> corta antes de tocar la BD). Si
-     * hay suplantacion, lee el email del superadmin de la sesion activa en la
+     * Se apoya en el nombre/ability del token Sanctum para NO gravar las
+     * operaciones normales (token 'web' -> corta antes de tocar la BD). Si hay
+     * suplantacion, resuelve por sessionId exacto el email del superadmin en la
      * tabla central `impersonations` del colegio actual.
      */
     private static function currentImpersonatedBy(): ?string
     {
         try {
             $user = auth()->user();
+            $session = $user instanceof User
+                ? app(ImpersonationAccess::class)->sessionFor($user)
+                : null;
 
-            if ($user === null || ! method_exists($user, 'currentAccessToken')) {
-                return null;
-            }
-
-            $token = $user->currentAccessToken();
-            if ($token === null || ($token->name ?? null) !== 'impersonation') {
-                return null;
-            }
-
-            $tenantId = function_exists('tenant') ? tenant()?->getKey() : null;
-            if ($tenantId === null) {
-                return null;
-            }
-
-            $email = Impersonation::query()
-                ->where('tenant_id', $tenantId)
-                ->whereNull('ended_at')
-                ->orderByDesc('started_at')
-                ->value('superadmin_email');
-
-            return is_string($email) && $email !== '' ? $email : null;
+            return $session?->superadmin_email;
         } catch (\Throwable) {
             return null;
         }

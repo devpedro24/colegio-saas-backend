@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Stancl\Tenancy\Contracts\TenantWithDatabase;
 use Stancl\Tenancy\Database\Concerns\HasDatabase;
 use Stancl\Tenancy\Database\Concerns\HasDomains;
 use Stancl\Tenancy\Database\Models\Tenant as BaseTenant;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * Tenant = Colegio.
@@ -17,7 +17,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * Cada colegio es un tenant aislado con su propia base de datos PostgreSQL
  * (RN-AI-001) y su propio subdominio `<slug>.<dominio>` (RN-AU-001).
  *
- * - `id`   : UUID inmutable, clave interna para logs/backups/integraciones.
+ * - `id`   : clave inmutable corta para tenants nuevos; UUID solo en registros
+ *            legacy. Se usa en logs, backups e integraciones.
  * - `slug` : identificador legible que forma el subdominio; mutable solo por
  *            el superadministrador y con cuarentena al reutilizarse (RN-MT-240).
  *
@@ -41,21 +42,31 @@ class Tenant extends BaseTenant implements TenantWithDatabase
      * completa la configuracion minima obligatoria, y a ACTIVE cuando opera.
      */
     public const STATUS_PROVISIONING = 'provisioning';
+
     public const STATUS_CONFIGURING = 'configuring';
+
     public const STATUS_ACTIVE = 'active';
+
     public const STATUS_SUSPENDED = 'suspended';
+
     public const STATUS_CANCELLATION_REQUESTED = 'cancellation_requested';
+
     public const STATUS_FINALIZED = 'finalized';
+
     public const STATUS_IN_RETENTION = 'in_retention';
+
     public const STATUS_DELETED = 'deleted';
 
     /** Planes comerciales por numero de estudiantes (bandas). */
     public const PLAN_ESENCIAL = 'esencial';   // < 300 estudiantes
+
     public const PLAN_ESTANDAR = 'estandar';   // 300 - 800
+
     public const PLAN_PREMIUM = 'premium';     // 800 +
 
     /** Tipo de tenant: colegio principal o sede (tenant hijo). */
     public const TIPO_COLEGIO = 'colegio';
+
     public const TIPO_SEDE = 'sede';
 
     /**
@@ -73,7 +84,6 @@ class Tenant extends BaseTenant implements TenantWithDatabase
             'status',
             'tipo',
             'parent_id',
-            'rector_temporary_password',
             'calendar',
             'locale',
             'timezone',
@@ -91,12 +101,4 @@ class Tenant extends BaseTenant implements TenantWithDatabase
     {
         return $this->hasMany(Tenant::class, 'parent_id', 'id');
     }
-
-    /**
-     * La contrasena temporal del rector se guarda cifrada en reposo
-     * (RN-SE-*): solo se descifra para el superadmin cuando sigue vigente.
-     */
-    protected $casts = [
-        'rector_temporary_password' => 'encrypted',
-    ];
 }

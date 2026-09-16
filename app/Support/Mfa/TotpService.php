@@ -27,7 +27,7 @@ final class TotpService
 
     public function __construct()
     {
-        $this->google2fa = new Google2FA();
+        $this->google2fa = new Google2FA;
     }
 
     /**
@@ -44,7 +44,7 @@ final class TotpService
      */
     public function otpauthUrl(string $email, string $secret): string
     {
-        $label = rawurlencode(self::ISSUER) . ':' . rawurlencode($email);
+        $label = rawurlencode(self::ISSUER).':'.rawurlencode($email);
 
         $params = http_build_query([
             'secret' => $secret,

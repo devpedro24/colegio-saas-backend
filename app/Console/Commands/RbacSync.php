@@ -41,7 +41,7 @@ class RbacSync extends Command
         }
 
         foreach ($tenants as $tenant) {
-            $tenant->run(fn () => (new RbacSeeder())->run());
+            $tenant->run(fn () => (new RbacSeeder)->run());
             $this->info("RBAC sincronizado: {$tenant->slug} (plan: {$tenant->plan})");
         }
 

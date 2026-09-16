@@ -10,10 +10,10 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\TenantPlanManager;
 use App\Services\TenantProvisioner;
 use App\Support\Audit\AuditLogger;
 use App\Tenancy\TenantDatabaseName;
-use Database\Seeders\RbacSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -83,7 +83,10 @@ class ColegioController extends Controller
             'colegio' => $this->present($tenant),
             // La contrasena temporal del rector se muestra UNA sola vez.
             'rector_password' => $password,
-        ], 201);
+        ], 201)->withHeaders([
+            'Cache-Control' => 'no-store, private',
+            'Pragma' => 'no-cache',
+        ]);
     }
 
     /** Detalle de un colegio. */
@@ -95,9 +98,16 @@ class ColegioController extends Controller
     }
 
     /** Edita los datos del colegio (nombre, razon social, NIT, plan). */
-    public function update(Request $request, string $id): JsonResponse
+    public function update(Request $request, string $id, TenantPlanManager $planManager): JsonResponse
     {
         $tenant = Tenant::findOrFail($id);
+        $before = [
+            'name' => $tenant->name,
+            'slug' => $tenant->slug,
+            'legal_name' => $tenant->legal_name,
+            'nit' => $tenant->nit,
+            'plan' => $tenant->plan,
+        ];
 
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
@@ -107,30 +117,43 @@ class ColegioController extends Controller
             'plan' => ['required', 'string', 'exists:plans,key'],
         ]);
 
-        $slugChanged = !empty($data['slug']) && $data['slug'] !== $tenant->slug;
+        $slugChanged = ! empty($data['slug']) && $data['slug'] !== $tenant->slug;
         $nameChanged = $data['name'] !== $tenant->name;
+        $planChanged = $tenant->plan !== $data['plan'];
+
+        if ($slugChanged && Tenant::where('slug', $data['slug'])->where('id', '!=', $tenant->id)->exists()) {
+            return response()->json(['message' => 'Ya existe un colegio con ese identificador.'], 422);
+        }
+
+        if ($planChanged) {
+            try {
+                $planManager->change($tenant, $data['plan']);
+                $tenant->refresh();
+            } catch (RuntimeException $exception) {
+                return response()->json(['message' => $exception->getMessage()], 422);
+            }
+        }
 
         // Guardamos el nombre de BD ACTUAL antes de cualquier cambio.
         $oldDbName = $tenant->getInternal('db_name') ?? TenantDatabaseName::for($tenant);
 
         if ($slugChanged) {
-            if (Tenant::where('slug', $data['slug'])->where('id', '!=', $tenant->id)->exists()) {
-                return response()->json(['message' => 'Ya existe un colegio con ese identificador.'], 422);
-            }
-
             $tenant->update(['slug' => $data['slug']]);
             $tenant->domains()->update(['domain' => $data['slug']]);
 
             foreach ($tenant->sedes as $sede) {
-                $sede->domains()->update(['domain' => $sede->slug . '.' . $data['slug']]);
+                $sede->domains()->update(['domain' => $sede->slug.'.'.$data['slug']]);
             }
         }
 
-        $updateData = ['name' => $data['name'], 'plan' => $data['plan']];
-        if (isset($data['legal_name'])) $updateData['legal_name'] = $data['legal_name'];
-        if (isset($data['nit'])) $updateData['nit'] = $data['nit'];
+        $updateData = ['name' => $data['name']];
+        if (isset($data['legal_name'])) {
+            $updateData['legal_name'] = $data['legal_name'];
+        }
+        if (isset($data['nit'])) {
+            $updateData['nit'] = $data['nit'];
+        }
 
-        $planChanged = $tenant->plan !== $data['plan'];
         $tenant->update($updateData);
 
         // Si cambio el nombre o el slug, la BD debe renombrarse.
@@ -150,9 +173,8 @@ class ColegioController extends Controller
             }
         }
 
-        // Si cambio el plan, re-sincroniza el RBAC del colegio.
+        // TenantPlanManager ya sincronizo atomicamente colegio + sedes.
         if ($planChanged) {
-            $tenant->run(fn () => (new RbacSeeder())->run());
             TenantChanged::dispatch($tenant->id, 'plan');
         }
 
@@ -163,13 +185,7 @@ class ColegioController extends Controller
             'UPDATE',
             'colegio',
             (string) $tenant->id,
-            [
-                'name' => $tenant->getOriginal('name') ?? '',
-                'slug' => $tenant->getOriginal('slug') ?? '',
-                'legal_name' => $tenant->getOriginal('legal_name'),
-                'nit' => $tenant->getOriginal('nit'),
-                'plan' => $tenant->getOriginal('plan'),
-            ],
+            $before,
             [
                 'name' => $tenant->name,
                 'slug' => $tenant->slug,
@@ -214,6 +230,26 @@ class ColegioController extends Controller
         ]);
 
         $prevStatus = $tenant->status;
+
+        if ($tenant->tipo === Tenant::TIPO_SEDE || $tenant->parent_id !== null) {
+            return response()->json([
+                'message' => 'El estado de una sede se gestiona desde su colegio principal.',
+            ], 422);
+        }
+
+        if ($prevStatus === $data['status']) {
+            return response()->json(['colegio' => $this->present($tenant)]);
+        }
+
+        $allowed = ($prevStatus === Tenant::STATUS_ACTIVE && $data['status'] === Tenant::STATUS_SUSPENDED)
+            || ($prevStatus === Tenant::STATUS_SUSPENDED && $data['status'] === Tenant::STATUS_ACTIVE);
+
+        if (! $allowed) {
+            return response()->json([
+                'message' => 'Solo se puede suspender un colegio activo o reactivar uno suspendido. La activacion inicial depende de completar la configuracion minima.',
+            ], 422);
+        }
+
         $tenant->update(['status' => $data['status']]);
 
         // El rector conectado reacciona en vivo (expulsion si lo inhabilitaron).
@@ -235,7 +271,7 @@ class ColegioController extends Controller
     }
 
     /** Cambia el plan del colegio y re-sincroniza su RBAC (aplica el gating). */
-    public function updatePlan(Request $request, string $id): JsonResponse
+    public function updatePlan(Request $request, string $id, TenantPlanManager $planManager): JsonResponse
     {
         $tenant = Tenant::findOrFail($id);
 
@@ -244,10 +280,12 @@ class ColegioController extends Controller
         ]);
 
         $prevPlan = $tenant->plan;
-        $tenant->update(['plan' => $data['plan']]);
-
-        // Re-siembra spatie del colegio con el nuevo plan (preserva configurables del rector).
-        $tenant->run(fn () => (new RbacSeeder())->run());
+        try {
+            $planManager->change($tenant, $data['plan']);
+            $tenant->refresh();
+        } catch (RuntimeException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
+        }
 
         TenantChanged::dispatch($tenant->id, 'plan');
         PlatformDataChanged::dispatch('colegios', 'updated');
@@ -267,88 +305,61 @@ class ColegioController extends Controller
     }
 
     /**
-     * Consulta (sin invalidar) la contraseña temporal vigente del rector.
-     *
-     * - 'temporal': el rector aun no la cambio y hay una guardada cifrada ->
-     *               se descifra y devuelve (solo al superadmin del panel).
-     * - 'changed' : el rector ya inicio sesion y cambio su clave -> la temporal
-     *               ya no funciona; el panel debe ofrecer reestablecerla.
-     * - 'none'    : no hay clave guardada (colegios anteriores a la columna) o
-     *               cayo en una situacion no recuperable; se regenara una nueva.
-     */
-    public function rectorPassword(string $id): JsonResponse
-    {
-        $tenant = Tenant::findOrFail($id);
-
-        $rectorEmail = null;
-        $mustChange = false;
-        $tenant->run(function () use (&$rectorEmail, &$mustChange) {
-            $rector = User::where('role', 'rector')->orderBy('id')->first();
-            if ($rector) {
-                $rectorEmail = $rector->email;
-                $mustChange = (bool) $rector->must_change_password;
-            }
-        });
-
-        if ($rectorEmail === null) {
-            return response()->json([
-                'status' => 'none',
-                'rector_email' => null,
-                'rector_password' => null,
-            ]);
-        }
-
-        $stored = $tenant->rector_temporary_password;
-
-        if ($mustChange && $stored !== null) {
-            return response()->json([
-                'status' => 'temporal',
-                'rector_email' => $rectorEmail,
-                'rector_password' => $stored,
-            ]);
-        }
-
-        return response()->json([
-            'status' => $mustChange ? 'none' : 'changed',
-            'rector_email' => $rectorEmail,
-            'rector_password' => null,
-        ]);
-    }
-
-    /**
      * Regenera la contrasena temporal del rector y la devuelve UNA vez.
-     * (Las contrasenas se guardan cifradas: no se puede recuperar la anterior,
-     * por eso se genera una nueva.)
+     * La clave solo existe en memoria durante esta solicitud: nunca se persiste
+     * de forma reversible y las sesiones anteriores quedan revocadas.
      */
-    public function resetRectorPassword(string $id): JsonResponse
+    public function resetRectorPassword(Request $request, string $id): JsonResponse
     {
         $tenant = Tenant::findOrFail($id);
         $password = Str::password(14);
         $rectorEmail = null;
+        $revokedTokens = 0;
 
-        $tenant->run(function () use ($password, &$rectorEmail) {
-            $rector = User::where('role', 'rector')->orderBy('id')->first();
-            if ($rector) {
+        $tenant->run(function () use ($password, &$rectorEmail, &$revokedTokens): void {
+            DB::transaction(function () use ($password, &$rectorEmail, &$revokedTokens): void {
+                $rector = User::query()
+                    ->withoutImpersonationShadows()
+                    ->where('role', 'rector')
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->first();
+                if ($rector === null) {
+                    return;
+                }
+
                 $rector->update([
                     'password' => Hash::make($password),
                     'must_change_password' => true,
                 ]);
+                $revokedTokens = $rector->tokens()->delete();
                 $rectorEmail = $rector->email;
-            }
+            });
         });
 
         if ($rectorEmail === null) {
             return response()->json(['message' => 'El colegio no tiene un rector.'], 422);
         }
 
-        // Guarda la nueva temporal CIFRADA para poder mostrarla mientras vija.
-        $tenant->update(['rector_temporary_password' => $password]);
+        AuditLogger::platform(
+            $request->user(),
+            'RESET_PASSWORD',
+            'colegio.rector',
+            (string) $tenant->id,
+            null,
+            ['rector_email' => $rectorEmail, 'tokens_revoked' => $revokedTokens],
+            'Clave temporal regenerada; se entrega una sola vez y se revocan las sesiones anteriores.',
+            (string) $tenant->id,
+        );
 
         return response()->json([
             'colegio' => $this->present($tenant),
             'rector_email' => $rectorEmail,
             // Se muestra una sola vez.
             'rector_password' => $password,
+        ])->withHeaders([
+            'Cache-Control' => 'no-store, private',
+            'Pragma' => 'no-cache',
         ]);
     }
 
@@ -365,7 +376,7 @@ class ColegioController extends Controller
             'nit' => $tenant->nit,
             'plan' => $tenant->plan,
             'status' => $tenant->status,
-            'subdomain' => $tenant->slug.'.localhost',
+            'subdomain' => $tenant->slug.'.'.config('tenancy.tenant_base_domain', 'localhost'),
             'created_at' => $tenant->created_at?->toIso8601String(),
         ];
     }

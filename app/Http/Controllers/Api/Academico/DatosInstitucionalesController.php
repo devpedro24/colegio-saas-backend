@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\DatosInstitucionales;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
@@ -50,7 +50,7 @@ class DatosInstitucionalesController extends Controller
         $prev = $existia ? $datos->only(array_keys($data)) : null;
 
         if (! $existia) {
-            $datos = new DatosInstitucionales();
+            $datos = new DatosInstitucionales;
         }
 
         $datos->fill($data)->save();
@@ -69,7 +69,8 @@ class DatosInstitucionalesController extends Controller
 
         try {
             TenantDataChanged::dispatch('datos_institucionales', 'updated', $datos->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $datos]);
     }

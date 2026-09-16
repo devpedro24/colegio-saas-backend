@@ -14,7 +14,7 @@ class TenantDatabaseNameTest extends TestCase
 {
     private function tenantWith(string $name, string $id): Tenant
     {
-        $tenant = new Tenant();
+        $tenant = new Tenant;
         $tenant->setRawAttributes([
             'name' => $name,
         ]);

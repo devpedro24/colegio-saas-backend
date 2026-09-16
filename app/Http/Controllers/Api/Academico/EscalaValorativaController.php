@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\EscalaValorativa;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
@@ -70,7 +70,8 @@ class EscalaValorativaController extends Controller
 
         try {
             TenantDataChanged::dispatch('escala', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $escala], $existente ? 200 : 201);
     }
@@ -95,7 +96,8 @@ class EscalaValorativaController extends Controller
 
         try {
             TenantDataChanged::dispatch('escala', 'updated', $escala->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $escala]);
     }
@@ -137,7 +139,8 @@ class EscalaValorativaController extends Controller
 
         try {
             TenantDataChanged::dispatch('escala', 'deleted', $escala->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }

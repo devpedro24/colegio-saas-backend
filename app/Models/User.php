@@ -3,10 +3,14 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Database\Factories\UserFactory;
+use Illuminate\Contracts\Encryption\DecryptException;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
 use InvalidArgumentException;
 use Laravel\Sanctum\HasApiTokens;
@@ -22,37 +26,67 @@ use Spatie\Permission\Traits\HasRoles;
  * El borrado es LOGICO (SoftDeletes, RG-004): la fila sobrevive durante la
  * ventana de retencion y luego una purga fisica la elimina (RN-BR-005).
  *
-* @property int                        $id
-     * @property string                     $name
-     * @property string                     $email
-     * @property string|null                $phone
-     * @property string|null                $google_id
-     * @property string|null                $google_email
-     * @property \Illuminate\Support\Carbon|null $google_linked_at
-     * @property string                     $password
-     * @property string|null                $role
- * @property string                     $status
- * @property bool                       $must_change_password
- * @property string|null                $two_factor_secret
- * @property \Illuminate\Support\Carbon|null $two_factor_confirmed_at
- * @property \Illuminate\Support\Carbon|null $created_at
- * @property \Illuminate\Support\Carbon|null $updated_at
- * @property \Illuminate\Support\Carbon|null $deleted_at
+ * @property int $id
+ * @property string $name
+ * @property string $email
+ * @property string|null $phone
+ * @property string|null $google_id
+ * @property string|null $google_email
+ * @property Carbon|null $google_linked_at
+ * @property string $password
+ * @property string|null $role
+ * @property string $status
+ * @property bool $must_change_password
+ * @property string|null $two_factor_secret
+ * @property Carbon|null $two_factor_confirmed_at
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
  */
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable, HasApiTokens, HasRoles, SoftDeletes;
+    /** @use HasFactory<UserFactory> */
+    use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
 
     /** Estados del ciclo de vida del usuario (D-USER-FSM). */
     public const STATUS_PENDING = 'pending';
+
     public const STATUS_ACTIVE = 'active';
+
     public const STATUS_SUSPENDED = 'suspended';
+
     public const STATUS_INACTIVE = 'inactive';
+
     public const STATUS_DELETED = 'deleted';
 
-    /** Email del usuario sombra que el superadministrador usa al suplantar un colegio. */
+    /** Email legacy del usuario sombra (se conserva para migraciones/limpieza). */
     public const PLATFORM_SUPERADMIN_EMAIL = 'superadmin@plataforma.local';
+
+    public static function impersonationShadowEmail(int|string $superadminId): string
+    {
+        return 'superadmin+'.preg_replace('/[^0-9]/', '', (string) $superadminId).'@plataforma.local';
+    }
+
+    /** Namespace reservado para identidades tecnicas de suplantacion. */
+    public static function isImpersonationShadowEmail(?string $email): bool
+    {
+        return preg_match(
+            '/^superadmin(?:\+[^@\s]+)?@plataforma\.local$/i',
+            trim((string) $email),
+        ) === 1;
+    }
+
+    public function isImpersonationShadow(): bool
+    {
+        return self::isImpersonationShadowEmail((string) $this->email);
+    }
+
+    public function scopeWithoutImpersonationShadows(Builder $query): Builder
+    {
+        return $query
+            ->whereRaw('LOWER(email) <> ?', [self::PLATFORM_SUPERADMIN_EMAIL])
+            ->whereRaw('LOWER(email) NOT LIKE ?', ['superadmin+%@plataforma.local']);
+    }
 
     /** Transiciones permitidas (D-USER-FSM). */
     public const TRANSITIONS = [
@@ -82,7 +116,6 @@ class User extends Authenticatable
         'google_id',
         'google_email',
         'google_linked_at',
-        'temporary_password',
     ];
 
     /**
@@ -95,6 +128,7 @@ class User extends Authenticatable
         'remember_token',
         'two_factor_secret',
         'two_factor_recovery_codes',
+        'temporary_password',
     ];
 
     /**
@@ -112,7 +146,6 @@ class User extends Authenticatable
             'google_linked_at' => 'datetime',
             // El secreto TOTP se cifra EN REPOSO (pendiente de Fase 0).
             'two_factor_secret' => 'encrypted',
-            'temporary_password' => 'encrypted',
         ];
     }
 
@@ -133,7 +166,7 @@ class User extends Authenticatable
      */
     public function esSuperadminPlataforma(): bool
     {
-        return $this->email === self::PLATFORM_SUPERADMIN_EMAIL;
+        return self::isImpersonationShadowEmail((string) $this->email);
     }
 
     /**
@@ -154,7 +187,7 @@ class User extends Authenticatable
         if (str_starts_with($value, 'eyJ')) {
             try {
                 return (string) Crypt::decryptString($value);
-            } catch (\Illuminate\Contracts\Encryption\DecryptException) {
+            } catch (DecryptException) {
                 return $value; // no es cifrado; se conserva el valor plano
             }
         }

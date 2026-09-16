@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\User;
+use App\Support\Audit\AuditLogger;
+use App\Support\Mfa\MfaPolicy;
 use App\Support\Mfa\TotpService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,13 +23,20 @@ use Illuminate\Validation\ValidationException;
  */
 class MfaController extends Controller
 {
-    public function __construct(private readonly TotpService $totp)
-    {
-    }
+    public function __construct(
+        private readonly TotpService $totp,
+        private readonly MfaPolicy $policy,
+    ) {}
 
     public function setup(Request $request): JsonResponse
     {
         $user = $request->user();
+
+        if ($user->hasTwoFactorEnabled()) {
+            throw ValidationException::withMessages([
+                'mfa' => ['MFA ya esta activo. Desactivalo antes de iniciar una nueva configuracion.'],
+            ]);
+        }
 
         $secret = $this->totp->generateSecret();
 
@@ -35,6 +45,15 @@ class MfaController extends Controller
             'two_factor_secret' => $secret,
             'two_factor_confirmed_at' => null,
         ])->save();
+
+        AuditLogger::tenant(
+            $user,
+            'MFA_SETUP_STARTED',
+            'auth.mfa',
+            (string) $user->id,
+            ['enabled' => false],
+            ['enabled' => false, 'pending' => true],
+        );
 
         return response()->json([
             'secret' => $secret,
@@ -66,6 +85,15 @@ class MfaController extends Controller
             'two_factor_confirmed_at' => now(),
         ])->save();
 
+        AuditLogger::tenant(
+            $user,
+            'MFA_ENABLED',
+            'auth.mfa',
+            (string) $user->id,
+            ['enabled' => false],
+            ['enabled' => true],
+        );
+
         return response()->json(['enabled' => true]);
     }
 
@@ -77,6 +105,12 @@ class MfaController extends Controller
         ]);
 
         $user = $request->user();
+
+        if ($user instanceof User && $this->policy->isRequired($user)) {
+            throw ValidationException::withMessages([
+                'mfa' => ['MFA es obligatorio para tu rol y no puede desactivarse.'],
+            ]);
+        }
 
         $confirmedByCode = ! empty($data['code'])
             && $user->getTwoFactorSecret()
@@ -96,6 +130,15 @@ class MfaController extends Controller
             'two_factor_confirmed_at' => null,
             'two_factor_recovery_codes' => null,
         ])->save();
+
+        AuditLogger::tenant(
+            $user,
+            'MFA_DISABLED',
+            'auth.mfa',
+            (string) $user->id,
+            ['enabled' => true],
+            ['enabled' => false],
+        );
 
         return response()->json(['enabled' => false]);
     }

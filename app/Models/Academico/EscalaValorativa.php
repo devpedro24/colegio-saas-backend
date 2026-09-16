@@ -7,6 +7,7 @@ namespace App\Models\Academico;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Escala valorativa (BD del tenant) — bloque 4 de configuracion.
@@ -15,17 +16,17 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * aprobacion. Se versiona por ano lectivo y puede variar por nivel (RN-CC-003;
  * `nivel_id` nullable = aplica a todo el colegio).
  *
- * @property int         $id
- * @property int         $ano_lectivo_id
- * @property ?string     $nivel_educativo
- * @property string      $nombre
- * @property string      $tipo
- * @property ?string     $valor_min
- * @property ?string     $valor_max
- * @property ?int        $decimales
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
- * @property ?\Illuminate\Support\Carbon $deleted_at
+ * @property int $id
+ * @property int $ano_lectivo_id
+ * @property ?string $nivel_educativo
+ * @property string $nombre
+ * @property string $tipo
+ * @property ?string $valor_min
+ * @property ?string $valor_max
+ * @property ?int $decimales
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
+ * @property ?Carbon $deleted_at
  */
 class EscalaValorativa extends Model
 {
@@ -35,6 +36,7 @@ class EscalaValorativa extends Model
 
     /** Tipos de escala admitidos. */
     public const TIPO_NUMERICA = 'numerica';
+
     public const TIPO_IMAGENES = 'imagenes';
 
     protected $fillable = [
@@ -57,6 +59,6 @@ class EscalaValorativa extends Model
     /** Ano lectivo al que pertenece esta escala. */
     public function anoLectivo(): BelongsTo
     {
-        return $this->belongsTo(\App\Models\Academico\AnoLectivo::class, 'ano_lectivo_id');
+        return $this->belongsTo(AnoLectivo::class, 'ano_lectivo_id');
     }
 }

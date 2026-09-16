@@ -7,6 +7,7 @@ namespace App\Models\Academico;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Metodo de aprobacion (BD del tenant) — bloque 5 de configuracion.
@@ -14,13 +15,13 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * Como se consolida la aprobacion: promedio simple, ponderado o sumatoria
  * dividida; nota minima; y ambito (materia, area o general). Por ano lectivo.
  *
- * @property int         $id
- * @property int         $ano_lectivo_id
- * @property string      $calculo_nota
- * @property string      $nota_minima
- * @property string      $ambito
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property int $id
+ * @property int $ano_lectivo_id
+ * @property string $calculo_nota
+ * @property string $nota_minima
+ * @property string $ambito
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
  */
 class MetodoAprobacion extends Model
 {
@@ -30,12 +31,16 @@ class MetodoAprobacion extends Model
 
     /** Formas de calcular la aprobacion. */
     public const CALCULO_PROMEDIO_SIMPLE = 'promedio_simple';
+
     public const CALCULO_PONDERADO = 'ponderado';
+
     public const CALCULO_SUMATORIA = 'sumatoria';
 
     /** Ambito al que aplica la decision de aprobacion. */
     public const AMBITO_MATERIA = 'materia';
+
     public const AMBITO_AREA = 'area';
+
     public const AMBITO_PROMEDIO_GENERAL = 'promedio_general';
 
     protected $fillable = [
@@ -53,6 +58,6 @@ class MetodoAprobacion extends Model
     /** Ano lectivo al que pertenece este metodo. */
     public function anoLectivo(): BelongsTo
     {
-        return $this->belongsTo(\App\Models\Academico\AnoLectivo::class, 'ano_lectivo_id');
+        return $this->belongsTo(AnoLectivo::class, 'ano_lectivo_id');
     }
 }

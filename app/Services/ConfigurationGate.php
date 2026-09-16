@@ -6,11 +6,13 @@ namespace App\Services;
 
 use App\Events\TenantChanged;
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\DatosInstitucionales;
 use App\Models\Academico\EscalaValorativa;
 use App\Models\Academico\Jornada;
 use App\Models\Academico\MetodoAprobacion;
 use App\Models\Academico\ModeloPedagogico;
+use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Support\Audit\AuditLogger;
 
@@ -46,13 +48,24 @@ final class ConfigurationGate
      */
     public static function estado(): array
     {
+        $ano = AnoLectivo::query()
+            ->orderByRaw('CASE WHEN estado = ? THEN 0 ELSE 1 END', [AnoLectivo::ESTADO_EN_CURSO])
+            ->orderByDesc('fecha_inicio')
+            ->first();
+
         $checks = [
-            'institucional' => fn (): bool => DatosInstitucionales::query()->exists(),
-            'calendario' => fn (): bool => AnoLectivo::query()->exists(),
-            'jornadas' => fn (): bool => Jornada::query()->exists(),
-            'escala' => fn (): bool => EscalaValorativa::query()->exists(),
-            'metodo' => fn (): bool => MetodoAprobacion::query()->exists(),
-            'modelo' => fn (): bool => ModeloPedagogico::query()->exists(),
+            'institucional' => fn (): bool => DatosInstitucionales::query()
+                ->whereNotNull('nombre')
+                ->where('nombre', '!=', '')
+                ->exists(),
+            'calendario' => fn (): bool => $ano !== null && self::hasCompleteCalendar($ano),
+            'jornadas' => fn (): bool => Jornada::query()
+                ->where('estado', Jornada::ESTADO_ACTIVA)
+                ->whereHas('bloques', fn ($query) => $query->where('estado', BloqueHorario::ESTADO_ACTIVO))
+                ->exists(),
+            'escala' => fn (): bool => $ano !== null && EscalaValorativa::query()->where('ano_lectivo_id', $ano->id)->exists(),
+            'metodo' => fn (): bool => $ano !== null && MetodoAprobacion::query()->where('ano_lectivo_id', $ano->id)->exists(),
+            'modelo' => fn (): bool => $ano !== null && ModeloPedagogico::query()->where('ano_lectivo_id', $ano->id)->exists(),
         ];
 
         $bloques = [];
@@ -64,7 +77,10 @@ final class ConfigurationGate
             ];
         }
 
-        $completo = collect($bloques)->every(fn (array $bloque): bool => $bloque['completo']);
+        $completo = self::areBlocksComplete(array_map(
+            static fn (array $bloque): bool => $bloque['completo'],
+            $bloques,
+        ));
 
         return [
             'bloques' => $bloques,
@@ -79,6 +95,40 @@ final class ConfigurationGate
     public static function isComplete(): bool
     {
         return self::estado()['completo'];
+    }
+
+    /** @param array<string, bool> $checks */
+    public static function areBlocksComplete(array $checks): bool
+    {
+        return array_keys($checks) === array_keys(self::BLOCKS)
+            && ! in_array(false, $checks, true);
+    }
+
+    /** Comprueba cantidad, orden, continuidad y cobertura total del año. */
+    public static function hasCompleteCalendar(AnoLectivo $ano): bool
+    {
+        $periodos = $ano->periodos()->orderBy('orden')->get();
+        $esperados = $ano->num_periodos + ($ano->tiene_quinto_periodo ? 1 : 0);
+
+        if ($periodos->count() !== $esperados) {
+            return false;
+        }
+
+        foreach ($periodos->values() as $index => $periodo) {
+            if ($periodo->orden !== $index + 1 || $periodo->fecha_inicio->gt($periodo->fecha_fin)) {
+                return false;
+            }
+
+            if ($index === 0 && ! $periodo->fecha_inicio->equalTo($ano->fecha_inicio)) {
+                return false;
+            }
+
+            if ($index > 0 && ! $periodo->fecha_inicio->equalTo($periodos[$index - 1]->fecha_fin->copy()->addDay())) {
+                return false;
+            }
+        }
+
+        return $periodos->last()?->fecha_fin->equalTo($ano->fecha_fin) ?? false;
     }
 
     /**
@@ -124,6 +174,20 @@ final class ConfigurationGate
         );
 
         TenantChanged::dispatch($tenant->id, 'activated');
+
+        if ($tenant->tipo === Tenant::TIPO_SEDE && $tenant->parent_id !== null) {
+            $parent = $tenant->parent()->first();
+            if ($parent !== null) {
+                tenancy()->end();
+                try {
+                    $parent->run(fn () => Sede::query()
+                        ->where('tenant_id', $tenant->id)
+                        ->update(['estado' => Sede::ESTADO_ACTIVA]));
+                } finally {
+                    tenancy()->initialize($tenant);
+                }
+            }
+        }
 
         return $tenant;
     }

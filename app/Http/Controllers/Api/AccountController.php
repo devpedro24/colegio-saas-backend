@@ -7,13 +7,16 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Validation\Rule;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
@@ -29,11 +32,8 @@ use Illuminate\Validation\ValidationException;
  */
 class AccountController extends Controller
 {
-    /** Duracion del state OAuth (minutos). */
-    private const STATE_TTL_MINUTES = 15;
-
     /* ------------------------------------------------------------------ */
-    /* Perfil                                                              */
+    /* Perfil */
     /* ------------------------------------------------------------------ */
 
     public function index(Request $request): JsonResponse
@@ -64,7 +64,7 @@ class AccountController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /* Email y contrasena                                                  */
+    /* Email y contrasena */
     /* ------------------------------------------------------------------ */
 
     public function changeEmail(Request $request): JsonResponse
@@ -83,6 +83,12 @@ class AccountController extends Controller
         }
 
         $newEmail = mb_strtolower(trim($data['email']));
+
+        if (User::isImpersonationShadowEmail($newEmail)) {
+            throw ValidationException::withMessages([
+                'email' => ['El correo pertenece a un namespace tecnico reservado.'],
+            ]);
+        }
 
         if ($newEmail === mb_strtolower($user->email)) {
             throw ValidationException::withMessages([
@@ -143,7 +149,7 @@ class AccountController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /* Desactivar cuenta                                                   */
+    /* Desactivar cuenta */
     /* ------------------------------------------------------------------ */
 
     public function deactivate(Request $request): JsonResponse
@@ -170,7 +176,7 @@ class AccountController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /* Google (anclar cuenta)                                              */
+    /* Google (anclar cuenta) */
     /* ------------------------------------------------------------------ */
 
     public function googleConnect(Request $request): JsonResponse
@@ -185,7 +191,7 @@ class AccountController extends Controller
 
         $user = $request->user();
 
-        $state = $this->buildOAuthState($user);
+        $state = $this->buildOAuthState($request, $user);
 
         $authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?'.http_build_query([
             'client_id' => $clientId,
@@ -202,17 +208,19 @@ class AccountController extends Controller
 
     public function googleCallback(Request $request): RedirectResponse
     {
-        $frontUrl = config('app.frontend_url');
+        $frontUrl = $this->frontendUrlFor($request);
 
         if (empty($request->query('code')) || empty($request->query('state'))) {
             return redirect()->away($frontUrl.'/account/settings?google=error');
         }
 
-        $payload = $this->readOAuthState((string) $request->query('state'));
+        $payload = $this->readOAuthState($request, (string) $request->query('state'));
 
         if ($payload === null) {
             return redirect()->away($frontUrl.'/account/settings?google=error');
         }
+
+        $frontUrl = $payload['front'];
 
         $user = User::find($payload['uid']);
 
@@ -274,39 +282,69 @@ class AccountController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /* Helpers                                                             */
+    /* Helpers */
     /* ------------------------------------------------------------------ */
 
-    /** Estado OAuth sellado: id del usuario + expiracion (sin sesion server-side). */
-    private function buildOAuthState(User $user): string
+    /** Estado sellado + nonce server-side: expira y solo puede consumirse una vez. */
+    private function buildOAuthState(Request $request, User $user): string
     {
+        $ttl = max(1, (int) config('security.oauth.state_ttl_minutes', 15));
+        $nonce = (string) Str::uuid();
+        $context = $this->oauthContext();
         $value = json_encode([
             'uid' => (string) $user->id,
-            'exp' => now()->addMinutes(self::STATE_TTL_MINUTES)->timestamp,
+            'exp' => now()->addMinutes($ttl)->timestamp,
+            'nonce' => $nonce,
+            'context' => $context,
+            'front' => $this->frontendUrlFor($request),
         ]);
 
-        return Crypt::encryptString((string) $value);
+        $state = Crypt::encryptString((string) $value);
+        $this->oauthCache()->put(
+            $this->oauthCacheKey($context, $nonce),
+            hash('sha256', $state),
+            now()->addMinutes($ttl),
+        );
+
+        return $state;
     }
 
-    /** @return array{uid: string, exp: int}|null */
-    private function readOAuthState(string $state): ?array
+    /** @return array{uid:string, exp:int, front:string}|null */
+    private function readOAuthState(Request $request, string $state): ?array
     {
         try {
             $payload = json_decode(Crypt::decryptString($state), true);
 
-            if (! is_array($payload) || empty($payload['uid']) || empty($payload['exp'])) {
+            if (! is_array($payload)
+                || empty($payload['uid'])
+                || empty($payload['exp'])
+                || empty($payload['nonce'])
+                || empty($payload['context'])
+                || empty($payload['front'])) {
                 return null;
             }
 
-            if ((int) $payload['exp'] < now()->timestamp) {
+            $context = (string) $payload['context'];
+            if ((int) $payload['exp'] < now()->timestamp || ! hash_equals($this->oauthContext(), $context)) {
+                return null;
+            }
+
+            $marker = $this->oauthCache()->pull($this->oauthCacheKey($context, (string) $payload['nonce']));
+            if (! is_string($marker) || ! hash_equals($marker, hash('sha256', $state))) {
+                return null;
+            }
+
+            $front = $this->validateFrontendUrl((string) $payload['front'], $request);
+            if ($front === null) {
                 return null;
             }
 
             return [
                 'uid' => (string) $payload['uid'],
                 'exp' => (int) $payload['exp'],
+                'front' => $front,
             ];
-        } catch (\Illuminate\Contracts\Encryption\DecryptException) {
+        } catch (DecryptException) {
             return null;
         }
     }
@@ -314,6 +352,81 @@ class AccountController extends Controller
     private function googleCallbackUrl(): string
     {
         return url('/api/account/google/callback');
+    }
+
+    private function oauthContext(): string
+    {
+        $tenantId = function_exists('tenant') ? tenant()?->getKey() : null;
+
+        return $tenantId !== null ? 'tenant:'.$tenantId : 'platform';
+    }
+
+    private function oauthCacheKey(string $context, string $nonce): string
+    {
+        return 'oauth:google:state:'.hash('sha256', $context.'|'.$nonce);
+    }
+
+    /** Store explicito: no hereda tags/conexion de la BD tenant activa. */
+    private function oauthCache(): CacheRepository
+    {
+        return Cache::store((string) config('security.oauth.cache_store', 'central_database'));
+    }
+
+    /** URL del frontend vinculada al host actual, nunca tomada de query params. */
+    private function frontendUrlFor(Request $request): string
+    {
+        $origin = $request->headers->get('Origin');
+        if (is_string($origin) && ($valid = $this->validateFrontendUrl($origin, $request)) !== null) {
+            return $valid;
+        }
+
+        $configured = rtrim((string) config('app.frontend_url'), '/');
+        $parts = parse_url($configured);
+
+        if (function_exists('tenant') && tenant() !== null && is_array($parts)) {
+            $scheme = in_array($parts['scheme'] ?? null, ['http', 'https'], true)
+                ? $parts['scheme']
+                : $request->getScheme();
+            $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+
+            return $scheme.'://'.$request->getHost().$port;
+        }
+
+        return $configured;
+    }
+
+    private function validateFrontendUrl(string $url, Request $request): ?string
+    {
+        $parts = parse_url(rtrim($url, '/'));
+        if (! is_array($parts)
+            || ! in_array($parts['scheme'] ?? null, ['http', 'https'], true)
+            || empty($parts['host'])
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || isset($parts['query'])
+            || isset($parts['fragment'])) {
+            return null;
+        }
+
+        if ($request->isSecure() && $parts['scheme'] !== 'https') {
+            return null;
+        }
+
+        $allowedHosts = [$request->getHost()];
+        // En tenant el redirect queda atado al mismo subdominio para que un
+        // state de un colegio nunca termine en el frontend de otro contexto.
+        if (! (function_exists('tenant') && tenant() !== null)) {
+            $configuredHost = parse_url((string) config('app.frontend_url'), PHP_URL_HOST);
+            if (is_string($configuredHost)) {
+                $allowedHosts[] = $configuredHost;
+            }
+        }
+
+        if (! in_array(Str::lower((string) $parts['host']), array_map('strtolower', $allowedHosts), true)) {
+            return null;
+        }
+
+        return $parts['scheme'].'://'.$parts['host'].(isset($parts['port']) ? ':'.$parts['port'] : '');
     }
 
     /** @return array<string, mixed> */

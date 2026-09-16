@@ -49,9 +49,6 @@ class TenantDatabaseName
         return substr($hex, 0, 10);
     }
 
-    /**
-     * @param  Tenant|null  $tenant
-     */
     public static function for(?Tenant $tenant): string
     {
         $name = $tenant?->name ?? 'colegio';

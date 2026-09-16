@@ -6,6 +6,7 @@ namespace App\Models;
 
 use App\Models\Rbac\CentralModel;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Registro de un archivo subido por un colegio (pipeline unico, RN-AC-001..006).
@@ -15,18 +16,18 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * <tenant_id>/<carpeta>/<uuid>.<ext>. Soft-delete (RG-004): la fila persiste
  * hasta la ventana de retencion, cuando la purga fisica borra objeto+fila.
  *
- * @property int         $id
- * @property string      $tenant_id
- * @property string      $disk
- * @property string      $path
- * @property string      $mime
- * @property int         $size
- * @property string      $checksum
- * @property string      $original_name
- * @property ?string     $uploaded_by_email
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
- * @property \Illuminate\Support\Carbon|null $deleted_at
+ * @property int $id
+ * @property string $tenant_id
+ * @property string $disk
+ * @property string $path
+ * @property string $mime
+ * @property int $size
+ * @property string $checksum
+ * @property string $original_name
+ * @property ?string $uploaded_by_email
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
+ * @property Carbon|null $deleted_at
  */
 class StoredFile extends CentralModel
 {

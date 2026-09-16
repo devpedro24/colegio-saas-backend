@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\Grado;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -64,7 +64,8 @@ class GradoController extends Controller
 
         try {
             TenantDataChanged::dispatch('grado', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $grado->load('nivel:id,nombre,nivel_educativo')], 201);
     }
@@ -100,7 +101,8 @@ class GradoController extends Controller
 
         try {
             TenantDataChanged::dispatch('grado', 'updated', $grado->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $grado->load('nivel:id,nombre,nivel_educativo')]);
     }
@@ -117,7 +119,8 @@ class GradoController extends Controller
 
         try {
             TenantDataChanged::dispatch('grado', 'deleted', $grado->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }

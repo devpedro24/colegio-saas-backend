@@ -46,6 +46,18 @@ return [
             'lock_table' => env('DB_CACHE_LOCK_TABLE'),
         ],
 
+        // Store central explicito para nonces de seguridad que se crean y
+        // consumen dentro de contextos tenant. Evita que el bootstrapper de
+        // tenancy intente aplicar tags (no soportados por DatabaseStore) o use
+        // por accidente la tabla cache de la BD aislada.
+        'central_database' => [
+            'driver' => 'database',
+            'connection' => env('DB_CACHE_CONNECTION', env('DB_CONNECTION', 'sqlite')),
+            'table' => env('DB_CACHE_TABLE', 'cache'),
+            'lock_connection' => env('DB_CACHE_LOCK_CONNECTION', env('DB_CONNECTION', 'sqlite')),
+            'lock_table' => env('DB_CACHE_LOCK_TABLE', 'cache_locks'),
+        ],
+
         'file' => [
             'driver' => 'file',
             'path' => storage_path('framework/cache/data'),

@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
+use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -42,8 +43,8 @@ class PeriodoController extends Controller
     {
         $ano = AnoLectivo::findOrFail($anoLectivoId);
 
-        if ($ano->estaCerrado()) {
-            abort(422, 'El año lectivo está cerrado; no se pueden agregar periodos.');
+        if ($ano->estado !== AnoLectivo::ESTADO_PLANIFICADO) {
+            abort(422, 'Solo se pueden agregar periodos mientras el año lectivo está planificado.');
         }
 
         $data = $this->validated($request);
@@ -74,11 +75,12 @@ class PeriodoController extends Controller
             null,
             $this->snapshot($periodo),
         );
+        ConfigurationGate::maybeActivate($request->user());
 
-        
         try {
             TenantDataChanged::dispatch('periodo', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($periodo)], 201);
     }
@@ -130,10 +132,12 @@ class PeriodoController extends Controller
             $prev,
             $this->snapshot($periodo),
         );
+        ConfigurationGate::maybeActivate($request->user());
 
         try {
             TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($periodo)]);
     }
@@ -152,6 +156,10 @@ class PeriodoController extends Controller
             abort(422, 'El periodo está cerrado y no puede eliminarse.');
         }
 
+        if ($ano->estado !== AnoLectivo::ESTADO_PLANIFICADO) {
+            abort(422, 'Solo se pueden eliminar periodos mientras el año lectivo está planificado.');
+        }
+
         $prev = $this->snapshot($periodo);
         $periodo->delete();
 
@@ -164,10 +172,10 @@ class PeriodoController extends Controller
             null,
         );
 
-        
         try {
             TenantDataChanged::dispatch('periodo', 'deleted', $periodo->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }
@@ -199,10 +207,10 @@ class PeriodoController extends Controller
             'Apertura del periodo (planificado → abierto).',
         );
 
-        
         try {
             TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($periodo)]);
     }
@@ -229,10 +237,10 @@ class PeriodoController extends Controller
             'Cierre del periodo (abierto → cerrado).',
         );
 
-        
         try {
             TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($periodo)]);
     }
@@ -309,6 +317,17 @@ class PeriodoController extends Controller
                 }
             }
             $anterior = $p;
+        }
+
+        $esperados = $ano->num_periodos + ($ano->tiene_quinto_periodo ? 1 : 0);
+        if ($periodos->count() === $esperados) {
+            $primero = $periodos->first();
+            $ultimo = $periodos->last();
+
+            if (! $primero['fecha_inicio']->isSameDay($ano->fecha_inicio)
+                || ! $ultimo['fecha_fin']->isSameDay($ano->fecha_fin)) {
+                abort(422, 'El conjunto completo de periodos debe cubrir desde el inicio hasta el cierre del año lectivo.');
+            }
         }
     }
 

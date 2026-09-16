@@ -22,8 +22,8 @@ class PlatformDataChanged implements ShouldBroadcast
     use SerializesModels;
 
     /**
-     * @param string $resource 'colegios' | 'plans' | 'rbac'
-     * @param string $action   'created' | 'updated' | 'deleted' | 'disabled' | 'enabled'
+     * @param  string  $resource  'colegios' | 'plans' | 'rbac'
+     * @param  string  $action  'created' | 'updated' | 'deleted' | 'disabled' | 'enabled'
      */
     public function __construct(public string $resource, public string $action = 'updated') {}
 

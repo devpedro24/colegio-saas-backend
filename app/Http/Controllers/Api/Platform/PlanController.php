@@ -8,10 +8,16 @@ use App\Events\PlatformDataChanged;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Plan;
+use App\Models\Tenant;
 use App\Plans\PlanCatalog;
+use App\Services\TenantPlanManager;
+use App\Services\TenantRbacSynchronizer;
+use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use RuntimeException;
 
 /**
  * Gestion de PLANES (membresias) desde el panel del superadministrador.
@@ -50,6 +56,7 @@ class PlanController extends Controller
         $plan = Plan::create($data);
 
         PlatformDataChanged::dispatch('plans', 'created');
+        AuditLogger::platform($request->user(), 'CREATE', 'plan', (string) $plan->id, null, $this->present($plan));
 
         return response()->json(['plan' => $this->present($plan)], 201);
     }
@@ -63,14 +70,45 @@ class PlanController extends Controller
     }
 
     /** Actualiza un plan (nombre, descripcion, estado, precios, limites, features). */
-    public function update(Request $request, int $id): JsonResponse
-    {
+    public function update(
+        Request $request,
+        int $id,
+        TenantPlanManager $planManager,
+        TenantRbacSynchronizer $synchronizer,
+    ): JsonResponse {
         $plan = Plan::findOrFail($id);
 
         $data = $this->validatePlan($request, $plan->id);
-        $plan->update($data);
+        if ($data['key'] !== $plan->key) {
+            return response()->json(['message' => 'La clave de un plan publicado es inmutable.'], 422);
+        }
+
+        $before = $this->present($plan);
+        $candidate = $plan->replicate()->fill($data);
+
+        try {
+            Tenant::query()
+                ->where('tipo', '!=', Tenant::TIPO_SEDE)
+                ->where('plan', $plan->key)
+                ->each(fn (Tenant $tenant) => $planManager->assertCapacity($tenant, $candidate));
+
+            DB::connection(config('tenancy.database.central_connection'))->transaction(function () use ($plan, $data, $synchronizer): void {
+                $plan->update($data);
+                $synchronizer->syncAll($plan->key);
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
+        }
 
         PlatformDataChanged::dispatch('plans', 'updated');
+        AuditLogger::platform(
+            $request->user(),
+            'UPDATE',
+            'plan',
+            (string) $plan->id,
+            $before,
+            $this->present($plan->fresh()),
+        );
 
         return response()->json(['plan' => $this->present($plan->fresh())]);
     }

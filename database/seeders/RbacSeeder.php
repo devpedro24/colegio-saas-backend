@@ -74,6 +74,7 @@ class RbacSeeder extends Seeder
                     if ($has) {
                         $role->revokePermissionTo($key);
                     }
+
                     continue;
                 }
 
@@ -81,6 +82,7 @@ class RbacSeeder extends Seeder
                     if (! $has) {
                         $role->givePermissionTo($key);
                     }
+
                     continue;
                 }
 

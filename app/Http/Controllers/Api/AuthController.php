@@ -7,9 +7,11 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
+use App\Support\Mfa\MfaPolicy;
 use App\Support\Mfa\TotpService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
@@ -20,6 +22,8 @@ use Illuminate\Validation\ValidationException;
  */
 class AuthController extends Controller
 {
+    public function __construct(private readonly MfaPolicy $mfaPolicy) {}
+
     public function login(Request $request, TotpService $totp): JsonResponse
     {
         $data = $request->validate([
@@ -27,6 +31,12 @@ class AuthController extends Controller
             'password' => ['required', 'string'],
             'code' => ['nullable', 'string'],
         ]);
+
+        if (User::isImpersonationShadowEmail($data['email'])) {
+            throw ValidationException::withMessages([
+                'email' => ['Credenciales invalidas.'],
+            ]);
+        }
 
         $user = User::where('email', $data['email'])->first();
 
@@ -62,12 +72,14 @@ class AuthController extends Controller
             }
         }
 
-        $token = $user->createToken('web')->plainTextToken;
+        $expiresAt = $this->tokenExpiresAt();
+        $token = $user->createToken('web', ['tenant'], $expiresAt)->plainTextToken;
 
         AuditLogger::tenant($user, 'LOGIN', 'auth', (string) $user->id);
 
         return response()->json([
             'token' => $token,
+            'expires_at' => $expiresAt?->toIso8601String(),
             'user' => $this->userPayload($user),
         ]);
     }
@@ -79,7 +91,10 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
-        $request->user()->currentAccessToken()->delete();
+        /** @var User $user */
+        $user = $request->user();
+        AuditLogger::tenant($user, 'LOGOUT', 'auth', (string) $user->id);
+        $user->currentAccessToken()?->delete();
 
         return response()->json(['message' => 'Sesion cerrada.']);
     }
@@ -95,13 +110,22 @@ class AuthController extends Controller
             'email' => $user->email,
             'phone' => $user->phone,
             'google_email' => $user->google_email,
-            // UUID del colegio: el front lo usa para suscribirse a su canal privado.
+            // ID del colegio: el front lo usa para suscribirse a su canal privado.
             'tenant_id' => tenant()?->getKey(),
             'must_change_password' => (bool) $user->must_change_password,
             'mfa_enabled' => $user->hasTwoFactorEnabled(),
+            'mfa_required' => $this->mfaPolicy->isRequired($user),
+            'mfa_setup_required' => $this->mfaPolicy->isRequired($user) && ! $user->hasTwoFactorEnabled(),
             'roles' => $user->getRoleNames()->values(),
             'permissions' => $user->getAllPermissions()->pluck('name')->values(),
             'is_superadmin' => $user->esSuperadminPlataforma(),
         ];
+    }
+
+    private function tokenExpiresAt(): ?Carbon
+    {
+        $minutes = (int) config('sanctum.expiration', 480);
+
+        return $minutes > 0 ? now('UTC')->addMinutes($minutes) : null;
     }
 }

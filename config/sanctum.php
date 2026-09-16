@@ -50,7 +50,13 @@ return [
     |
     */
 
-    'expiration' => null,
+    // Limite global para tokens Bearer. Un valor <= 0 conserva el comportamiento
+    // historico sin expiracion; produccion debe mantener un TTL finito.
+    'expiration' => (static function (): ?int {
+        $minutes = (int) env('SANCTUM_TOKEN_EXPIRATION_MINUTES', 480);
+
+        return $minutes > 0 ? $minutes : null;
+    })(),
 
     /*
     |--------------------------------------------------------------------------
