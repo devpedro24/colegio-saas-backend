@@ -12,8 +12,8 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 /**
  * Periodo académico (periodos-academicos.md). Vive en la BD del tenant.
  *
- * Pertenece a un año lectivo; los periodos son contiguos y quedan dentro del
- * rango de fechas del año (RN-PA-003). Un periodo cerrado es inmutable (RN-PA-006).
+ * Pertenece a un año lectivo y queda dentro de su rango de fechas. Durante la
+ * configuración no se permiten solapamientos; un periodo cerrado es inmutable.
  *
  * @property int                             $id
  * @property int                             $ano_lectivo_id

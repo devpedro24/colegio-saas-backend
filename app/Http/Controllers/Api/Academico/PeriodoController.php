@@ -12,6 +12,8 @@ use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Gestión de periodos académicos de un año lectivo (periodos-academicos.md).
@@ -21,7 +23,7 @@ use Illuminate\Support\Carbon;
  *
  * El backend es la AUTORIDAD de la FSM del periodo:
  *   planificado → abierto → cerrado.
- * Los periodos son contiguos y quedan dentro del rango del año (RN-PA-003).
+ * Los periodos quedan dentro del rango del año y no se solapan.
  */
 class PeriodoController extends Controller
 {
@@ -47,6 +49,7 @@ class PeriodoController extends Controller
         }
 
         $data = $this->validated($request);
+        $data['nombre'] = $this->nombreSegunOrden((int) $data['orden']);
 
         // El orden es único dentro del año lectivo.
         $ordenOcupado = $ano->periodos()->where('orden', $data['orden'])->exists();
@@ -55,14 +58,14 @@ class PeriodoController extends Controller
         }
 
         $this->validarOrdenDentroDelLimite($ano, (int) $data['orden']);
-        $this->validarFechasYContiguidad($ano, $data);
+        $this->validarFechasSinSolapamiento($ano, $data);
 
         $periodo = $ano->periodos()->create([
             'nombre' => $data['nombre'],
             'orden' => $data['orden'],
             'fecha_inicio' => $data['fecha_inicio'],
             'fecha_fin' => $data['fecha_fin'],
-            'peso' => $data['peso'] ?? null,
+            'peso' => $this->resolverPeso($ano, $data['peso'] ?? null),
             'estado' => Periodo::ESTADO_PLANIFICADO,
         ]);
 
@@ -99,6 +102,7 @@ class PeriodoController extends Controller
         }
 
         $data = $this->validated($request);
+        $data['nombre'] = $this->nombreSegunOrden((int) $data['orden']);
 
         // El orden es único dentro del año lectivo (excluyendo el propio periodo).
         $ordenOcupado = $ano->periodos()
@@ -110,7 +114,7 @@ class PeriodoController extends Controller
         }
 
         $this->validarOrdenDentroDelLimite($ano, (int) $data['orden']);
-        $this->validarFechasYContiguidad($ano, $data, $periodo->id);
+        $this->validarFechasSinSolapamiento($ano, $data, $periodo->id);
 
         $prev = $this->snapshot($periodo);
 
@@ -119,7 +123,7 @@ class PeriodoController extends Controller
             'orden' => $data['orden'],
             'fecha_inicio' => $data['fecha_inicio'],
             'fecha_fin' => $data['fecha_fin'],
-            'peso' => $data['peso'] ?? null,
+            'peso' => $this->resolverPeso($ano, $data['peso'] ?? null),
         ]);
 
         AuditLogger::tenant(
@@ -138,7 +142,7 @@ class PeriodoController extends Controller
         return response()->json(['data' => $this->present($periodo)]);
     }
 
-    /** Elimina un periodo (bloqueado si está cerrado o el año está cerrado). */
+    /** Elimina físicamente un período vacío; el año cerrado permanece inmutable. */
     public function destroy(Request $request, string $id): JsonResponse
     {
         $periodo = Periodo::findOrFail($id);
@@ -148,12 +152,13 @@ class PeriodoController extends Controller
             abort(422, 'El año lectivo está cerrado y sus datos son inmutables.');
         }
 
-        if ($periodo->estaCerrado()) {
-            abort(422, 'El periodo está cerrado y no puede eliminarse.');
+        if ($this->tieneInformacionAnclada($periodo)) {
+            abort(422, 'No se puede eliminar el periodo porque tiene notas, informes u otra información asociada.');
         }
 
         $prev = $this->snapshot($periodo);
-        $periodo->delete();
+        // Un período sin datos asociados es solo configuración: se borra físicamente.
+        $periodo->forceDelete();
 
         AuditLogger::tenant(
             $request->user(),
@@ -245,8 +250,8 @@ class PeriodoController extends Controller
     private function validated(Request $request): array
     {
         return $request->validate([
-            'nombre' => ['required', 'string', 'max:120'],
-            'orden' => ['required', 'integer', 'min:1', 'max:12'],
+            'nombre' => ['nullable', 'string', 'max:120'],
+            'orden' => ['required', 'integer', 'min:1', 'max:5'],
             'fecha_inicio' => ['required', 'date'],
             'fecha_fin' => ['required', 'date', 'after_or_equal:fecha_inicio'],
             'peso' => ['nullable', 'numeric', 'min:0', 'max:100'],
@@ -266,14 +271,34 @@ class PeriodoController extends Controller
         }
     }
 
+    private function nombreSegunOrden(int $orden): string
+    {
+        return match ($orden) {
+            1 => 'Primer período',
+            2 => 'Segundo período',
+            3 => 'Tercer período',
+            4 => 'Cuarto período',
+            5 => 'Quinto período',
+            default => throw new \InvalidArgumentException('Orden de período inválido.'),
+        };
+    }
+
+    private function resolverPeso(AnoLectivo $ano, mixed $peso): ?float
+    {
+        if ($ano->tiene_quinto_periodo) {
+            return $peso === null ? null : (float) $peso;
+        }
+
+        return round(100 / $ano->num_periodos, 2);
+    }
+
     /**
-     * Valida que las fechas caigan dentro del año y que los periodos sean
-     * contiguos (RN-PA-003): el periodo N+1 inicia el día siguiente al cierre
-     * del periodo N.
+     * Valida el rango del año y evita solapamientos. Mientras se configura se
+     * permiten huecos; al iniciar el año se exige cobertura completa.
      *
      * @param  array<string, mixed>  $data
      */
-    private function validarFechasYContiguidad(AnoLectivo $ano, array $data, ?int $ignorarId = null): void
+    private function validarFechasSinSolapamiento(AnoLectivo $ano, array $data, ?int $ignorarId = null): void
     {
         $inicio = Carbon::parse($data['fecha_inicio'])->startOfDay();
         $fin = Carbon::parse($data['fecha_fin'])->startOfDay();
@@ -283,7 +308,7 @@ class PeriodoController extends Controller
             abort(422, 'Las fechas del periodo deben estar dentro del rango del año lectivo.');
         }
 
-        // Construye el conjunto ordenado de periodos (existentes + el entrante).
+        // Ningún período puede cruzarse con otro del mismo año lectivo.
         $periodos = $ano->periodos()
             ->when($ignorarId !== null, fn ($q) => $q->where('id', '!=', $ignorarId))
             ->get(['id', 'orden', 'fecha_inicio', 'fecha_fin'])
@@ -291,25 +316,43 @@ class PeriodoController extends Controller
                 'orden' => $p->orden,
                 'fecha_inicio' => $p->fecha_inicio->copy()->startOfDay(),
                 'fecha_fin' => $p->fecha_fin->copy()->startOfDay(),
-            ])
-            ->push([
-                'orden' => (int) $data['orden'],
-                'fecha_inicio' => $inicio,
-                'fecha_fin' => $fin,
-            ])
-            ->sortBy('orden')
-            ->values();
+            ]);
 
-        $anterior = null;
         foreach ($periodos as $p) {
-            if ($anterior !== null) {
-                $esperado = $anterior['fecha_fin']->copy()->addDay();
-                if (! $p['fecha_inicio']->isSameDay($esperado)) {
-                    abort(422, 'Los periodos deben ser contiguos: cada periodo inicia el día siguiente al cierre del anterior (RN-PA-003).');
+            if ($inicio->lte($p['fecha_fin']) && $fin->gte($p['fecha_inicio'])) {
+                abort(422, 'Las fechas del periodo se cruzan con otro periodo ya configurado.');
+            }
+        }
+    }
+
+    /**
+     * Busca datos vinculados en cualquier módulo del colegio antes de hacer un
+     * borrado físico. Los módulos que anclen información al período usan
+     * periodo_id o period_id, por ejemplo notas e informes.
+     */
+    private function tieneInformacionAnclada(Periodo $periodo): bool
+    {
+        try {
+            foreach (Schema::getTables() as $tabla) {
+                $nombre = is_array($tabla) ? $tabla['name'] : $tabla->name;
+                if ($nombre === $periodo->getTable()) {
+                    continue;
+                }
+
+                $columnas = Schema::getColumnListing($nombre);
+                foreach (['periodo_id', 'period_id'] as $columna) {
+                    if (in_array($columna, $columnas, true)
+                        && DB::table($nombre)->where($columna, $periodo->getKey())->exists()) {
+                        return true;
+                    }
                 }
             }
-            $anterior = $p;
+        } catch (\Throwable) {
+            // Ante un problema de inspección se protege la información existente.
+            abort(422, 'No se pudo comprobar si el periodo tiene información asociada; no se eliminó.');
         }
+
+        return false;
     }
 
     /**

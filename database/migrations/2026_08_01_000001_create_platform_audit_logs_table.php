@@ -40,8 +40,8 @@ return new class extends Migration
             $table->string('recurso');                       // p.ej. tenant, plan, rbac_role
             $table->string('recurso_id')->nullable();        // id del recurso afectado (string: soporta uuid/int)
 
-            // Sobre que colegio impacta (uuid del tenant afectado; nullable si es global).
-            $table->uuid('tenant_id')->nullable();
+            // Sobre que colegio impacta (id del tenant afectado; nullable si es global).
+            $table->string('tenant_id')->nullable();
 
             // Antes / despues del cambio (RN-LA-003).
             $table->json('valor_previo')->nullable();

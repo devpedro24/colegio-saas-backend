@@ -32,8 +32,8 @@ return new class extends Migration
             $table->unsignedBigInteger('superadmin_id');
             $table->string('superadmin_email');
 
-            // Colegio suplantado (uuid del tenant).
-            $table->uuid('tenant_id')->index();
+            // Colegio suplantado (id del tenant; string corto, no UUID real).
+            $table->string('tenant_id')->index();
 
             // Ventana de validez de la sesion de suplantacion.
             $table->timestamp('started_at');

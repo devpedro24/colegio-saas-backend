@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\Academico\MetodoAprobacionController;
 use App\Http\Controllers\Api\Academico\ModeloPedagogicoController;
 use App\Http\Controllers\Api\Academico\NivelController;
 use App\Http\Controllers\Api\Academico\PeriodoController;
+use App\Http\Controllers\Api\Academico\PlanEstudiosController;
 use App\Http\Controllers\Api\Academico\SedeController;
 use App\Http\Controllers\Api\Platform\StorageController;
 use App\Http\Controllers\Api\RoleController;
@@ -49,8 +50,10 @@ Route::middleware('can:academico.anos.gestionar')->group(function () {
     Route::post('/anos-lectivos', [AnoLectivoController::class, 'store']);
     Route::get('/anos-lectivos/{id}', [AnoLectivoController::class, 'show']);
     Route::put('/anos-lectivos/{id}', [AnoLectivoController::class, 'update']);
+    Route::delete('/anos-lectivos/{id}', [AnoLectivoController::class, 'destroy']);
     Route::post('/anos-lectivos/{id}/iniciar', [AnoLectivoController::class, 'iniciar']);
     Route::post('/anos-lectivos/{id}/cerrar', [AnoLectivoController::class, 'cerrar']);
+    Route::post('/anos-lectivos/{id}/reabrir', [AnoLectivoController::class, 'reabrir']);
 
     // Periodos: index/store anidados bajo el año; mutaciones por id de periodo.
     Route::get('/anos-lectivos/{ano}/periodos', [PeriodoController::class, 'index']);
@@ -137,6 +140,20 @@ Route::middleware('can:academico.estructura.gestionar')->prefix('estructura')->g
     Route::get('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'show']);
     Route::put('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'update']);
     Route::delete('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'destroy']);
+});
+
+// Plan de estudios (Bloque C): áreas y materias. Las asignaciones y horarios
+// se suman sobre estas entidades en el siguiente incremento.
+Route::middleware('can:academico.plan_estudios.gestionar')->prefix('plan-estudios')->group(function () {
+    Route::get('/areas', [PlanEstudiosController::class, 'areas']);
+    Route::post('/areas', [PlanEstudiosController::class, 'storeArea']);
+    Route::put('/areas/{id}', [PlanEstudiosController::class, 'updateArea']);
+    Route::delete('/areas/{id}', [PlanEstudiosController::class, 'destroyArea']);
+
+    Route::get('/materias', [PlanEstudiosController::class, 'materias']);
+    Route::post('/materias', [PlanEstudiosController::class, 'storeMateria']);
+    Route::put('/materias/{id}', [PlanEstudiosController::class, 'updateMateria']);
+    Route::delete('/materias/{id}', [PlanEstudiosController::class, 'destroyMateria']);
 });
 
 // Pipeline de archivos por tenant (RN-AC-001..006): cualquier usuario autenticado

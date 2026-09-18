@@ -26,7 +26,7 @@ return new class extends Migration
         Schema::create('stored_files', function (Blueprint $table) {
             $table->bigIncrements('id');
 
-            $table->uuid('tenant_id')->index();          // colegio dueno
+            $table->string('tenant_id')->index();        // colegio dueno
             $table->string('disk')->default('tenant');   // disco de destino
             $table->string('path');                      // ruta relativa al disco
             $table->string('mime', 120);                 // MIME validado por whitelist

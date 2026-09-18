@@ -72,6 +72,7 @@ class PermissionMatrix
             // ---- Academico (Fase 1 Bloque B): jerarquía organizacional ----
             // Sede→Jornada→Nivel→Grado→Grupo + bloques horarios + espacios físicos.
             ['key' => 'academico.estructura.gestionar', 'module' => 'academico', 'action' => 'estructura.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
+            ['key' => 'academico.plan_estudios.gestionar', 'module' => 'academico', 'action' => 'plan_estudios.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
 
             // ---- Usuarios y Roles ----
             ['key' => 'usuarios.gestionar', 'module' => 'Usuarios y Roles', 'action' => 'Crear / editar / desactivar usuarios', 'cells' => ['rector' => 'crud']],
