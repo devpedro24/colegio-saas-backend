@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\Grupo;
+use App\Models\Academico\Jornada;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -55,6 +56,8 @@ class GrupoController extends Controller
             'estado' => ['nullable', Rule::in([Grupo::ESTADO_ACTIVO, Grupo::ESTADO_INACTIVO])],
         ]);
 
+        $this->sincronizarSedeConJornada($data, null);
+
         // RN-JO-002: único por (grado, año lectivo, jornada, nombre).
         $existe = Grupo::query()
             ->where('grado_id', $data['grado_id'])
@@ -102,8 +105,10 @@ class GrupoController extends Controller
 
         $gradoId = $data['grado_id'] ?? $grupo->grado_id;
         $anoId = $data['ano_lectivo_id'] ?? $grupo->ano_lectivo_id;
-        $jornadaId = array_key_exists('jornada_id', $data) ? $data['jornada_id'] : $grupo->jornada_id;
         $nombre = $data['nombre'] ?? $grupo->nombre;
+
+        $this->sincronizarSedeConJornada($data, $grupo);
+        $jornadaId = array_key_exists('jornada_id', $data) ? $data['jornada_id'] : $grupo->jornada_id;
 
         $existe = Grupo::query()
             ->where('grado_id', $gradoId)
@@ -159,5 +164,31 @@ class GrupoController extends Controller
             'cupo_maximo' => $grupo->cupo_maximo,
             'estado' => $grupo->estado,
         ];
+    }
+
+    /**
+     * Una jornada siempre pertenece a una sede. Si se selecciona jornada, la
+     * sede del grupo se completa automáticamente o debe coincidir con ella.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function sincronizarSedeConJornada(array &$data, ?Grupo $grupo): void
+    {
+        $jornadaId = array_key_exists('jornada_id', $data)
+            ? $data['jornada_id']
+            : $grupo?->jornada_id;
+
+        if ($jornadaId === null) {
+            return;
+        }
+
+        $jornada = Jornada::findOrFail($jornadaId);
+        $sedeId = array_key_exists('sede_id', $data) ? $data['sede_id'] : $grupo?->sede_id;
+
+        if ($sedeId !== null && (int) $sedeId !== (int) $jornada->sede_id) {
+            abort(422, 'La jornada seleccionada pertenece a una sede diferente a la del grupo.');
+        }
+
+        $data['sede_id'] = $jornada->sede_id;
     }
 }

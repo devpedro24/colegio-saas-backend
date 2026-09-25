@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\BloqueHorario;
+use App\Models\Academico\Jornada;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -50,6 +51,7 @@ class BloqueHorarioController extends Controller
         ]);
 
         // Sin solapamiento con otros bloques activos de la misma jornada.
+        $this->validarDentroDeJornada($data['jornada_id'], $data['hora_inicio'], $data['hora_fin']);
         $this->validarSolapamiento($data['jornada_id'], $data['hora_inicio'], $data['hora_fin'], null);
 
         $bloque = BloqueHorario::create([
@@ -89,6 +91,7 @@ class BloqueHorarioController extends Controller
         $jornadaId = $data['jornada_id'] ?? $bloque->jornada_id;
         $inicio = $data['hora_inicio'] ?? $bloque->hora_inicio;
         $fin = $data['hora_fin'] ?? $bloque->hora_fin;
+        $this->validarDentroDeJornada($jornadaId, $inicio, $fin);
         $this->validarSolapamiento($jornadaId, $inicio, $fin, $bloque->id);
 
         $prev = $this->snapshot($bloque);
@@ -135,6 +138,16 @@ class BloqueHorarioController extends Controller
 
         if ($solapa) {
             abort(422, 'El bloque se solapa con otro bloque de la misma jornada.');
+        }
+    }
+
+    /** Un bloque no puede quedar por fuera del rango horario de su jornada. */
+    private function validarDentroDeJornada(int $jornadaId, string $inicio, string $fin): void
+    {
+        $jornada = Jornada::findOrFail($jornadaId);
+        if (($jornada->hora_inicio !== null && $inicio < $jornada->hora_inicio)
+            || ($jornada->hora_fin !== null && $fin > $jornada->hora_fin)) {
+            abort(422, 'El bloque debe estar dentro del horario definido para su jornada.');
         }
     }
 
