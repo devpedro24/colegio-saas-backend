@@ -23,7 +23,6 @@ return new class extends Migration
             $table->time('hora_inicio');
             $table->time('hora_fin');
             $table->boolean('es_descanso')->default(false);
-            $table->unsignedTinyInteger('orden')->default(0);
             $table->string('estado')->default('activo');  // activo|inactivo
             $table->timestamps();
             $table->softDeletes();

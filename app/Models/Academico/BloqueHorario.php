@@ -19,7 +19,6 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property string                          $hora_inicio
  * @property string                          $hora_fin
  * @property bool                            $es_descanso
- * @property int                             $orden
  * @property string                          $estado
  * @property \Illuminate\Support\Carbon|null  $created_at
  * @property \Illuminate\Support\Carbon|null  $updated_at
@@ -45,7 +44,6 @@ class BloqueHorario extends Model
         'hora_inicio',
         'hora_fin',
         'es_descanso',
-        'orden',
         'estado',
     ];
 
@@ -57,7 +55,6 @@ class BloqueHorario extends Model
         return [
             'jornada_id' => 'integer',
             'es_descanso' => 'boolean',
-            'orden' => 'integer',
         ];
     }
 

@@ -8,10 +8,12 @@ use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\Jornada;
+use App\Models\Academico\SesionHorario;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Bloques horarios de cada jornada (Bloque B). Permiso `academico.estructura.gestionar`.
@@ -22,10 +24,12 @@ class BloqueHorarioController extends Controller
     public function index(Request $request): JsonResponse
     {
         $bloques = BloqueHorario::query()
-            ->with('jornada:id,nombre,sede_id')
+            ->with('jornada.sede:id,nombre')
             ->when($request->filled('jornada_id'), fn ($q) => $q->where('jornada_id', (int) $request->query('jornada_id')))
             ->orderBy('jornada_id')
-            ->orderBy('orden')
+            ->orderBy('hora_inicio')
+            ->orderBy('hora_fin')
+            ->orderBy('id')
             ->get();
 
         return response()->json(['data' => $bloques]);
@@ -34,7 +38,7 @@ class BloqueHorarioController extends Controller
     /** Detalle de un bloque. */
     public function show(int $id): JsonResponse
     {
-        return response()->json(['data' => BloqueHorario::with('jornada:id,nombre,sede_id')->findOrFail($id)]);
+        return response()->json(['data' => BloqueHorario::with('jornada.sede:id,nombre')->findOrFail($id)]);
     }
 
     /** Crea un bloque. */
@@ -46,21 +50,19 @@ class BloqueHorarioController extends Controller
             'hora_inicio' => ['required', 'date_format:H:i'],
             'hora_fin' => ['required', 'date_format:H:i', 'after:hora_inicio'],
             'es_descanso' => ['nullable', 'boolean'],
-            'orden' => ['nullable', 'integer', 'min:0'],
             'estado' => ['nullable', Rule::in([BloqueHorario::ESTADO_ACTIVO, BloqueHorario::ESTADO_INACTIVO])],
         ]);
 
-        // Sin solapamiento con otros bloques activos de la misma jornada.
-        $this->validarDentroDeJornada($data['jornada_id'], $data['hora_inicio'], $data['hora_fin']);
-        $this->validarSolapamiento($data['jornada_id'], $data['hora_inicio'], $data['hora_fin'], null);
+        $jornadaId = (int) $data['jornada_id'];
+        $this->validarDentroDeJornada($jornadaId, $data['hora_inicio'], $data['hora_fin']);
+        $this->validarSolapamiento($jornadaId, $data['hora_inicio'], $data['hora_fin'], null);
 
         $bloque = BloqueHorario::create([
-            'jornada_id' => $data['jornada_id'],
+            'jornada_id' => $jornadaId,
             'nombre' => $data['nombre'],
             'hora_inicio' => $data['hora_inicio'],
             'hora_fin' => $data['hora_fin'],
             'es_descanso' => $data['es_descanso'] ?? false,
-            'orden' => $data['orden'] ?? 0,
             'estado' => $data['estado'] ?? BloqueHorario::ESTADO_ACTIVO,
         ]);
 
@@ -70,7 +72,7 @@ class BloqueHorarioController extends Controller
             TenantDataChanged::dispatch('bloque_horario', 'created', $data['nombre']);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $bloque->load('jornada:id,nombre,sede_id')], 201);
+        return response()->json(['data' => $bloque->load('jornada.sede:id,nombre')], 201);
     }
 
     /** Edita un bloque. */
@@ -84,13 +86,22 @@ class BloqueHorarioController extends Controller
             'hora_inicio' => ['sometimes', 'date_format:H:i'],
             'hora_fin' => ['sometimes', 'date_format:H:i', 'after:hora_inicio'],
             'es_descanso' => ['nullable', 'boolean'],
-            'orden' => ['nullable', 'integer', 'min:0'],
             'estado' => ['nullable', Rule::in([BloqueHorario::ESTADO_ACTIVO, BloqueHorario::ESTADO_INACTIVO])],
         ]);
 
-        $jornadaId = $data['jornada_id'] ?? $bloque->jornada_id;
+        $jornadaId = (int) ($data['jornada_id'] ?? $bloque->jornada_id);
         $inicio = $data['hora_inicio'] ?? $bloque->hora_inicio;
         $fin = $data['hora_fin'] ?? $bloque->hora_fin;
+        if (SesionHorario::where('bloque_horario_id', $bloque->id)->exists()
+            && ($jornadaId !== (int) $bloque->jornada_id
+                || substr($inicio, 0, 5) !== substr($bloque->hora_inicio, 0, 5)
+                || substr($fin, 0, 5) !== substr($bloque->hora_fin, 0, 5)
+                || (isset($data['es_descanso']) && (bool) $data['es_descanso'] !== $bloque->es_descanso)
+                || (isset($data['estado']) && $data['estado'] !== $bloque->estado))) {
+            throw ValidationException::withMessages([
+                'hora_inicio' => 'Este bloque ya tiene clases programadas. Cambia primero esas clases a otro bloque o a horas propias.',
+            ]);
+        }
         $this->validarDentroDeJornada($jornadaId, $inicio, $fin);
         $this->validarSolapamiento($jornadaId, $inicio, $fin, $bloque->id);
 
@@ -103,13 +114,18 @@ class BloqueHorarioController extends Controller
             TenantDataChanged::dispatch('bloque_horario', 'updated', $bloque->nombre);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $bloque->load('jornada:id,nombre,sede_id')]);
+        return response()->json(['data' => $bloque->load('jornada.sede:id,nombre')]);
     }
 
     /** Elimina (soft-delete) un bloque. */
     public function destroy(Request $request, int $id): JsonResponse
     {
         $bloque = BloqueHorario::findOrFail($id);
+        abort_if(
+            SesionHorario::where('bloque_horario_id', $bloque->id)->exists(),
+            422,
+            'Este bloque ya tiene clases programadas. Cambia primero esas clases a otro bloque o a horas propias.',
+        );
         $prev = $this->snapshot($bloque);
 
         $bloque->delete();
@@ -129,15 +145,19 @@ class BloqueHorarioController extends Controller
         $solapa = BloqueHorario::query()
             ->where('jornada_id', $jornadaId)
             ->when($exceptoId !== null, fn ($q) => $q->where('id', '!=', $exceptoId))
-            ->where(function ($q) use ($inicio, $fin) {
-                $q->where(function ($q2) use ($inicio, $fin) {
-                    $q2->where('hora_inicio', '<', $fin)->where('hora_fin', '>', $inicio);
-                });
-            })
-            ->exists();
+            ->where('hora_inicio', '<', $fin)
+            ->where('hora_fin', '>', $inicio)
+            ->first();
 
         if ($solapa) {
-            abort(422, 'El bloque se solapa con otro bloque de la misma jornada.');
+            throw ValidationException::withMessages([
+                'hora_inicio' => sprintf(
+                    'Este horario se cruza con «%s» (%s–%s) de la misma jornada.',
+                    $solapa->nombre,
+                    substr($solapa->hora_inicio, 0, 5),
+                    substr($solapa->hora_fin, 0, 5),
+                ),
+            ]);
         }
     }
 
@@ -145,9 +165,11 @@ class BloqueHorarioController extends Controller
     private function validarDentroDeJornada(int $jornadaId, string $inicio, string $fin): void
     {
         $jornada = Jornada::findOrFail($jornadaId);
-        if (($jornada->hora_inicio !== null && $inicio < $jornada->hora_inicio)
-            || ($jornada->hora_fin !== null && $fin > $jornada->hora_fin)) {
-            abort(422, 'El bloque debe estar dentro del horario definido para su jornada.');
+        if (($jornada->hora_inicio !== null && substr($inicio, 0, 5) < substr($jornada->hora_inicio, 0, 5))
+            || ($jornada->hora_fin !== null && substr($fin, 0, 5) > substr($jornada->hora_fin, 0, 5))) {
+            throw ValidationException::withMessages([
+                'hora_inicio' => 'El bloque debe estar dentro del horario definido para su jornada.',
+            ]);
         }
     }
 
@@ -162,7 +184,6 @@ class BloqueHorarioController extends Controller
             'hora_inicio' => $bloque->hora_inicio,
             'hora_fin' => $bloque->hora_fin,
             'es_descanso' => $bloque->es_descanso,
-            'orden' => $bloque->orden,
             'estado' => $bloque->estado,
         ];
     }
