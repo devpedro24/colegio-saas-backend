@@ -28,9 +28,7 @@ use Throwable;
  */
 final class StorageService
 {
-    public function __construct(private readonly FileScanner $scanner)
-    {
-    }
+    public function __construct(private readonly FileScanner $scanner) {}
 
     /**
      * Guarda un archivo en el storage aislado del colegio y registra su metadato.
@@ -64,11 +62,14 @@ final class StorageService
 
         // 1. Guardar bytes (aislados por tenant).
         try {
-            Storage::disk(config('storage.disk'))->putFileAs(
-                $tenant->id.'/'.$path,
+            $storedPath = Storage::disk(config('storage.disk'))->putFileAs(
+                $tenant->id.'/'.trim($folder, '/'),
                 $file,
                 pathinfo($path, PATHINFO_BASENAME),
             );
+            if ($storedPath === false) {
+                throw new RuntimeException('Storage write failed.');
+            }
         } catch (Throwable $e) {
             throw new StorageException('No se pudo almacenar el archivo. Intente nuevamente.');
         }

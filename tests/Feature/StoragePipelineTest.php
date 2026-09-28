@@ -12,6 +12,7 @@ use App\Support\Storage\StorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -26,9 +27,9 @@ class StoragePipelineTest extends TestCase
 
     private function fakeTenant(string $plan = 'esencial'): Tenant
     {
-        $tenant = new Tenant();
+        $tenant = new Tenant;
         $tenant->forceFill([
-            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'id' => (string) Str::uuid(),
             'name' => 'Colegio de prueba',
             'slug' => 'colegio-test-'.uniqid(),
             'plan' => $plan,
@@ -42,7 +43,7 @@ class StoragePipelineTest extends TestCase
     {
         Storage::fake('tenant');
 
-        $service = new StorageService(new \App\Support\Storage\NullScanner());
+        $service = new StorageService(new NullScanner);
         $tenant = $this->fakeTenant('esencial');
 
         $file = UploadedFile::fake()->create('boletin.pdf', 80, 'application/pdf');
@@ -53,6 +54,9 @@ class StoragePipelineTest extends TestCase
         $this->assertSame('application/pdf', $stored->mime);
         $this->assertSame(80 * 1024, $stored->size);
         $this->assertTrue(Storage::disk('tenant')->exists($stored->path));
+        // exists() also accepts directories: verify the actual file and its bytes.
+        $this->assertSame([$stored->path], Storage::disk('tenant')->allFiles());
+        $this->assertSame(file_get_contents($file->getRealPath()), Storage::disk('tenant')->get($stored->path));
         $this->assertStringContainsString('signature=', $service->signedUrl($stored));
     }
 
@@ -60,7 +64,7 @@ class StoragePipelineTest extends TestCase
     {
         Storage::fake('tenant');
 
-        $service = new StorageService(new \App\Support\Storage\NullScanner());
+        $service = new StorageService(new NullScanner);
         $tenant = $this->fakeTenant();
 
         $file = UploadedFile::fake()->create('malware.exe', 80, 'application/x-msdownload');
@@ -74,7 +78,7 @@ class StoragePipelineTest extends TestCase
     {
         Storage::fake('tenant');
 
-        $service = new StorageService(new \App\Support\Storage\NullScanner());
+        $service = new StorageService(new NullScanner);
         $tenant = $this->fakeTenant();
 
         $file = UploadedFile::fake()->create('documento.pdf', 120, 'application/pdf');
@@ -91,7 +95,7 @@ class StoragePipelineTest extends TestCase
         Storage::fake('tenant');
 
         $tenant = $this->fakeTenant('esencial');
-        $quota = (new StorageService(new \App\Support\Storage\NullScanner()))->quotaBytes($tenant);
+        $quota = (new StorageService(new NullScanner))->quotaBytes($tenant);
 
         // Deja solo 10 bytes libres.
         StoredFile::create([
@@ -104,7 +108,7 @@ class StoragePipelineTest extends TestCase
             'original_name' => 'ocupado.pdf',
         ]);
 
-        $service = new StorageService(new \App\Support\Storage\NullScanner());
+        $service = new StorageService(new NullScanner);
         $file = UploadedFile::fake()->create('nuevo.pdf', 50, 'application/pdf');
 
         $this->expectException(StorageException::class);
