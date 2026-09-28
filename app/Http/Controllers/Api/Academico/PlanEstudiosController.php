@@ -31,6 +31,7 @@ class PlanEstudiosController extends Controller
         $area = Area::create($data + ['estado' => $data['estado'] ?? Area::ESTADO_ACTIVO]);
         AuditLogger::tenant($request->user(), 'CREATE', 'area', (string) $area->id, null, $area->toArray());
         TenantDataChanged::dispatch('area', 'created', $area->nombre);
+
         return response()->json(['data' => $area], 201);
     }
 
@@ -46,6 +47,7 @@ class PlanEstudiosController extends Controller
         $area->update($data);
         AuditLogger::tenant($request->user(), 'UPDATE', 'area', (string) $area->id, $before, $area->fresh()->toArray());
         TenantDataChanged::dispatch('area', 'updated', $area->nombre);
+
         return response()->json(['data' => $area->fresh()]);
     }
 
@@ -59,6 +61,7 @@ class PlanEstudiosController extends Controller
         $area->delete();
         AuditLogger::tenant($request->user(), 'DELETE', 'area', (string) $area->id, $before, null);
         TenantDataChanged::dispatch('area', 'deleted', $area->nombre);
+
         return response()->json(['data' => null]);
     }
 
@@ -68,6 +71,7 @@ class PlanEstudiosController extends Controller
             ->when($request->filled('area_id'), fn ($q) => $q->where('area_id', $request->integer('area_id')))
             ->when($request->filled('nivel_id'), fn ($q) => $q->where('nivel_id', $request->integer('nivel_id')))
             ->orderBy('nombre')->get();
+
         return response()->json(['data' => $materias]);
     }
 
@@ -77,6 +81,7 @@ class PlanEstudiosController extends Controller
         $materia = Materia::create($data + ['estado' => $data['estado'] ?? Materia::ESTADO_ACTIVO]);
         AuditLogger::tenant($request->user(), 'CREATE', 'materia', (string) $materia->id, null, $materia->toArray());
         TenantDataChanged::dispatch('materia', 'created', $materia->nombre);
+
         return response()->json(['data' => $materia->load(['area:id,nombre', 'nivel:id,nombre'])], 201);
     }
 
@@ -88,6 +93,7 @@ class PlanEstudiosController extends Controller
         $materia->update($data);
         AuditLogger::tenant($request->user(), 'UPDATE', 'materia', (string) $materia->id, $before, $materia->fresh()->toArray());
         TenantDataChanged::dispatch('materia', 'updated', $materia->nombre);
+
         return response()->json(['data' => $materia->fresh()->load(['area:id,nombre', 'nivel:id,nombre'])]);
     }
 
@@ -98,6 +104,7 @@ class PlanEstudiosController extends Controller
         $materia->delete();
         AuditLogger::tenant($request->user(), 'DELETE', 'materia', (string) $materia->id, $before, null);
         TenantDataChanged::dispatch('materia', 'deleted', $materia->nombre);
+
         return response()->json(['data' => null]);
     }
 
@@ -105,7 +112,7 @@ class PlanEstudiosController extends Controller
     private function validarMateria(Request $request, ?Materia $materia = null): array
     {
         return $request->validate([
-            'area_id' => [$materia ? 'sometimes' : 'required', 'integer', 'exists:areas,id'],
+            'area_id' => ['nullable', 'integer', Rule::exists('areas', 'id')->whereNull('deleted_at')],
             'nivel_id' => ['nullable', 'integer', 'exists:niveles,id'],
             'nombre' => [$materia ? 'sometimes' : 'required', 'string', 'max:120'],
             'codigo' => ['nullable', 'string', 'max:30', Rule::unique('materias', 'codigo')->ignore($materia?->id)],
