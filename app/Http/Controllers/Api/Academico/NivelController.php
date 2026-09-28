@@ -17,12 +17,13 @@ use Illuminate\Validation\Rule;
  */
 class NivelController extends Controller
 {
-    /** Lista los niveles por orden. */
+    /** Lista los niveles en el orden en que fueron creados. */
     public function index(): JsonResponse
     {
         $niveles = Nivel::query()
             ->withCount('grados')
-            ->orderBy('orden')
+            ->orderBy('created_at')
+            ->orderBy('id')
             ->get();
 
         return response()->json(['data' => $niveles]);
@@ -40,14 +41,12 @@ class NivelController extends Controller
         $data = $request->validate([
             'nivel_educativo' => ['required', 'string', 'max:40', 'unique:niveles,nivel_educativo'],
             'nombre' => ['required', 'string', 'max:120'],
-            'orden' => ['nullable', 'integer', 'min:0'],
             'estado' => ['nullable', Rule::in([Nivel::ESTADO_ACTIVO, Nivel::ESTADO_INACTIVO])],
         ]);
 
         $nivel = Nivel::create([
             'nivel_educativo' => $data['nivel_educativo'],
             'nombre' => $data['nombre'],
-            'orden' => $data['orden'] ?? 0,
             'estado' => $data['estado'] ?? Nivel::ESTADO_ACTIVO,
         ]);
 
@@ -68,7 +67,6 @@ class NivelController extends Controller
         $data = $request->validate([
             'nivel_educativo' => ['sometimes', 'string', 'max:40', Rule::unique('niveles', 'nivel_educativo')->ignore($nivel->id)],
             'nombre' => ['sometimes', 'string', 'max:120'],
-            'orden' => ['nullable', 'integer', 'min:0'],
             'estado' => ['nullable', Rule::in([Nivel::ESTADO_ACTIVO, Nivel::ESTADO_INACTIVO])],
         ]);
 
@@ -109,7 +107,6 @@ class NivelController extends Controller
         return [
             'nivel_educativo' => $nivel->nivel_educativo,
             'nombre' => $nivel->nombre,
-            'orden' => $nivel->orden,
             'estado' => $nivel->estado,
         ];
     }

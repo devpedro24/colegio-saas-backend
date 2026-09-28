@@ -19,7 +19,6 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property int                             $id
  * @property string                          $nivel_educativo
  * @property string                          $nombre
- * @property int                             $orden
  * @property string                          $estado
  * @property \Illuminate\Support\Carbon|null  $created_at
  * @property \Illuminate\Support\Carbon|null  $updated_at
@@ -48,26 +47,15 @@ class Nivel extends Model
     protected $fillable = [
         'nivel_educativo',
         'nombre',
-        'orden',
         'estado',
     ];
-
-    /**
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'orden' => 'integer',
-        ];
-    }
 
     /**
      * @return HasMany<Grado>
      */
     public function grados(): HasMany
     {
-        return $this->hasMany(Grado::class)->orderBy('orden');
+        return $this->hasMany(Grado::class)->orderBy('created_at')->orderBy('id');
     }
 
     public function estaActivo(): bool

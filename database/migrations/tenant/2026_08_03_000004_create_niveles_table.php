@@ -22,7 +22,6 @@ return new class extends Migration
             $table->id();
             $table->string('nivel_educativo')->unique();  // clave estable: preescolar|primaria|secundaria|media|...
             $table->string('nombre');                     // "Preescolar", "Educación Básica Primaria", ...
-            $table->unsignedTinyInteger('orden')->default(0);
             $table->string('estado')->default('activo');  // activo|inactivo
             $table->timestamps();
             $table->softDeletes();

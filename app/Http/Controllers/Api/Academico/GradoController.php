@@ -23,9 +23,13 @@ class GradoController extends Controller
         $grados = Grado::query()
             ->with('nivel:id,nombre,nivel_educativo')
             ->when($request->filled('nivel_id'), fn ($q) => $q->where('nivel_id', (int) $request->query('nivel_id')))
-            ->orderBy('nivel_id')
-            ->orderBy('orden')
-            ->get();
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            // El primer grado creado determina la posición de su nivel.
+            ->groupBy('nivel_id')
+            ->flatten(1)
+            ->values();
 
         return response()->json(['data' => $grados]);
     }
@@ -42,8 +46,7 @@ class GradoController extends Controller
         $data = $request->validate([
             'nivel_id' => ['required', 'integer', 'exists:niveles,id'],
             'nombre' => ['required', 'string', 'max:80'],
-            'codigo' => ['nullable', 'string', 'max:20'],
-            'orden' => ['nullable', 'integer', 'min:0'],
+            'codigo' => ['nullable', 'string', 'min:2', 'max:5'],
             'estado' => ['nullable', Rule::in([Grado::ESTADO_ACTIVO, Grado::ESTADO_INACTIVO])],
         ]);
 
@@ -56,7 +59,6 @@ class GradoController extends Controller
             'nivel_id' => $data['nivel_id'],
             'nombre' => $data['nombre'],
             'codigo' => $data['codigo'] ?? null,
-            'orden' => $data['orden'] ?? 0,
             'estado' => $data['estado'] ?? Grado::ESTADO_ACTIVO,
         ]);
 
@@ -77,8 +79,7 @@ class GradoController extends Controller
         $data = $request->validate([
             'nivel_id' => ['sometimes', 'integer', 'exists:niveles,id'],
             'nombre' => ['sometimes', 'string', 'max:80'],
-            'codigo' => ['nullable', 'string', 'max:20'],
-            'orden' => ['nullable', 'integer', 'min:0'],
+            'codigo' => ['nullable', 'string', 'min:2', 'max:5'],
             'estado' => ['nullable', Rule::in([Grado::ESTADO_ACTIVO, Grado::ESTADO_INACTIVO])],
         ]);
 
@@ -131,7 +132,6 @@ class GradoController extends Controller
             'nivel_id' => $grado->nivel_id,
             'nombre' => $grado->nombre,
             'codigo' => $grado->codigo,
-            'orden' => $grado->orden,
             'estado' => $grado->estado,
         ];
     }

@@ -19,7 +19,6 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property int                             $nivel_id
  * @property string                          $nombre
  * @property string|null                     $codigo
- * @property int                             $orden
  * @property string                          $estado
  * @property \Illuminate\Support\Carbon|null  $created_at
  * @property \Illuminate\Support\Carbon|null  $updated_at
@@ -44,7 +43,6 @@ class Grado extends Model
         'nivel_id',
         'nombre',
         'codigo',
-        'orden',
         'estado',
     ];
 
@@ -55,7 +53,6 @@ class Grado extends Model
     {
         return [
             'nivel_id' => 'integer',
-            'orden' => 'integer',
         ];
     }
 

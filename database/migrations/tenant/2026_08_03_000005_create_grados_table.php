@@ -21,7 +21,6 @@ return new class extends Migration
             $table->foreignId('nivel_id')->constrained('niveles')->cascadeOnDelete();
             $table->string('nombre');                      // "Transición", "Sexto", "6.º", ...
             $table->string('codigo')->nullable();          // código institucional corto (p.ej. "6")
-            $table->unsignedTinyInteger('orden')->default(0);
             $table->string('estado')->default('activo');   // activo|inactivo
             $table->timestamps();
             $table->softDeletes();
