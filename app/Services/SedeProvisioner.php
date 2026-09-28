@@ -232,7 +232,7 @@ class SedeProvisioner
             'metodos' => MetodoAprobacion::all()->toArray(),
             'modelos' => ModeloPedagogico::all()->toArray(),
             'datos' => DatosInstitucionales::query()->first()?->toArray(),
-            'niveles' => Nivel::query()->with('grados')->get()->toArray(),
+            'niveles' => Nivel::query()->with('grados')->orderBy('created_at')->orderBy('id')->get()->toArray(),
         ];
     }
 
@@ -309,21 +309,32 @@ class SedeProvisioner
             );
         }
 
-        $nivelMap = [];
         if (isset($snapshot['niveles'])) {
+            $gradosPorCrear = [];
             foreach ($snapshot['niveles'] as $nivel) {
                 $nuevoNivel = Nivel::firstOrCreate(
                     ['nivel_educativo' => $nivel['nivel_educativo'], 'nombre' => $nivel['nombre']],
-                    ['orden' => $nivel['orden'], 'estado' => $nivel['estado']],
+                    ['estado' => $nivel['estado']],
                 );
-                $nivelMap[$nivel['id']] = $nuevoNivel->id;
 
                 foreach ($nivel['grados'] ?? [] as $grado) {
-                    Grado::firstOrCreate(
-                        ['nivel_id' => $nuevoNivel->id, 'codigo' => $grado['codigo']],
-                        ['nombre' => $grado['nombre'], 'orden' => $grado['orden'], 'estado' => $grado['estado']],
-                    );
+                    $gradosPorCrear[] = ['nivel_id' => $nuevoNivel->id, 'grado' => $grado];
                 }
+            }
+
+            // Conserva el orden de creación de los grados entre niveles al heredar a una sede.
+            usort($gradosPorCrear, static function (array $a, array $b): int {
+                $porFecha = strcmp((string) $a['grado']['created_at'], (string) $b['grado']['created_at']);
+
+                return $porFecha ?: $a['grado']['id'] <=> $b['grado']['id'];
+            });
+
+            foreach ($gradosPorCrear as $item) {
+                $grado = $item['grado'];
+                Grado::firstOrCreate(
+                    ['nivel_id' => $item['nivel_id'], 'codigo' => $grado['codigo']],
+                    ['nombre' => $grado['nombre'], 'estado' => $grado['estado']],
+                );
             }
         }
     }

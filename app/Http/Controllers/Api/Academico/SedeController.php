@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
+use App\Events\ConfiguracionHeredada;
+use App\Events\SedeCreada;
 use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\Sede;
-use App\Models\User;
+use App\Models\Tenant;
 use App\Services\SedeProvisioner;
 use App\Support\Audit\AuditLogger;
 use App\Support\Sedes\SedeLimits;
@@ -79,7 +81,7 @@ class SedeController extends Controller
             'estado' => ['nullable', Rule::in([Sede::ESTADO_ACTIVA, Sede::ESTADO_INACTIVA])],
         ]);
 
-        $sede = Sede::create([
+        $sede = SedeLimits::create([
             'nombre' => $data['nombre'],
             'direccion' => $data['direccion'] ?? null,
             'telefono' => $data['telefono'] ?? null,
@@ -116,7 +118,7 @@ class SedeController extends Controller
                     tenancy()->initialize($colegio);
                 }
 
-$sede->update([
+                $sede->update([
                     'tenant_id' => $res['tenant']->id,
                     'coordinador_email' => $data['coordinador_email'] ?? null,
                     'coordinador_name' => $data['coordinador_name'] ?? null,
@@ -133,11 +135,12 @@ $sede->update([
 
         try {
             TenantDataChanged::dispatch('sede', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         if ($sede->tenant_id !== null) {
             try {
-                \App\Events\SedeCreada::dispatch((string) $sede->id, (string) tenant()->id);
+                SedeCreada::dispatch((string) $sede->id, (string) tenant()->id);
             } catch (\Throwable $e) {
                 Log::warning('[WS] SedeCreada dispatch failed', ['error' => $e->getMessage()]);
             }
@@ -173,7 +176,8 @@ $sede->update([
 
         try {
             TenantDataChanged::dispatch('sede', 'updated', $sede->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->enrich($this->snapshot($sede))]);
     }
@@ -194,7 +198,8 @@ $sede->update([
 
         try {
             TenantDataChanged::dispatch('sede', 'deleted', $sede->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }
@@ -208,8 +213,8 @@ $sede->update([
             return response()->json(['message' => 'Esta sede no tiene un tenant hijo.'], 422);
         }
 
-        $hijo = \App\Models\Tenant::find($sede->tenant_id);
-        if ($hijo === null || $hijo->status === \App\Models\Tenant::STATUS_IN_RETENTION) {
+        $hijo = Tenant::find($sede->tenant_id);
+        if ($hijo === null || $hijo->status === Tenant::STATUS_IN_RETENTION) {
             return response()->json(['message' => 'El tenant de la sede no esta disponible.'], 422);
         }
 
@@ -233,7 +238,7 @@ $sede->update([
 
         // Broadcast para actualizar el frontend en tiempo real
         try {
-            \App\Events\ConfiguracionHeredada::dispatch($hijo->id, (string) tenant()->id);
+            ConfiguracionHeredada::dispatch($hijo->id, (string) tenant()->id);
         } catch (\Throwable $e) {
             Log::warning('[WS] ConfiguracionHeredada dispatch failed', ['error' => $e->getMessage()]);
         }
@@ -249,7 +254,7 @@ $sede->update([
 
         // hashed_id base64url sin padding
         $decoded = base64_decode(
-            strtr((string) $id, '-_', '+/') . str_repeat('=', (4 - strlen((string) $id) % 4) % 4),
+            strtr((string) $id, '-_', '+/').str_repeat('=', (4 - strlen((string) $id) % 4) % 4),
             true,
         );
 

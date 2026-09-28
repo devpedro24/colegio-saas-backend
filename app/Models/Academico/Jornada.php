@@ -70,7 +70,7 @@ class Jornada extends Model
      */
     public function bloques(): HasMany
     {
-        return $this->hasMany(BloqueHorario::class)->orderBy('orden');
+        return $this->hasMany(BloqueHorario::class)->orderBy('hora_inicio')->orderBy('hora_fin')->orderBy('id');
     }
 
     public function estaActiva(): bool

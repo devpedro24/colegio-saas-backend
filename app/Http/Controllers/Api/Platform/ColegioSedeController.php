@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Platform;
 
+use App\Events\SedeCreada;
 use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
@@ -87,7 +88,7 @@ class ColegioSedeController extends Controller
                 return;
             }
 
-            $sede = Sede::create([
+            $sede = SedeLimits::create([
                 'nombre' => $data['nombre'],
                 'direccion' => $data['direccion'] ?? null,
                 'coordinador_name' => $data['coordinador_name'] ?? null,
@@ -113,7 +114,7 @@ class ColegioSedeController extends Controller
                 ]);
                 $password = $res['password'];
                 try {
-                    \App\Events\SedeCreada::dispatch((string) $sede->id, (string) $tenant->id);
+                    SedeCreada::dispatch((string) $sede->id, (string) $tenant->id);
                     TenantDataChanged::dispatch('sede', 'created', $data['nombre']);
                 } catch (\Throwable $e) {
                     Log::warning('[WS] SedeCreada dispatch platform failed', ['error' => $e->getMessage()]);
@@ -184,7 +185,8 @@ class ColegioSedeController extends Controller
 
             try {
                 TenantDataChanged::dispatch('sede', 'updated', $sede->nombre);
-            } catch (\Throwable) {}
+            } catch (\Throwable) {
+            }
         });
 
         if ($error !== null) {
@@ -229,7 +231,8 @@ class ColegioSedeController extends Controller
 
             try {
                 TenantDataChanged::dispatch('sede', 'deleted', $nombre);
-            } catch (\Throwable) {}
+            } catch (\Throwable) {
+            }
         });
 
         if ($error !== null) {
