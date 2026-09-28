@@ -2,13 +2,15 @@
 
 declare(strict_types=1);
 
-use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\AccountController;
+use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\MfaController;
+use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Middleware\EnsureTenantActive;
 use App\Http\Middleware\InitializeTenancyByDomainOrSubdomain;
+use App\Models\Tenant;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -33,7 +35,7 @@ Route::middleware([
 ])->group(function () {
     // Endpoint de diagnostico: confirma en que tenant estamos y con que BD.
     Route::get('/', function () {
-        /** @var \App\Models\Tenant $tenant */
+        /** @var Tenant $tenant */
         $tenant = tenant();
 
         return response()->json([
@@ -43,8 +45,6 @@ Route::middleware([
             'tenant_id' => $tenant->id,
             'plan' => $tenant->plan,
             'estado' => $tenant->status,
-            'base_de_datos' => $tenant->database()->getName(),
-            'usuarios' => \App\Models\User::count(),
         ]);
     });
 });
@@ -65,7 +65,9 @@ Route::middleware([
     EnsureTenantActive::class,
 ])->prefix('api')->group(function () {
     // Login del colegio (rector, coordinador, etc.).
-    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:account-security');
+    Route::post('/forgot-password', [PasswordResetController::class, 'forgot'])->middleware('throttle:account-security');
+    Route::post('/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:account-security');
 
     // Callback de Google (anclar cuenta): PUBLICO (lo llama Google tras el
     // consentimiento). No puede ir bajo auth:sanctum.

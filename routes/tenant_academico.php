@@ -7,8 +7,11 @@ use App\Http\Controllers\Api\Academico\BloqueHorarioController;
 use App\Http\Controllers\Api\Academico\DatosInstitucionalesController;
 use App\Http\Controllers\Api\Academico\EscalaValorativaController;
 use App\Http\Controllers\Api\Academico\EspacioFisicoController;
+use App\Http\Controllers\Api\Academico\EvaluacionController;
+use App\Http\Controllers\Api\Academico\EventoController;
 use App\Http\Controllers\Api\Academico\GradoController;
 use App\Http\Controllers\Api\Academico\GrupoController;
+use App\Http\Controllers\Api\Academico\HorarioController;
 use App\Http\Controllers\Api\Academico\JornadaController;
 use App\Http\Controllers\Api\Academico\MetodoAprobacionController;
 use App\Http\Controllers\Api\Academico\ModeloPedagogicoController;
@@ -16,8 +19,8 @@ use App\Http\Controllers\Api\Academico\NivelController;
 use App\Http\Controllers\Api\Academico\PeriodoController;
 use App\Http\Controllers\Api\Academico\PlanEstudiosController;
 use App\Http\Controllers\Api\Academico\SedeController;
+use App\Http\Controllers\Api\Academico\SieeController;
 use App\Http\Controllers\Api\Platform\StorageController;
-use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\UserController;
 use App\Services\ConfigurationGate;
 use Illuminate\Support\Facades\Route;
@@ -97,7 +100,7 @@ Route::middleware('can:academico.estructura.gestionar')->prefix('estructura')->g
     Route::get('/sedes/{id}', [SedeController::class, 'show']);
     Route::put('/sedes/{id}', [SedeController::class, 'update']);
     Route::delete('/sedes/{id}', [SedeController::class, 'destroy']);
-        Route::post('/sedes/{id}/heredar', [SedeController::class, 'heredar']);
+    Route::post('/sedes/{id}/heredar', [SedeController::class, 'heredar']);
 
     // Jornadas (pertenecen a una sede)
     Route::get('/jornadas', [JornadaController::class, 'index']);
@@ -160,6 +163,39 @@ Route::middleware('can:academico.plan_estudios.gestionar')->prefix('plan-estudio
 // del colegio (o el superadmin suplantando) puede subir a su cuota. La descarga
 // se hace con URL firmada generada por StorageService (ruta central).
 Route::post('/archivos', [StorageController::class, 'store']);
+
+Route::get('/horarios', [HorarioController::class, 'index']);
+Route::prefix('evaluacion')->controller(EvaluacionController::class)->group(function () {
+    Route::get('/catalogo', 'catalogo');
+    Route::post('/matriculas', 'matricular');
+    Route::get('/planillas/{asignacion}/{periodo}', 'planilla');
+    Route::put('/planillas/{asignacion}/{periodo}', 'notas');
+    Route::post('/componentes', 'componente');
+    Route::put('/componentes/{id}', 'componente');
+    Route::post('/actividades', 'actividad');
+    Route::put('/actividades/{id}', 'actividad');
+    Route::get('/boletines/{id}', 'boletin');
+});
+Route::middleware('can:academico.configurar')->group(function () {
+    Route::get('/siee/{id}', [SieeController::class, 'show']);
+    Route::put('/siee/{id}', [SieeController::class, 'update']);
+    Route::put('/siee/{id}/curriculo', [SieeController::class, 'curriculo']);
+});
+Route::get('/eventos/catalogo', [EventoController::class, 'catalogo']);
+Route::put('/eventos/configuracion', [EventoController::class, 'configurar']);
+Route::get('/eventos', [EventoController::class, 'index']);
+Route::post('/eventos', [EventoController::class, 'guardar']);
+Route::get('/eventos/{id}', [EventoController::class, 'show']);
+Route::put('/eventos/{id}', [EventoController::class, 'guardar']);
+Route::delete('/eventos/{id}', [EventoController::class, 'destroy']);
+Route::post('/eventos/{id}/archivos', [EventoController::class, 'archivo']);
+Route::middleware('can:academico.plan_estudios.gestionar')->group(function () {
+    Route::post('/asignaciones', [HorarioController::class, 'asignar']);
+    Route::delete('/asignaciones/{id}', [HorarioController::class, 'desasignar']);
+    Route::post('/horarios', [HorarioController::class, 'guardar']);
+    Route::put('/horarios/{id}', [HorarioController::class, 'guardar']);
+    Route::delete('/horarios/{id}', [HorarioController::class, 'eliminar']);
+});
 
 // Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion
 // puede apuntar a una sede (tenant hijo) y se escribe en su propia BD.

@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\Api\AccountController;
+use App\Http\Controllers\Api\PasswordResetController;
+use App\Http\Controllers\Api\Platform\AuditController;
 use App\Http\Controllers\Api\Platform\AuthController as PlatformAuthController;
 use App\Http\Controllers\Api\Platform\ColegioController;
 use App\Http\Controllers\Api\Platform\ColegioSedeController;
@@ -26,7 +28,9 @@ use Stancl\Tenancy\Middleware\InitializeTenancyByRequestData;
 */
 foreach (config('tenancy.central_domains') as $centralDomain) {
     Route::domain($centralDomain)->group(function () {
-        Route::post('/login', [PlatformAuthController::class, 'login']);
+        Route::post('/login', [PlatformAuthController::class, 'login'])->middleware('throttle:account-security');
+        Route::post('/forgot-password', [PasswordResetController::class, 'forgot'])->middleware('throttle:account-security');
+        Route::post('/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:account-security');
 
         // Descarga de archivos del colegio con URL FIRMADA de corta vida
         // (RN-AC-004): la firma incluye el tenant dueno para impedir cruces.
@@ -63,6 +67,8 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
 
             // Panel del superadministrador (solo plataforma).
             Route::middleware('platform')->group(function () {
+                Route::get('/platform/auditoria', [AuditController::class, 'index']);
+                Route::get('/platform/auditoria/colegios', [AuditController::class, 'colegios']);
                 Route::get('/colegios', [ColegioController::class, 'index']);
                 Route::post('/colegios', [ColegioController::class, 'store']);
                 Route::get('/colegios/{id}', [ColegioController::class, 'show']);
