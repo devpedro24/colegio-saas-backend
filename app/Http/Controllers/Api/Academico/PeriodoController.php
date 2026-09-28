@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
 use App\Support\Audit\AuditLogger;
@@ -49,7 +49,7 @@ class PeriodoController extends Controller
         }
 
         $data = $this->validated($request);
-        $data['nombre'] = $this->nombreSegunOrden((int) $data['orden']);
+        $data['nombre'] = $data['nombre'] ?? $this->nombreSegunOrden((int) $data['orden']);
 
         // El orden es único dentro del año lectivo.
         $ordenOcupado = $ano->periodos()->where('orden', $data['orden'])->exists();
@@ -78,10 +78,10 @@ class PeriodoController extends Controller
             $this->snapshot($periodo),
         );
 
-        
         try {
             TenantDataChanged::dispatch('periodo', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($periodo)], 201);
     }
@@ -102,7 +102,7 @@ class PeriodoController extends Controller
         }
 
         $data = $this->validated($request);
-        $data['nombre'] = $this->nombreSegunOrden((int) $data['orden']);
+        $data['nombre'] = $data['nombre'] ?? $this->nombreSegunOrden((int) $data['orden']);
 
         // El orden es único dentro del año lectivo (excluyendo el propio periodo).
         $ordenOcupado = $ano->periodos()
@@ -137,7 +137,8 @@ class PeriodoController extends Controller
 
         try {
             TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($periodo)]);
     }
@@ -169,10 +170,10 @@ class PeriodoController extends Controller
             null,
         );
 
-        
         try {
             TenantDataChanged::dispatch('periodo', 'deleted', $periodo->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }
@@ -204,10 +205,10 @@ class PeriodoController extends Controller
             'Apertura del periodo (planificado → abierto).',
         );
 
-        
         try {
             TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($periodo)]);
     }
@@ -234,10 +235,10 @@ class PeriodoController extends Controller
             'Cierre del periodo (abierto → cerrado).',
         );
 
-        
         try {
             TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($periodo)]);
     }
@@ -251,7 +252,7 @@ class PeriodoController extends Controller
     {
         return $request->validate([
             'nombre' => ['nullable', 'string', 'max:120'],
-            'orden' => ['required', 'integer', 'min:1', 'max:5'],
+            'orden' => ['required', 'integer', 'min:1', 'max:13'],
             'fecha_inicio' => ['required', 'date'],
             'fecha_fin' => ['required', 'date', 'after_or_equal:fecha_inicio'],
             'peso' => ['nullable', 'numeric', 'min:0', 'max:100'],
@@ -279,17 +280,13 @@ class PeriodoController extends Controller
             3 => 'Tercer período',
             4 => 'Cuarto período',
             5 => 'Quinto período',
-            default => throw new \InvalidArgumentException('Orden de período inválido.'),
+            default => 'Período '.$orden,
         };
     }
 
     private function resolverPeso(AnoLectivo $ano, mixed $peso): ?float
     {
-        if ($ano->tiene_quinto_periodo) {
-            return $peso === null ? null : (float) $peso;
-        }
-
-        return round(100 / $ano->num_periodos, 2);
+        return $peso === null ? null : (float) $peso;
     }
 
     /**

@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
 use App\Services\ConfigurationGate;
+use App\Services\GradeCalculationService;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -56,7 +57,7 @@ class AnoLectivoController extends Controller
             'tipo_calendario' => ['required', Rule::in([AnoLectivo::TIPO_A, AnoLectivo::TIPO_B])],
             'fecha_inicio' => ['required', 'date'],
             'fecha_fin' => ['required', 'date', 'after:fecha_inicio'],
-            'num_periodos' => ['required', 'integer', 'min:1', 'max:4'],
+            'num_periodos' => ['required', 'integer', 'min:1', 'max:'.($request->boolean('tiene_quinto_periodo') ? 11 : 12)],
             'tiene_quinto_periodo' => ['nullable', 'boolean'],
         ]);
 
@@ -90,7 +91,8 @@ class AnoLectivoController extends Controller
 
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'created', $data['nombre']);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)], 201);
     }
@@ -110,9 +112,15 @@ class AnoLectivoController extends Controller
             'tipo_calendario' => ['required', Rule::in([AnoLectivo::TIPO_A, AnoLectivo::TIPO_B])],
             'fecha_inicio' => ['required', 'date'],
             'fecha_fin' => ['required', 'date', 'after:fecha_inicio'],
-            'num_periodos' => ['required', 'integer', 'min:1', 'max:4'],
+            'num_periodos' => ['required', 'integer', 'min:1', 'max:'.(($request->has('tiene_quinto_periodo') ? $request->boolean('tiene_quinto_periodo') : $ano->tiene_quinto_periodo) ? 11 : 12)],
             'tiene_quinto_periodo' => ['nullable', 'boolean'],
         ]);
+
+        $nuevoTotalPeriodos = $data['num_periodos'] + (($data['tiene_quinto_periodo'] ?? $ano->tiene_quinto_periodo) ? 1 : 0);
+        $ultimoPeriodoConfigurado = (int) $ano->periodos()->max('orden');
+        if ($ultimoPeriodoConfigurado > $nuevoTotalPeriodos) {
+            abort(422, "El periodo {$ultimoPeriodoConfigurado} ya está configurado. Elimínalo desde Periodos antes de reducir la cantidad.");
+        }
 
         // RN-PA-007: el tipo de calendario no puede cambiar si ya hay años activos o cerrados.
         if ($data['tipo_calendario'] !== $ano->tipo_calendario) {
@@ -156,7 +164,8 @@ class AnoLectivoController extends Controller
 
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)]);
     }
@@ -195,7 +204,8 @@ class AnoLectivoController extends Controller
 
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'deleted', $ano->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }
@@ -248,10 +258,10 @@ class AnoLectivoController extends Controller
             'Inicio del año lectivo (planificado → en_curso).',
         );
 
-        
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)]);
     }
@@ -278,10 +288,10 @@ class AnoLectivoController extends Controller
             'Cierre del año lectivo (en_curso → cerrado).',
         );
 
-        
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)]);
     }
@@ -317,7 +327,8 @@ class AnoLectivoController extends Controller
 
         try {
             TenantDataChanged::dispatch('ano_lectivo', 'updated', $ano->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($ano)]);
     }
@@ -357,7 +368,7 @@ class AnoLectivoController extends Controller
      * el calendario. Los extremos 01/01, 31/12, 01/08 y 31/07 son valores
      * sugeridos, no una obligación.
      *
-     * @param array{tipo_calendario:string,nombre:string,fecha_inicio:string,fecha_fin:string} $data
+     * @param  array{tipo_calendario:string,nombre:string,fecha_inicio:string,fecha_fin:string}  $data
      */
     private function validarFechasSegunCalendario(array $data): void
     {
@@ -388,6 +399,9 @@ class AnoLectivoController extends Controller
     private function validarPeriodosCompletos(AnoLectivo $ano): void
     {
         $periodos = $ano->periodos()->get();
+        if (($ano->siee['modo_anual'] ?? null) === 'WEIGHTED_AVERAGE') {
+            GradeCalculationService::assertWeights($periodos->pluck('peso')->all());
+        }
         $esperados = $ano->num_periodos + ($ano->tiene_quinto_periodo ? 1 : 0);
 
         if ($periodos->count() !== $esperados) {
