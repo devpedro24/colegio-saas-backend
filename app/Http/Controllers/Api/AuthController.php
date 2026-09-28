@@ -30,7 +30,8 @@ class AuthController extends Controller
 
         $user = User::where('email', $data['email'])->first();
 
-        if (! $user || ! Hash::check($data['password'], $user->password)) {
+        if (! $user || $user->email === User::PLATFORM_SUPERADMIN_EMAIL || ! Hash::check($data['password'], $user->password)) {
+            AuditLogger::tenant(null, 'LOGIN_FAILED', 'auth', null, null, ['email' => $data['email']]);
             throw ValidationException::withMessages([
                 'email' => ['Credenciales invalidas.'],
             ]);
@@ -79,6 +80,7 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
+        AuditLogger::tenant($request->user(), 'LOGOUT', 'auth', (string) $request->user()->id);
         $request->user()->currentAccessToken()->delete();
 
         return response()->json(['message' => 'Sesion cerrada.']);

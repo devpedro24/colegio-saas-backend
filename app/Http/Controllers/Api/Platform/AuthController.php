@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Platform;
 
 use App\Http\Controllers\Controller;
+use App\Models\Impersonation;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
 use App\Support\Mfa\TotpService;
@@ -32,7 +33,8 @@ class AuthController extends Controller
 
         $user = User::where('email', $data['email'])->first();
 
-        if (! $user || ! Hash::check($data['password'], $user->password)) {
+        if (! $user || $user->role !== 'superadmin' || ! Hash::check($data['password'], $user->password)) {
+            AuditLogger::platform(null, 'LOGIN_FAILED', 'auth', null, null, ['email' => $data['email']]);
             throw ValidationException::withMessages([
                 'email' => ['Credenciales invalidas.'],
             ]);
@@ -81,6 +83,9 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
+        AuditLogger::platform($request->user(), 'LOGOUT', 'auth', (string) $request->user()->id);
+        // Inhabilita también las sesiones de soporte: su autorización exige ended_at nulo.
+        Impersonation::where('superadmin_id', $request->user()->id)->whereNull('ended_at')->update(['ended_at' => now()]);
         $request->user()->currentAccessToken()->delete();
 
         return response()->json(['message' => 'Sesion cerrada.']);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Models\Rbac\CentralModel;
+use Illuminate\Support\Carbon;
 
 /**
  * Sesion de SUPLANTACION del superadministrador sobre un colegio (BD CENTRAL).
@@ -17,9 +18,9 @@ use App\Models\Rbac\CentralModel;
  * @property int $superadmin_id
  * @property string $superadmin_email
  * @property string $tenant_id
- * @property \Illuminate\Support\Carbon $started_at
- * @property \Illuminate\Support\Carbon $expires_at
- * @property ?\Illuminate\Support\Carbon $ended_at
+ * @property Carbon $started_at
+ * @property Carbon $expires_at
+ * @property ?Carbon $ended_at
  */
 class Impersonation extends CentralModel
 {
@@ -32,6 +33,7 @@ class Impersonation extends CentralModel
         'started_at',
         'expires_at',
         'ended_at',
+        'token_id',
     ];
 
     protected $casts = [

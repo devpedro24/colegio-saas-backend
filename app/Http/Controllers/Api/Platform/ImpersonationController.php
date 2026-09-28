@@ -28,8 +28,11 @@ class ImpersonationController extends Controller
 {
     /** Email/identidad fijos del usuario sombra dentro de cada colegio. */
     private const SHADOW_EMAIL = User::PLATFORM_SUPERADMIN_EMAIL;
+
     private const SHADOW_NAME = 'Superadministrador (plataforma)';
+
     private const SHADOW_ROLE = 'rector';
+
     private const TOKEN_NAME = 'impersonation';
 
     /** Duracion de la ventana de suplantacion. */
@@ -52,7 +55,7 @@ class ImpersonationController extends Controller
         $expiresAt = Carbon::now('UTC')->addHours(self::TTL_HOURS);
 
         // Sesion de suplantacion (central): una fila viva por (superadmin, colegio).
-        Impersonation::updateOrCreate(
+        $session = Impersonation::updateOrCreate(
             [
                 'superadmin_id' => $superadmin->id,
                 'tenant_id' => (string) $tenant->id,
@@ -66,7 +69,7 @@ class ImpersonationController extends Controller
         );
 
         // Dentro del colegio: asegura el usuario sombra y emite el token.
-        $plainToken = $tenant->run(function () use ($superadmin, $tenant, $expiresAt) {
+        $plainToken = $tenant->run(function () use ($superadmin, $tenant, $expiresAt, $session) {
             $shadow = User::firstOrCreate(
                 ['email' => self::SHADOW_EMAIL],
                 [
@@ -91,9 +94,11 @@ class ImpersonationController extends Controller
             }
 
             // Un solo token de suplantacion vivo por sesion.
-            $shadow->tokens()->where('name', self::TOKEN_NAME)->delete();
+            $shadow->tokens()->where('name', self::TOKEN_NAME)->whereKey($session->token_id)->delete();
 
-            $token = $shadow->createToken(self::TOKEN_NAME, ['*'], $expiresAt)->plainTextToken;
+            $issued = $shadow->createToken(self::TOKEN_NAME, ['*'], $expiresAt);
+            $session->update(['token_id' => $issued->accessToken->id]);
+            $token = $issued->plainTextToken;
 
             // Auditoria DENTRO del colegio (con el superadmin como impersonated_by).
             AuditLogger::tenant(
@@ -149,20 +154,20 @@ class ImpersonationController extends Controller
         $tenant = Tenant::findOrFail($data['colegio_id']);
 
         // Cierra la(s) sesion(es) viva(s) de este superadmin sobre el colegio.
-        Impersonation::query()
+        $sessions = Impersonation::query()
             ->where('superadmin_id', $superadmin->id)
             ->where('tenant_id', (string) $tenant->id)
-            ->whereNull('ended_at')
-            ->update(['ended_at' => Carbon::now('UTC')]);
+            ->whereNull('ended_at');
+        $tokenIds = (clone $sessions)->pluck('token_id')->filter()->all();
+        $sessions->update(['ended_at' => Carbon::now('UTC')]);
 
-        // Dentro del colegio: revoca los tokens de suplantacion, elimina el
-        // usuario sombra (no debe quedar rastro en la BD del colegio) y audita.
-        $tenant->run(function () use ($superadmin, $tenant) {
+        // Revoca únicamente los tokens de este administrador. Conserva la identidad histórica.
+        $tenant->run(function () use ($superadmin, $tenant, $tokenIds) {
             $shadow = User::where('email', self::SHADOW_EMAIL)->first();
 
             if ($shadow !== null) {
-                $shadow->tokens()->where('name', self::TOKEN_NAME)->delete();
-                $shadow->forceDelete();
+                $shadow->tokens()->where('name', self::TOKEN_NAME)->whereIn('id', $tokenIds)->delete();
+                // Conservar la identidad: eventos y evidencia histórica la referencian.
             }
 
             AuditLogger::tenant(

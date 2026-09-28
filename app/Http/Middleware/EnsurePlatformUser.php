@@ -18,7 +18,7 @@ class EnsurePlatformUser
     {
         $user = $request->user();
 
-        if (! $user || $user->role !== 'superadmin') {
+        if (tenancy()->initialized || ! $user || $user->role !== 'superadmin') {
             abort(403, 'Solo el superadministrador de la plataforma puede acceder.');
         }
 

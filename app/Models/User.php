@@ -3,13 +3,17 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Database\Factories\UserFactory;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
 use InvalidArgumentException;
 use Laravel\Sanctum\HasApiTokens;
+use Laravel\Sanctum\PersonalAccessToken;
 use Spatie\Permission\Traits\HasRoles;
 
 /**
@@ -22,33 +26,37 @@ use Spatie\Permission\Traits\HasRoles;
  * El borrado es LOGICO (SoftDeletes, RG-004): la fila sobrevive durante la
  * ventana de retencion y luego una purga fisica la elimina (RN-BR-005).
  *
-* @property int                        $id
-     * @property string                     $name
-     * @property string                     $email
-     * @property string|null                $phone
-     * @property string|null                $google_id
-     * @property string|null                $google_email
-     * @property \Illuminate\Support\Carbon|null $google_linked_at
-     * @property string                     $password
-     * @property string|null                $role
- * @property string                     $status
- * @property bool                       $must_change_password
- * @property string|null                $two_factor_secret
- * @property \Illuminate\Support\Carbon|null $two_factor_confirmed_at
- * @property \Illuminate\Support\Carbon|null $created_at
- * @property \Illuminate\Support\Carbon|null $updated_at
- * @property \Illuminate\Support\Carbon|null $deleted_at
+ * @property int $id
+ * @property string $name
+ * @property string $email
+ * @property string|null $phone
+ * @property string|null $google_id
+ * @property string|null $google_email
+ * @property Carbon|null $google_linked_at
+ * @property string $password
+ * @property string|null $role
+ * @property string $status
+ * @property bool $must_change_password
+ * @property string|null $two_factor_secret
+ * @property Carbon|null $two_factor_confirmed_at
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
  */
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable, HasApiTokens, HasRoles, SoftDeletes;
+    /** @use HasFactory<UserFactory> */
+    use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
 
     /** Estados del ciclo de vida del usuario (D-USER-FSM). */
     public const STATUS_PENDING = 'pending';
+
     public const STATUS_ACTIVE = 'active';
+
     public const STATUS_SUSPENDED = 'suspended';
+
     public const STATUS_INACTIVE = 'inactive';
+
     public const STATUS_DELETED = 'deleted';
 
     /** Email del usuario sombra que el superadministrador usa al suplantar un colegio. */
@@ -91,6 +99,7 @@ class User extends Authenticatable
      * @var list<string>
      */
     protected $hidden = [
+        'temporary_password',
         'password',
         'remember_token',
         'two_factor_secret',
@@ -133,7 +142,15 @@ class User extends Authenticatable
      */
     public function esSuperadminPlataforma(): bool
     {
-        return $this->email === self::PLATFORM_SUPERADMIN_EMAIL;
+        $token = $this->currentAccessToken();
+
+        return $this->email === self::PLATFORM_SUPERADMIN_EMAIL
+            && tenancy()->initialized
+            && $token instanceof PersonalAccessToken
+            && $token->name === 'impersonation'
+            && Impersonation::query()->where('tenant_id', tenant()->getKey())
+                ->where('token_id', $token->id)->whereNull('ended_at')
+                ->where('expires_at', '>', now())->exists();
     }
 
     /**
@@ -154,7 +171,7 @@ class User extends Authenticatable
         if (str_starts_with($value, 'eyJ')) {
             try {
                 return (string) Crypt::decryptString($value);
-            } catch (\Illuminate\Contracts\Encryption\DecryptException) {
+            } catch (DecryptException) {
                 return $value; // no es cifrado; se conserva el valor plano
             }
         }
