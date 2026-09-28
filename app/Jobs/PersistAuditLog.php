@@ -39,9 +39,7 @@ class PersistAuditLog implements ShouldQueue
     /**
      * @param  array{target: 'platform'|'tenant', tenant_id?: ?string, attributes: array<string,mixed>}  $payload
      */
-    public function __construct(public array $payload)
-    {
-    }
+    public function __construct(public array $payload) {}
 
     public function handle(): void
     {
@@ -65,7 +63,7 @@ class PersistAuditLog implements ShouldQueue
     {
         $tenantId = $this->payload['tenant_id'] ?? null;
 
-        if ($tenantId === null || ! class_exists(Tenant::class)) {
+        if ($tenantId === null || $tenantId === '') {
             throw new \RuntimeException('PersistAuditLog: falta tenant_id para el evento de colegio.');
         }
 

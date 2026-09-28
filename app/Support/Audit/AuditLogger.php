@@ -29,14 +29,14 @@ final class AuditLogger
     /**
      * Registra un evento de auditoria de PLATAFORMA (BD central).
      *
-     * @param  object|null              $actor   Usuario/superadmin que ejecuta la accion (o null si es el sistema).
-     * @param  string                   $accion  CREATE|UPDATE|DELETE|READ|LOGIN|SUSPEND|...
-     * @param  string                   $recurso Nombre del recurso afectado (p.ej. tenant, plan).
-     * @param  string|null              $recursoId Identificador del recurso (string: soporta uuid/int).
-     * @param  array<string,mixed>|null $prev    Estado previo del recurso.
-     * @param  array<string,mixed>|null $new     Estado nuevo del recurso.
-     * @param  string|null              $motivo  Justificacion de la accion.
-     * @param  string|null              $tenantId UUID del colegio afectado (null si es global).
+     * @param  object|null  $actor  Usuario/superadmin que ejecuta la accion (o null si es el sistema).
+     * @param  string  $accion  CREATE|UPDATE|DELETE|READ|LOGIN|SUSPEND|...
+     * @param  string  $recurso  Nombre del recurso afectado (p.ej. tenant, plan).
+     * @param  string|null  $recursoId  Identificador del recurso (string: soporta uuid/int).
+     * @param  array<string,mixed>|null  $prev  Estado previo del recurso.
+     * @param  array<string,mixed>|null  $new  Estado nuevo del recurso.
+     * @param  string|null  $motivo  Justificacion de la accion.
+     * @param  string|null  $tenantId  UUID del colegio afectado (null si es global).
      */
     public static function platform(
         ?object $actor,
@@ -59,8 +59,8 @@ final class AuditLogger
                 'recurso' => $recurso,
                 'recurso_id' => $recursoId,
                 'tenant_id' => $tenantId,
-                'valor_previo' => $prev,
-                'valor_nuevo' => $new,
+                'valor_previo' => RedactsSecrets::clean($prev),
+                'valor_nuevo' => RedactsSecrets::clean($new),
                 'motivo' => $motivo,
                 'ip' => self::currentIp(),
                 'user_agent' => self::currentUserAgent(),
@@ -73,6 +73,10 @@ final class AuditLogger
                 'recurso' => $recurso,
                 'recurso_id' => $recursoId,
                 'tenant_id' => $tenantId,
+                'valor_previo' => RedactsSecrets::clean($prev),
+                'valor_nuevo' => RedactsSecrets::clean($new),
+                'motivo' => $motivo,
+                'created_at' => now()->toDateTimeString(),
                 'error' => $e->getMessage(),
             ]);
 
@@ -99,14 +103,14 @@ final class AuditLogger
      * suplantacion queda marcada sin tocar cada controlador. En operacion normal
      * (token 'web') queda null y no se hace ninguna consulta extra.
      *
-     * @param  object|null              $actor   Usuario del tenant que ejecuta la accion (o null si es el sistema).
-     * @param  string                   $accion  CREATE|UPDATE|DELETE|READ|LOGIN|SUSPEND|...
-     * @param  string                   $recurso Nombre del recurso afectado (p.ej. estudiante, nota).
-     * @param  string|null              $recursoId Identificador del recurso (string: soporta uuid/int).
-     * @param  array<string,mixed>|null $prev    Estado previo del recurso.
-     * @param  array<string,mixed>|null $new     Estado nuevo del recurso.
-     * @param  string|null              $motivo  Justificacion de la accion.
-     * @param  string|null              $impersonatedBy Email del superadmin detras (o null = autoresolver).
+     * @param  object|null  $actor  Usuario del tenant que ejecuta la accion (o null si es el sistema).
+     * @param  string  $accion  CREATE|UPDATE|DELETE|READ|LOGIN|SUSPEND|...
+     * @param  string  $recurso  Nombre del recurso afectado (p.ej. estudiante, nota).
+     * @param  string|null  $recursoId  Identificador del recurso (string: soporta uuid/int).
+     * @param  array<string,mixed>|null  $prev  Estado previo del recurso.
+     * @param  array<string,mixed>|null  $new  Estado nuevo del recurso.
+     * @param  string|null  $motivo  Justificacion de la accion.
+     * @param  string|null  $impersonatedBy  Email del superadmin detras (o null = autoresolver).
      */
     public static function tenant(
         ?object $actor,
@@ -121,20 +125,24 @@ final class AuditLogger
         try {
             [$actorId, $actorEmail, $actorRol] = self::resolveActor($actor);
 
+            $impersonatedBy ??= self::currentImpersonatedBy();
             AuditLog::create([
                 'actor_id' => $actorId,
                 'actor_email' => $actorEmail,
                 'actor_rol' => $actorRol,
-                'impersonated_by' => $impersonatedBy ?? self::currentImpersonatedBy(),
+                'impersonated_by' => $impersonatedBy,
                 'accion' => $accion,
                 'recurso' => $recurso,
                 'recurso_id' => $recursoId,
-                'valor_previo' => $prev,
-                'valor_nuevo' => $new,
+                'valor_previo' => RedactsSecrets::clean($prev),
+                'valor_nuevo' => RedactsSecrets::clean($new),
                 'motivo' => $motivo,
                 'ip' => self::currentIp(),
                 'user_agent' => self::currentUserAgent(),
             ]);
+            if ($impersonatedBy !== null && tenant() !== null) {
+                self::platform((object) ['email' => $impersonatedBy, 'role' => 'superadmin'], $accion, $recurso, $recursoId, $prev, $new, $motivo, (string) tenant()->getKey());
+            }
         } catch (\Throwable $e) {
             // La auditoria no debe romper la operacion auditada (RG-002): se encola
             // el evento para reintentarlo y se alerta en los logs del framework.
@@ -142,6 +150,11 @@ final class AuditLogger
                 'accion' => $accion,
                 'recurso' => $recurso,
                 'recurso_id' => $recursoId,
+                'impersonated_by' => $impersonatedBy,
+                'valor_previo' => RedactsSecrets::clean($prev),
+                'valor_nuevo' => RedactsSecrets::clean($new),
+                'motivo' => $motivo,
+                'created_at' => now()->toDateTimeString(),
                 'error' => $e->getMessage(),
             ]);
 
@@ -174,10 +187,11 @@ final class AuditLogger
                     'accion' => $context['accion'] ?? null,
                     'recurso' => $context['recurso'] ?? null,
                     'recurso_id' => $context['recurso_id'] ?? null,
-                    'tenant_id' => $context['tenant_id'] ?? ($target === 'platform' ? $tenantId : null),
+                    ...($target === 'platform' ? ['tenant_id' => $context['tenant_id'] ?? $tenantId] : ['impersonated_by' => $context['impersonated_by'] ?? null]),
                     'valor_previo' => $context['valor_previo'] ?? null,
                     'valor_nuevo' => $context['valor_nuevo'] ?? null,
                     'motivo' => $context['motivo'] ?? null,
+                    'created_at' => $context['created_at'] ?? now()->toDateTimeString(),
                     'ip' => self::currentIp(),
                     'user_agent' => self::currentUserAgent(),
                 ],
@@ -187,6 +201,7 @@ final class AuditLogger
                 'target' => $target,
                 'error' => $e->getMessage(),
             ]);
+            throw new \RuntimeException('No se pudo conservar la auditoría de la operación.', 0, $e);
         }
     }
 
@@ -255,7 +270,9 @@ final class AuditLogger
 
             $email = Impersonation::query()
                 ->where('tenant_id', $tenantId)
+                ->where('token_id', $token->id)
                 ->whereNull('ended_at')
+                ->where('expires_at', '>', now())
                 ->orderByDesc('started_at')
                 ->value('superadmin_email');
 
