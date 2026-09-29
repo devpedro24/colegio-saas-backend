@@ -34,12 +34,11 @@ class DatosInstitucionalesController extends Controller
     {
         $data = $request->validate([
             'nombre' => ['required', 'string', 'max:255'],
-            'nit' => ['nullable', 'string', 'max:60'],
-            'resolucion_men' => ['nullable', 'string', 'max:255'],
-            'direccion' => ['nullable', 'string', 'max:255'],
-            'telefono' => ['nullable', 'string', 'max:60'],
-            'correo' => ['nullable', 'email', 'max:255'],
-            'logo_principal' => ['nullable', 'string', 'max:2048'],
+            'nit' => ['required', 'string', 'max:60'],
+            'resolucion_men' => ['required', 'string', 'max:255'],
+            'direccion' => ['required', 'string', 'max:255'],
+            'telefono' => ['required', 'string', 'max:60'],
+            'correo' => ['required', 'email', 'max:255'],
             'logo_documentos' => ['nullable', 'string', 'max:2048'],
             'isotipo' => ['nullable', 'string', 'max:2048'],
             'colores' => ['nullable', 'array'],

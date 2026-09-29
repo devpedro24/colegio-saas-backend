@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\MfaController;
 use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Middleware\EnsureTenantActive;
+use App\Http\Middleware\EnsureOnboardingComplete;
 use App\Http\Middleware\InitializeTenancyByDomainOrSubdomain;
 use App\Models\Tenant;
 use Illuminate\Http\Request;
@@ -77,10 +79,17 @@ Route::middleware([
     // antes de mostrar el login: si devuelve 404, la URL no pertenece a
     // ningun colegio registrado).
     Route::get('/tenant-status', fn () => response()->json(['ok' => true]));
+    Route::get('/branding/logo', [OnboardingController::class, 'logo']);
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
+        Route::get('/onboarding/status', [OnboardingController::class, 'status']);
+        Route::put('/onboarding/institution', [OnboardingController::class, 'institution']);
+        Route::post('/onboarding/logo', [OnboardingController::class, 'uploadLogo']);
+        Route::post('/account/password', [AccountController::class, 'changePassword']);
+
+        Route::middleware(EnsureOnboardingComplete::class)->group(function () {
 
         // Autorizacion de canales privados (WebSockets) del colegio (tenant actual).
         Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request));
@@ -95,7 +104,6 @@ Route::middleware([
         Route::get('/account', [AccountController::class, 'index']);
         Route::put('/account/profile', [AccountController::class, 'updateProfile']);
         Route::post('/account/email', [AccountController::class, 'changeEmail']);
-        Route::post('/account/password', [AccountController::class, 'changePassword']);
         Route::post('/account/deactivate', [AccountController::class, 'deactivate']);
         Route::post('/account/google/connect', [AccountController::class, 'googleConnect']);
         Route::delete('/account/google', [AccountController::class, 'googleUnlink']);
@@ -125,5 +133,6 @@ Route::middleware([
          | Aquí ya estamos bajo `api` + `auth:sanctum` + tenancy por subdominio.
          */
         require base_path('routes/tenant_academico.php');
+        });
     });
 });

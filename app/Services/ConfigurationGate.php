@@ -6,7 +6,6 @@ namespace App\Services;
 
 use App\Events\TenantChanged;
 use App\Models\Academico\AnoLectivo;
-use App\Models\Academico\DatosInstitucionales;
 use App\Models\Academico\EscalaValorativa;
 use App\Models\Academico\Jornada;
 use App\Models\Academico\MetodoAprobacion;
@@ -47,7 +46,7 @@ final class ConfigurationGate
     public static function estado(): array
     {
         $checks = [
-            'institucional' => fn (): bool => DatosInstitucionales::query()->exists(),
+            'institucional' => fn (): bool => TenantOnboarding::institutionalComplete(),
             'calendario' => fn (): bool => AnoLectivo::query()->exists(),
             'jornadas' => fn (): bool => Jornada::query()->exists(),
             'escala' => fn (): bool => EscalaValorativa::query()->exists(),
