@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Http\Controllers\Api\Academico\EvaluacionController;
 use App\Http\Controllers\Api\Academico\EventoController;
 use App\Http\Controllers\Api\Academico\HorarioController;
+use App\Http\Controllers\Api\Academico\AnoLectivoController;
 use App\Http\Controllers\Api\Academico\BloqueHorarioController;
 use App\Http\Controllers\Api\Academico\GradoController;
 use App\Http\Controllers\Api\Academico\NivelController;
@@ -26,12 +27,15 @@ use App\Models\Academico\MetodoAprobacion;
 use App\Models\Academico\Nivel;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\Sede;
+use App\Models\Academico\SesionHorario;
 use App\Models\Plan;
 use App\Models\StoredFile;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\EventAccess;
 use App\Services\GradebookService;
+use App\Services\DuplicarAnoLectivoService;
+use App\Jobs\VerifyTenantMigrations;
 use App\Services\HorarioService;
 use App\Services\SieeConfiguration;
 use App\Support\Sedes\SedeLimits;
@@ -40,6 +44,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Spatie\Permission\Models\Role;
@@ -49,6 +54,322 @@ use Tests\TestCase;
 class AcademicModulesTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_year_url_selector_is_stable_opaque_and_tenant_bound(): void
+    {
+        $controller = app(AnoLectivoController::class);
+        $first = $controller->index()->getData(true)['data'][0];
+        $again = $controller->index()->getData(true)['data'][0];
+        $this->assertSame($first['url_token'], $again['url_token']);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $first['url_token']);
+        $this->assertNotSame((string) $this->year->id, $first['url_token']);
+        $this->assertSame(hash_hmac('sha256', $this->school->getTenantKey().'|ano-lectivo|'.$this->year->id, (string) config('app.key')), $first['url_token']);
+    }
+
+    public function test_summary_period_uses_the_siee_annual_result_without_creating_a_real_period(): void
+    {
+        $this->year->update(['num_periodos' => 1, 'periodo_sumatorio' => true]);
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        (new GradebookService)->saveGrades($this->teacher, $this->assignment, $period->id, [
+            ['matricula_id' => $enrollment->id, 'actividad_id' => $activity->id, 'valor' => '4', 'version' => 0],
+        ]);
+
+        $report = (new GradebookService)->report($enrollment);
+        $this->assertSame(1, Periodo::where('ano_lectivo_id', $this->year->id)->count());
+        $this->assertSame('P2', $report['periodo_sumatorio']['nombre']);
+        $this->assertSame('calculado', $report['asignaturas'][0]['anual']['estado']);
+        $this->assertSame('4.0', $report['asignaturas'][0]['anual']['display_value']);
+    }
+
+    public function test_summary_period_weights_subject_and_area_results_with_only_the_real_periods(): void
+    {
+        $this->year->update(['num_periodos' => 2, 'periodo_sumatorio' => true]);
+        [$first, $enrollment, $firstActivity] = $this->gradeFixture();
+        $first->update(['peso' => 20]);
+        $second = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'P2',
+            'orden' => 2, 'fecha_inicio' => '2026-05-01', 'fecha_fin' => '2026-12-31',
+            'peso' => 80, 'estado' => 'abierto']);
+        $component = ComponenteEvaluacion::create(['asignacion_id' => $this->assignment->id,
+            'periodo_id' => $second->id, 'nombre' => 'Talleres', 'modo' => 'SIMPLE_AVERAGE']);
+        $secondActivity = ActividadEvaluacion::create(['componente_id' => $component->id,
+            'nombre' => 'Taller 2', 'fecha' => '2026-05-05']);
+        $siee = $this->year->siee;
+        $this->year->update(['siee' => [...$siee, 'modo_anual' => 'WEIGHTED_AVERAGE', 'usar_areas' => true]]);
+        (new GradebookService)->saveGrades($this->teacher, $this->assignment, $first->id, [
+            ['matricula_id' => $enrollment->id, 'actividad_id' => $firstActivity->id, 'valor' => '5', 'version' => 0],
+        ]);
+        (new GradebookService)->saveGrades($this->teacher, $this->assignment, $second->id, [
+            ['matricula_id' => $enrollment->id, 'actividad_id' => $secondActivity->id, 'valor' => '3', 'version' => 0],
+        ]);
+
+        $report = (new GradebookService)->report($enrollment);
+        $this->assertCount(2, $report['periodos']);
+        $this->assertSame('P3', $report['periodo_sumatorio']['nombre']);
+        $this->assertSame('3.4', $report['asignaturas'][0]['anual']['display_value']);
+        $this->assertSame('3.4', $report['areas'][0]['anual']['display_value']);
+    }
+
+    public function test_copy_source_can_change_only_while_copied_configuration_is_pristine(): void
+    {
+        $service = app(DuplicarAnoLectivoService::class);
+        $target = $service->duplicar($this->year, [
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], [], $this->rector);
+        $other = AnoLectivo::create(['nombre' => '2028', 'tipo_calendario' => 'A',
+            'fecha_inicio' => '2028-01-01', 'fecha_fin' => '2028-12-31', 'num_periodos' => 3]);
+        Jornada::create(['ano_lectivo_id' => $other->id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'Tarde', 'hora_inicio' => '13:00', 'hora_fin' => '18:00', 'estado' => 'activa']);
+
+        $service->copiarConfiguracion($this->year, $target, ['jornadas' => true], $this->rector);
+        $this->assertTrue($service->copyStatus($target)['opciones']['jornadas']);
+        $this->assertSame($this->year->id, $service->copyStatus($target)['origen_id']);
+        $service->copiarConfiguracion($other, $target, ['jornadas' => true], $this->rector);
+        $this->assertSame(['Tarde'], Jornada::where('ano_lectivo_id', $target->id)->pluck('nombre')->all());
+        $this->assertSame($other->id, $service->copyStatus($target)['origen_id']);
+
+        Jornada::where('ano_lectivo_id', $target->id)->firstOrFail()->update(['nombre' => 'Tarde ajustada']);
+        $this->expectException(ValidationException::class);
+        $service->copiarConfiguracion($this->year, $target, ['jornadas' => true], $this->rector);
+    }
+
+    public function test_legacy_extra_period_migration_archives_the_old_row_and_preserves_four_real_periods(): void
+    {
+        $this->year->update(['num_periodos' => 4, 'periodo_sumatorio' => true]);
+        foreach ([
+            ['2026-01-01', '2026-03-31'], ['2026-04-01', '2026-06-30'],
+            ['2026-07-01', '2026-09-30'], ['2026-10-01', '2026-11-30'],
+            ['2026-12-01', '2026-12-31'],
+        ] as $index => [$start, $end]) {
+            Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'P'.($index + 1),
+                'orden' => $index + 1, 'fecha_inicio' => $start, 'fecha_fin' => $end,
+                'peso' => 20, 'estado' => 'planificado']);
+        }
+        Schema::drop('periodos_sumatorios_legado');
+        Schema::table('anos_lectivos', fn ($table) => $table->renameColumn('periodo_sumatorio', 'tiene_quinto_periodo'));
+        $migration = require base_path('database/migrations/tenant/2026_09_29_000004_convert_legacy_extra_period_to_annual_result.php');
+        $migration->up();
+        (require base_path('database/migrations/tenant/2026_09_29_000006_audit_legacy_summary_period_conversion.php'))->up();
+
+        $periods = Periodo::where('ano_lectivo_id', $this->year->id)->orderBy('orden')->get();
+        $this->assertCount(4, $periods);
+        $this->assertSame('2026-12-31', $periods->last()->fecha_fin->toDateString());
+        $this->assertSame([25.0, 25.0, 25.0, 25.0], $periods->pluck('peso')->map(fn ($peso) => (float) $peso)->all());
+        $this->assertSame(1, DB::table('periodos_sumatorios_legado')->count());
+        $this->assertDatabaseHas('audit_logs', ['accion' => 'MIGRATE', 'recurso' => 'periodo_sumatorio', 'recurso_id' => (string) $this->year->id]);
+        $this->assertTrue((bool) AnoLectivo::findOrFail($this->year->id)->periodo_sumatorio);
+    }
+
+    public function test_year_duplication_copies_siee_and_evaluation_catalog_with_new_references_only(): void
+    {
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica', 'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id, 'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS, 'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        DB::table('materias_curriculares')->insert([
+            'ano_lectivo_id' => $this->year->id, 'grado_id' => $this->group->grado_id,
+            'materia_id' => $this->subject->id, 'area_id' => $this->subject->area_id,
+        ]);
+
+        $target = app(DuplicarAnoLectivoService::class)->duplicar($this->year, [
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], ['grupos' => true, 'bloques' => true, 'espacios' => true, 'curriculo' => true, 'modelos' => true], $this->rector);
+
+        $this->assertSame(AnoLectivo::ESTADO_PLANIFICADO, $target->estado);
+        $newGroup = Grupo::where('ano_lectivo_id', $target->id)->firstOrFail();
+        $newSubject = Materia::where('ano_lectivo_id', $target->id)->firstOrFail();
+        $this->assertNotEquals($this->group->id, $newGroup->id);
+        $this->assertNotEquals($this->subject->id, $newSubject->id);
+        $this->assertSame($target->id, Grado::findOrFail($newGroup->grado_id)->ano_lectivo_id);
+        $this->assertSame($target->id, Jornada::findOrFail($newGroup->jornada_id)->ano_lectivo_id);
+        $this->assertSame($target->id, Area::findOrFail($newSubject->area_id)->ano_lectivo_id);
+        $this->assertNotEquals($scale->id, $target->fresh()->siee['escala_id']);
+        $this->assertNotEquals($method->id, $target->fresh()->siee['metodo_id']);
+        $this->assertDatabaseHas('materias_curriculares', [
+            'ano_lectivo_id' => $target->id, 'grado_id' => $newGroup->grado_id, 'materia_id' => $newSubject->id,
+        ]);
+        $this->assertSame(0, AsignacionDocente::where('ano_lectivo_id', $target->id)->count());
+    }
+
+    public function test_year_duplication_respects_selected_sections(): void
+    {
+        $target = app(DuplicarAnoLectivoService::class)->duplicar($this->year, [
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], ['jornadas' => true], $this->rector);
+
+        $this->assertSame(1, Jornada::where('ano_lectivo_id', $target->id)->count());
+        $this->assertSame(0, Nivel::where('ano_lectivo_id', $target->id)->count());
+        $this->assertSame(0, Materia::where('ano_lectivo_id', $target->id)->count());
+        $this->assertSame(0, Grupo::where('ano_lectivo_id', $target->id)->count());
+        $this->assertNull($target->fresh()->siee);
+    }
+
+    public function test_periods_are_optional_on_duplication_and_can_be_copied_later(): void
+    {
+        Periodo::create([
+            'ano_lectivo_id' => $this->year->id, 'nombre' => 'Primer período',
+            'orden' => 1, 'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31',
+            'peso' => 30, 'estado' => Periodo::ESTADO_CERRADO,
+        ]);
+        Periodo::create([
+            'ano_lectivo_id' => $this->year->id, 'nombre' => 'Segundo período',
+            'orden' => 2, 'fecha_inicio' => '2026-04-01', 'fecha_fin' => '2026-07-31',
+            'peso' => 30, 'estado' => Periodo::ESTADO_PLANIFICADO,
+        ]);
+        $service = app(DuplicarAnoLectivoService::class);
+        $target = $service->duplicar($this->year, [
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], [], $this->rector);
+        $this->assertSame(0, Periodo::where('ano_lectivo_id', $target->id)->count());
+
+        $service->copiarConfiguracion($this->year, $target, ['periodos' => true], $this->rector);
+        $service->copiarConfiguracion($this->year, $target, ['periodos' => true], $this->rector);
+        $periods = Periodo::where('ano_lectivo_id', $target->id)->orderBy('orden')->get();
+        $this->assertCount(2, $periods);
+        $this->assertSame('Primer período', $periods[0]->nombre);
+        $this->assertSame('2027-01-01', $periods[0]->fecha_inicio->toDateString());
+        $this->assertSame('2027-03-31', $periods[0]->fecha_fin->toDateString());
+        $this->assertSame(Periodo::ESTADO_PLANIFICADO, $periods[0]->estado);
+        $this->assertEquals(30, $periods[0]->peso);
+
+        $another = $service->duplicar($this->year, [
+            'nombre' => '2028', 'tipo_calendario' => 'A', 'fecha_inicio' => '2028-01-01',
+            'fecha_fin' => '2028-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], ['periodos' => true], $this->rector);
+        $this->assertSame(2, Periodo::where('ano_lectivo_id', $another->id)->count());
+        $this->assertSame('2028-03-31', Periodo::where('ano_lectivo_id', $another->id)->where('orden', 1)->firstOrFail()->fecha_fin->toDateString());
+    }
+
+    public function test_omitted_year_sections_can_be_copied_later_without_duplicate_records(): void
+    {
+        $service = app(DuplicarAnoLectivoService::class);
+        $target = $service->duplicar($this->year, [
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], [], $this->rector);
+
+        $this->assertSame(0, Jornada::where('ano_lectivo_id', $target->id)->count());
+        $service->copiarConfiguracion($this->year, $target, ['grupos' => true], $this->rector);
+        $newGroup = Grupo::where('ano_lectivo_id', $target->id)->firstOrFail();
+        $this->assertSame($target->id, Grado::findOrFail($newGroup->grado_id)->ano_lectivo_id);
+        $this->assertSame($target->id, Jornada::findOrFail($newGroup->jornada_id)->ano_lectivo_id);
+
+        $service->copiarConfiguracion($this->year, $target, ['grupos' => true, 'materias' => true], $this->rector);
+        $this->assertSame(1, Grupo::where('ano_lectivo_id', $target->id)->count());
+        $this->assertSame(1, Jornada::where('ano_lectivo_id', $target->id)->count());
+        $this->assertSame(1, Materia::where('ano_lectivo_id', $target->id)->count());
+        $this->assertSame(0, AsignacionDocente::where('ano_lectivo_id', $target->id)->count());
+    }
+
+    public function test_late_copy_preserves_existing_target_configuration_and_remaps_curriculum(): void
+    {
+        DB::table('materias_curriculares')->insert([
+            'ano_lectivo_id' => $this->year->id, 'grado_id' => $this->group->grado_id,
+            'materia_id' => $this->subject->id, 'area_id' => $this->subject->area_id,
+        ]);
+        $service = app(DuplicarAnoLectivoService::class);
+        $target = $service->duplicar($this->year, [
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], ['grados' => true, 'materias' => true], $this->rector);
+        $newSubject = Materia::where('ano_lectivo_id', $target->id)->firstOrFail();
+        $newSubject->update(['intensidad_horaria' => 9]);
+
+        $service->copiarConfiguracion($this->year, $target, ['curriculo' => true], $this->rector);
+        $service->copiarConfiguracion($this->year, $target, ['curriculo' => true], $this->rector);
+
+        $this->assertSame(9, $newSubject->fresh()->intensidad_horaria);
+        $this->assertSame(1, Materia::where('ano_lectivo_id', $target->id)->count());
+        $this->assertSame(1, DB::table('materias_curriculares')->where('ano_lectivo_id', $target->id)->count());
+        $this->assertDatabaseHas('materias_curriculares', [
+            'ano_lectivo_id' => $target->id, 'materia_id' => $newSubject->id,
+        ]);
+    }
+
+    public function test_siee_can_be_copied_later_without_replacing_target_settings(): void
+    {
+        $scale = EscalaValorativa::create([
+            'ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica', 'tipo' => 'numerica',
+            'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1,
+        ]);
+        $method = MetodoAprobacion::create([
+            'ano_lectivo_id' => $this->year->id, 'calculo_nota' => 'promedio_simple',
+            'nota_minima' => '3', 'ambito' => 'materia',
+        ]);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS, 'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $service = app(DuplicarAnoLectivoService::class);
+        $target = $service->duplicar($this->year, [
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], [], $this->rector);
+
+        $service->copiarConfiguracion($this->year, $target, ['siee' => true], $this->rector);
+        $this->assertNotEquals($scale->id, $target->fresh()->siee['escala_id']);
+        $this->assertNotEquals($method->id, $target->fresh()->siee['metodo_id']);
+        $customSiee = $target->fresh()->siee;
+        $customSiee['ponderacion_periodos'] = [30, 30, 40];
+        $target->update(['siee' => $customSiee]);
+
+        $service->copiarConfiguracion($this->year, $target, ['siee' => true], $this->rector);
+        $this->assertSame([30, 30, 40], $target->fresh()->siee['ponderacion_periodos']);
+        $this->assertSame(1, EscalaValorativa::where('ano_lectivo_id', $target->id)->count());
+        $this->assertSame(1, MetodoAprobacion::where('ano_lectivo_id', $target->id)->count());
+    }
+
+    public function test_late_copy_rejects_a_closed_destination(): void
+    {
+        $target = app(DuplicarAnoLectivoService::class)->duplicar($this->year, [
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'periodo_sumatorio' => false,
+        ], [], $this->rector);
+        $target->update(['estado' => AnoLectivo::ESTADO_CERRADO]);
+
+        $this->expectException(ValidationException::class);
+        app(DuplicarAnoLectivoService::class)->copiarConfiguracion($this->year, $target, ['grupos' => true], $this->rector);
+    }
+
+    public function test_pending_assignment_migration_links_existing_classes_to_single_teacher(): void
+    {
+        $sessionId = DB::table('sesiones_horario')->insertGetId([
+            'ano_lectivo_id' => $this->year->id,
+            'grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'dia' => 'lunes', 'bloque_horario_id' => $this->block->id,
+            'asignacion_id' => null, 'docente_id' => null,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $migration = require database_path('migrations/tenant/2026_09_29_000001_allow_pending_teacher_assignments.php');
+        $migration->up();
+
+        $this->assertDatabaseHas('sesiones_horario', [
+            'id' => $sessionId, 'asignacion_id' => $this->assignment->id,
+            'docente_id' => $this->teacher->id,
+        ]);
+    }
+
+    public function test_catalog_migration_refuses_ambiguous_historical_years(): void
+    {
+        $old = AnoLectivo::create([
+            'nombre' => '2025', 'tipo_calendario' => 'A', 'fecha_inicio' => '2025-01-01',
+            'fecha_fin' => '2025-12-31', 'num_periodos' => 3, 'estado' => 'cerrado',
+        ]);
+        Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $old->id,
+            'jornada_id' => $this->group->jornada_id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'Histórico', 'estado' => 'activo',
+        ]);
+        $migration = require database_path('migrations/tenant/2026_09_29_000002_scope_academic_catalogs_to_year.php');
+        $this->expectException(\RuntimeException::class);
+        $migration->up();
+    }
+
+    public function test_new_tenant_verifier_rejects_missing_migration(): void
+    {
+        DB::table('migrations')->where('migration', '2026_09_29_000002_scope_academic_catalogs_to_year')->delete();
+        $this->expectException(\RuntimeException::class);
+        (new VerifyTenantMigrations($this->school))->verifyCurrentDatabase();
+    }
 
     private Tenant $school;
 
@@ -83,14 +404,14 @@ class AcademicModulesTest extends TestCase
         $this->rector->assignRole('rector');
         $this->year = AnoLectivo::create(['nombre' => '2026', 'tipo_calendario' => 'A', 'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31', 'num_periodos' => 3, 'estado' => 'en_curso']);
         $sede = Sede::create(['nombre' => 'Norte', 'estado' => 'activa']);
-        $journey = Jornada::create(['sede_id' => $sede->id, 'nombre' => 'Mañana', 'hora_inicio' => '07:00', 'hora_fin' => '13:00', 'estado' => 'activa']);
-        $level = Nivel::create(['nombre' => 'Primaria', 'nivel_educativo' => 'primaria', 'estado' => 'activo']);
-        $grade = Grado::create(['nivel_id' => $level->id, 'nombre' => 'Primero', 'codigo' => '01', 'estado' => 'activo']);
+        $journey = Jornada::create(['ano_lectivo_id' => $this->year->id, 'sede_id' => $sede->id, 'nombre' => 'Mañana', 'hora_inicio' => '07:00', 'hora_fin' => '13:00', 'estado' => 'activa']);
+        $level = Nivel::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primaria', 'nivel_educativo' => 'primaria', 'estado' => 'activo']);
+        $grade = Grado::create(['ano_lectivo_id' => $this->year->id, 'nivel_id' => $level->id, 'nombre' => 'Primero', 'codigo' => '01', 'estado' => 'activo']);
         $this->group = Grupo::create(['grado_id' => $grade->id, 'ano_lectivo_id' => $this->year->id, 'nombre' => 'A', 'jornada_id' => $journey->id, 'sede_id' => $sede->id, 'estado' => 'activo']);
-        $area = Area::create(['nombre' => 'Ciencias', 'estado' => 'activo']);
-        $this->subject = Materia::create(['nombre' => 'Biología', 'area_id' => $area->id, 'intensidad_horaria' => 5, 'estado' => 'activo']);
+        $area = Area::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Ciencias', 'estado' => 'activo']);
+        $this->subject = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Biología', 'area_id' => $area->id, 'intensidad_horaria' => 5, 'estado' => 'activo']);
         $this->assignment = AsignacionDocente::create(['ano_lectivo_id' => $this->year->id, 'grupo_id' => $this->group->id, 'materia_id' => $this->subject->id, 'docente_id' => $this->teacher->id]);
-        $this->block = BloqueHorario::create(['jornada_id' => $journey->id, 'nombre' => 'Primera', 'hora_inicio' => '08:00', 'hora_fin' => '09:00', 'estado' => 'activo', 'es_descanso' => false]);
+        $this->block = BloqueHorario::create(['ano_lectivo_id' => $this->year->id, 'jornada_id' => $journey->id, 'nombre' => 'Primera', 'hora_inicio' => '08:00', 'hora_fin' => '09:00', 'estado' => 'activo', 'es_descanso' => false]);
     }
 
     protected function tearDown(): void
@@ -149,7 +470,7 @@ class AcademicModulesTest extends TestCase
         $service = new HorarioService;
         $data = ['asignacion_id' => $this->assignment->id, 'dia' => 'lunes', 'bloque_horario_id' => $this->block->id, 'espacio_fisico_id' => null];
         $session = $service->guardar($data, $this->rector);
-        $this->assertDatabaseHas('sesiones_horario', ['id' => $session->id]);
+        $this->assertDatabaseHas('sesiones_horario', ['id' => $session->id, 'ano_lectivo_id' => $this->year->id]);
         $this->assertDatabaseHas('audit_logs', ['recurso' => 'sesion_horario', 'accion' => 'CREATE']);
         $overlap = $this->block->replicate();
         $overlap->nombre = 'Solapado';
@@ -234,7 +555,12 @@ class AcademicModulesTest extends TestCase
             $service->guardar(['asignacion_id' => $this->assignment->id, 'dia' => 'lunes', 'hora_inicio' => '08:30', 'hora_fin' => '09:15'], $this->rector);
             $this->fail('Una clase con horas libres no puede cruzarse con otra clase.');
         } catch (ValidationException $exception) {
-            $this->assertStringContainsString('grupo', $exception->errors()['horario'][0]);
+            $message = $exception->errors()['horario'][0];
+            $this->assertStringContainsString('grupo', $message);
+            $this->assertStringContainsString($this->subject->nombre, $message);
+            $this->assertStringContainsString($this->group->grado->nombre, $message);
+            $this->assertStringContainsString('lunes de 08:00 a '.substr($this->block->hora_fin, 0, 5), $message);
+            $this->assertStringNotContainsString('clase #', $message);
         }
     }
 
@@ -259,6 +585,50 @@ class AcademicModulesTest extends TestCase
             'hora_fin' => '07:50',
             'bloque_horario_id' => null,
         ]);
+    }
+
+    public function test_dragging_moves_a_class_and_copying_creates_another_with_the_same_assignment(): void
+    {
+        $controller = app(HorarioController::class);
+        $request = function (string $method, array $data): Request {
+            $request = Request::create('/api/horarios', $method, $data);
+            $request->setUserResolver(fn () => $this->rector);
+
+            return $request;
+        };
+        $class = (new HorarioService)->guardar([
+            'grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'dia' => 'lunes', 'bloque_horario_id' => $this->block->id,
+        ], $this->rector);
+        $shared = ['grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id, 'espacio_fisico_id' => null];
+
+        $moved = $controller->guardar($request('PUT', [...$shared,
+            'dia' => 'martes', 'bloque_horario_id' => $this->block->id,
+            'hora_inicio' => null, 'hora_fin' => null,
+        ]), new HorarioService, $class->id);
+        $this->assertSame(200, $moved->status());
+        $this->assertSame($class->id, $moved->getData(true)['data']['id']);
+        $this->assertSame(1, SesionHorario::count());
+
+        $copy = $controller->guardar($request('POST', [...$shared,
+            'dia' => 'miercoles', 'bloque_horario_id' => null,
+            'hora_inicio' => '09:15', 'hora_fin' => '10:15',
+        ]), new HorarioService);
+        $this->assertSame(201, $copy->status());
+        $this->assertSame($this->assignment->id, $copy->getData(true)['data']['asignacion_id']);
+        $this->assertSame(2, SesionHorario::count());
+        $this->assertSame(1, AsignacionDocente::count());
+
+        try {
+            $controller->guardar($request('POST', [...$shared,
+                'dia' => 'martes', 'bloque_horario_id' => $this->block->id,
+            ]), new HorarioService);
+            $this->fail('No se puede copiar una clase sobre otra del mismo grupo.');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString('grupo', $exception->errors()['horario'][0]);
+        }
+        $this->assertSame(2, SesionHorario::count());
     }
 
     public function test_custom_schedule_works_when_the_journey_has_no_blocks(): void
@@ -303,7 +673,7 @@ class AcademicModulesTest extends TestCase
         $this->assertSame('07:20', substr($second->hora_inicio, 0, 5));
     }
 
-    public function test_schedule_can_be_created_without_teacher_or_assignment_then_edited(): void
+    public function test_schedule_reuses_teacher_assignment_and_can_be_edited(): void
     {
         $service = new HorarioService;
         $class = $service->guardar([
@@ -313,8 +683,8 @@ class AcademicModulesTest extends TestCase
             'dia' => 'lunes',
             'bloque_horario_id' => $this->block->id,
         ], $this->rector);
-        $this->assertNull($class->asignacion_id);
-        $this->assertNull($class->docente_id);
+        $this->assertSame($this->assignment->id, $class->asignacion_id);
+        $this->assertSame($this->teacher->id, $class->docente_id);
         $this->assertSame($this->group->id, $class->grupo_id);
         $this->assertSame($this->subject->id, $class->materia_id);
 
@@ -332,6 +702,148 @@ class AcademicModulesTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['recurso' => 'sesion_horario', 'accion' => 'UPDATE']);
     }
 
+    public function test_moving_the_only_class_updates_its_assignment_instead_of_leaving_a_duplicate(): void
+    {
+        $otherGroup = Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $this->year->id,
+            'jornada_id' => $this->group->jornada_id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'B', 'estado' => 'activo',
+        ]);
+        $service = new HorarioService;
+        $class = $service->guardar(['grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'dia' => 'lunes', 'bloque_horario_id' => $this->block->id], $this->rector);
+        $moved = $service->guardar(['grupo_id' => $otherGroup->id, 'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id, 'dia' => 'lunes', 'bloque_horario_id' => $this->block->id], $this->rector, $class);
+
+        $this->assertSame($this->assignment->id, $moved->asignacion_id);
+        $this->assertSame($otherGroup->id, $this->assignment->fresh()->grupo_id);
+        $this->assertSame(1, AsignacionDocente::count());
+        $this->assertDatabaseHas('sesiones_horario', ['id' => $class->id, 'grupo_id' => $otherGroup->id,
+            'asignacion_id' => $this->assignment->id]);
+    }
+
+    public function test_editing_an_assignment_moves_its_classes_and_keeps_the_same_assignment_id(): void
+    {
+        $otherGroup = Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $this->year->id,
+            'jornada_id' => $this->group->jornada_id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'B', 'estado' => 'activo',
+        ]);
+        $otherSubject = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Matemáticas',
+            'area_id' => $this->subject->area_id, 'intensidad_horaria' => 5, 'estado' => 'activo']);
+        $service = new HorarioService;
+        $class = $service->guardar(['grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'dia' => 'lunes', 'bloque_horario_id' => $this->block->id], $this->rector);
+        $request = Request::create('/api/asignaciones/'.$this->assignment->id, 'PUT', [
+            'grupo_id' => $otherGroup->id, 'materia_id' => $otherSubject->id, 'docente_id' => $this->teacher->id,
+        ]);
+        $request->setUserResolver(fn () => $this->rector);
+        $response = app(HorarioController::class)->editarAsignacion($request, $this->assignment->id,
+            app(\App\Services\AsignacionHorarioService::class), $service);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame($this->assignment->id, $response->getData(true)['data']['id']);
+        $this->assertSame(1, AsignacionDocente::count());
+        $this->assertDatabaseHas('sesiones_horario', ['id' => $class->id, 'grupo_id' => $otherGroup->id,
+            'materia_id' => $otherSubject->id, 'asignacion_id' => $this->assignment->id]);
+    }
+
+    public function test_moving_one_of_two_classes_keeps_the_old_assignment_for_the_remaining_class(): void
+    {
+        $otherGroup = Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $this->year->id,
+            'jornada_id' => $this->group->jornada_id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'B', 'estado' => 'activo',
+        ]);
+        $service = new HorarioService;
+        $monday = $service->guardar(['grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'dia' => 'lunes', 'bloque_horario_id' => $this->block->id], $this->rector);
+        $wednesday = $service->guardar(['grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'dia' => 'miercoles', 'bloque_horario_id' => $this->block->id], $this->rector);
+        $service->guardar(['grupo_id' => $otherGroup->id, 'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id, 'dia' => 'lunes', 'bloque_horario_id' => $this->block->id], $this->rector, $monday);
+
+        $this->assertSame(2, AsignacionDocente::count());
+        $this->assertSame($this->assignment->id, $wednesday->fresh()->asignacion_id);
+        $this->assertNotSame($this->assignment->id, $monday->fresh()->asignacion_id);
+    }
+
+    public function test_moving_the_only_class_to_an_existing_assignment_reuses_target_and_removes_empty_source(): void
+    {
+        $otherGroup = Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $this->year->id,
+            'jornada_id' => $this->group->jornada_id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'B', 'estado' => 'activo',
+        ]);
+        $target = AsignacionDocente::create(['ano_lectivo_id' => $this->year->id,
+            'grupo_id' => $otherGroup->id, 'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id]);
+        $service = new HorarioService;
+        $class = $service->guardar(['grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'dia' => 'lunes', 'bloque_horario_id' => $this->block->id], $this->rector);
+        $service->guardar(['grupo_id' => $otherGroup->id, 'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id, 'dia' => 'lunes',
+            'bloque_horario_id' => $this->block->id], $this->rector, $class);
+
+        $this->assertSame($target->id, $class->fresh()->asignacion_id);
+        $this->assertSame(1, AsignacionDocente::count());
+        $this->assertSoftDeleted('asignaciones_docentes', ['id' => $this->assignment->id]);
+    }
+
+    public function test_assignment_with_evaluation_cannot_be_relabelled_as_another_group(): void
+    {
+        $otherGroup = Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $this->year->id,
+            'jornada_id' => $this->group->jornada_id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'B', 'estado' => 'activo',
+        ]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'P1', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31', 'estado' => 'abierto']);
+        ComponenteEvaluacion::create(['asignacion_id' => $this->assignment->id,
+            'periodo_id' => $period->id, 'nombre' => 'Talleres', 'modo' => 'SIMPLE_AVERAGE']);
+        $request = Request::create('/api/asignaciones/'.$this->assignment->id, 'PUT', [
+            'grupo_id' => $otherGroup->id, 'materia_id' => $this->subject->id,
+        ]);
+        $request->setUserResolver(fn () => $this->rector);
+        try {
+            app(HorarioController::class)->editarAsignacion($request, $this->assignment->id,
+                app(\App\Services\AsignacionHorarioService::class), new HorarioService);
+            $this->fail('Una evaluación existente no debe cambiar de grupo.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+        }
+        $this->assertSame($this->group->id, $this->assignment->fresh()->grupo_id);
+    }
+
+    public function test_assignment_edit_rolls_back_when_existing_block_does_not_fit_the_new_group(): void
+    {
+        $otherJourney = Jornada::create(['ano_lectivo_id' => $this->year->id,
+            'sede_id' => $this->group->sede_id, 'nombre' => 'Tarde',
+            'hora_inicio' => '13:00', 'hora_fin' => '18:00', 'estado' => 'activa']);
+        $otherGroup = Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $this->year->id,
+            'jornada_id' => $otherJourney->id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'B', 'estado' => 'activo',
+        ]);
+        $class = (new HorarioService)->guardar(['grupo_id' => $this->group->id,
+            'materia_id' => $this->subject->id, 'dia' => 'lunes',
+            'bloque_horario_id' => $this->block->id], $this->rector);
+        $request = Request::create('/api/asignaciones/'.$this->assignment->id, 'PUT', [
+            'grupo_id' => $otherGroup->id, 'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id,
+        ]);
+        $request->setUserResolver(fn () => $this->rector);
+        try {
+            app(HorarioController::class)->editarAsignacion($request, $this->assignment->id,
+                app(\App\Services\AsignacionHorarioService::class), new HorarioService);
+            $this->fail('El bloque de la jornada original no debe trasladarse a otra jornada.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+        }
+        $this->assertSame($this->group->id, $this->assignment->fresh()->grupo_id);
+        $this->assertSame($this->group->id, $class->fresh()->grupo_id);
+    }
+
     public function test_schedule_endpoint_creates_class_when_no_assignments_or_teachers_exist(): void
     {
         $this->assignment->forceDelete();
@@ -347,8 +859,47 @@ class AcademicModulesTest extends TestCase
         $response = app(HorarioController::class)->guardar($request, new HorarioService);
         $this->assertSame(201, $response->getStatusCode());
         $this->assertNull($response->getData(true)['data']['docente_id']);
-        $this->assertNull($response->getData(true)['data']['asignacion_id']);
+        $this->assertNotNull($response->getData(true)['data']['asignacion_id']);
+        $this->assertDatabaseHas('asignaciones_docentes', [
+            'ano_lectivo_id' => $this->year->id,
+            'grupo_id' => $this->group->id,
+            'materia_id' => $this->subject->id,
+            'docente_id' => null,
+        ]);
         $this->assertDatabaseHas('sesiones_horario', ['grupo_id' => $this->group->id, 'materia_id' => $this->subject->id]);
+    }
+
+    public function test_teacher_selected_in_assignments_updates_every_class_of_the_same_year_group_and_subject(): void
+    {
+        $this->assignment->update(['docente_id' => null]);
+        $service = new HorarioService;
+        $lunes = $service->guardar([
+            'grupo_id' => $this->group->id,
+            'materia_id' => $this->subject->id,
+            'dia' => 'lunes',
+            'bloque_horario_id' => $this->block->id,
+        ], $this->rector);
+        $miercoles = $service->guardar([
+            'grupo_id' => $this->group->id,
+            'materia_id' => $this->subject->id,
+            'dia' => 'miercoles',
+            'bloque_horario_id' => $this->block->id,
+        ], $this->rector);
+
+        $request = Request::create('/api/asignaciones', 'POST', [
+            'ano_lectivo_id' => $this->year->id,
+            'grupo_id' => $this->group->id,
+            'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id,
+        ]);
+        $request->setUserResolver(fn () => $this->rector);
+        $response = app(HorarioController::class)->asignar($request, app(\App\Services\AsignacionHorarioService::class));
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame($this->teacher->id, $this->assignment->fresh()->docente_id);
+        $this->assertSame($this->teacher->id, $lunes->fresh()->docente_id);
+        $this->assertSame($this->teacher->id, $miercoles->fresh()->docente_id);
+        $this->assertSame($this->assignment->id, $lunes->fresh()->asignacion_id);
+        $this->assertSame($this->assignment->id, $miercoles->fresh()->asignacion_id);
     }
 
     public function test_schedule_migration_backfills_legacy_assignment_fields(): void
@@ -374,6 +925,7 @@ class AcademicModulesTest extends TestCase
     public function test_direct_schedule_is_visible_to_enrolled_students_and_assigned_teacher_only(): void
     {
         [, $enrollment] = $this->gradeFixture();
+        $this->assignment->update(['docente_id' => null]);
         $class = (new HorarioService)->guardar([
             'grupo_id' => $this->group->id,
             'materia_id' => $this->subject->id,
@@ -412,7 +964,7 @@ class AcademicModulesTest extends TestCase
         }
     }
 
-    public function test_legacy_schedule_remains_when_teacher_assignment_is_removed(): void
+    public function test_assignment_with_scheduled_classes_cannot_be_deleted(): void
     {
         $class = (new HorarioService)->guardar([
             'asignacion_id' => $this->assignment->id,
@@ -421,8 +973,13 @@ class AcademicModulesTest extends TestCase
         ], $this->rector);
         $request = Request::create('/api/asignaciones/'.$this->assignment->id, 'DELETE');
         $request->setUserResolver(fn () => $this->rector);
-        $this->assertSame(200, app(HorarioController::class)->desasignar($request, $this->assignment->id)->getStatusCode());
-        $this->assertNull($class->fresh()->asignacion_id);
+        try {
+            app(HorarioController::class)->desasignar($request, $this->assignment->id);
+            $this->fail('No debe borrarse la asignación con clases.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+        }
+        $this->assertSame($this->assignment->id, $class->fresh()->asignacion_id);
         $this->assertSame($this->teacher->id, $class->fresh()->docente_id);
         $this->assertSame($this->group->id, $class->fresh()->grupo_id);
     }

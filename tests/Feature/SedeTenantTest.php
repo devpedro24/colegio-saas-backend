@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Jobs\VerifyTenantMigrations;
 use App\Models\Tenant;
 use App\Services\SedeProvisioner;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -57,6 +58,11 @@ class SedeTenantTest extends TestCase
         $this->assertTrue($sede->parent->sedes()->where('id', $sede->id)->exists());
 
         $this->assertStringContainsString('.', $sede->domains()->first()->domain);
+
+        // Tenant nuevo (colegio y sede): el evento de creación debe ejecutar
+        // todas las migraciones, incluidas las de asignaciones y año lectivo.
+        $sede->parent->run(fn () => (new VerifyTenantMigrations($sede->parent))->verifyCurrentDatabase());
+        $sede->run(fn () => (new VerifyTenantMigrations($sede))->verifyCurrentDatabase());
     }
 
     public function test_bajar_sede_lleva_a_cuarentena_y_elimina_el_subdominio(): void
