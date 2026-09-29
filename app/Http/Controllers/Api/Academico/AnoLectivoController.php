@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
 use App\Services\ConfigurationGate;
+use App\Services\DuplicarAnoLectivoService;
 use App\Services\GradeCalculationService;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -49,6 +50,11 @@ class AnoLectivoController extends Controller
         return response()->json(['data' => $this->present($ano, true)]);
     }
 
+    public function estadoCopia(string $id, DuplicarAnoLectivoService $service): JsonResponse
+    {
+        return response()->json(['data' => $service->copyStatus(AnoLectivo::findOrFail($id))]);
+    }
+
     /** Crea un año lectivo (nace en estado 'planificado'). */
     public function store(Request $request): JsonResponse
     {
@@ -57,8 +63,8 @@ class AnoLectivoController extends Controller
             'tipo_calendario' => ['required', Rule::in([AnoLectivo::TIPO_A, AnoLectivo::TIPO_B])],
             'fecha_inicio' => ['required', 'date'],
             'fecha_fin' => ['required', 'date', 'after:fecha_inicio'],
-            'num_periodos' => ['required', 'integer', 'min:1', 'max:'.($request->boolean('tiene_quinto_periodo') ? 11 : 12)],
-            'tiene_quinto_periodo' => ['nullable', 'boolean'],
+            'num_periodos' => ['required', 'integer', 'min:1', 'max:12'],
+            'periodo_sumatorio' => ['nullable', 'boolean'],
         ]);
 
         // RN-PA-002: el nombre debe respetar el formato del tipo de calendario.
@@ -72,9 +78,16 @@ class AnoLectivoController extends Controller
             'fecha_inicio' => $data['fecha_inicio'],
             'fecha_fin' => $data['fecha_fin'],
             'num_periodos' => $data['num_periodos'],
-            'tiene_quinto_periodo' => $data['tiene_quinto_periodo'] ?? false,
+            'periodo_sumatorio' => $data['periodo_sumatorio'] ?? false,
             'estado' => AnoLectivo::ESTADO_PLANIFICADO,
         ]);
+
+        // Colegios antiguos podían configurar catálogos antes de crear el primer año.
+        if (AnoLectivo::count() === 1) {
+            foreach (['jornadas', 'niveles', 'grados', 'bloques_horarios', 'espacios_fisicos', 'areas', 'materias'] as $table) {
+                DB::table($table)->whereNull('ano_lectivo_id')->update(['ano_lectivo_id' => $ano->id]);
+            }
+        }
 
         AuditLogger::tenant(
             $request->user(),
@@ -97,6 +110,53 @@ class AnoLectivoController extends Controller
         return response()->json(['data' => $this->present($ano)], 201);
     }
 
+    /** Crea un año planificado y copia únicamente las configuraciones elegidas. */
+    public function duplicar(Request $request, string $id, DuplicarAnoLectivoService $service): JsonResponse
+    {
+        $source = AnoLectivo::findOrFail($id);
+        $data = $request->validate([
+            'nombre' => ['required', 'string', 'max:120', 'unique:anos_lectivos,nombre'],
+            'tipo_calendario' => ['required', Rule::in([AnoLectivo::TIPO_A, AnoLectivo::TIPO_B])],
+            'fecha_inicio' => ['required', 'date'],
+            'fecha_fin' => ['required', 'date', 'after:fecha_inicio'],
+            'num_periodos' => ['required', 'integer', 'min:1', 'max:12'],
+            'periodo_sumatorio' => ['nullable', 'boolean'],
+            'opciones' => ['required', 'array'],
+            'opciones.*' => ['boolean'],
+        ]);
+        $this->validarNombreSegunCalendario($data['tipo_calendario'], $data['nombre']);
+        $this->validarFechasSegunCalendario($data);
+        if ($data['tipo_calendario'] !== $source->tipo_calendario && AnoLectivo::query()
+            ->whereIn('estado', [AnoLectivo::ESTADO_EN_CURSO, AnoLectivo::ESTADO_CERRADO, AnoLectivo::ESTADO_ARCHIVADO])->exists()) {
+            abort(422, 'No se puede cambiar el tipo de calendario mientras existan años lectivos en curso o cerrados.');
+        }
+        $target = $service->duplicar($source, [
+            'nombre' => $data['nombre'],
+            'tipo_calendario' => $data['tipo_calendario'],
+            'fecha_inicio' => $data['fecha_inicio'],
+            'fecha_fin' => $data['fecha_fin'],
+            'num_periodos' => $data['num_periodos'],
+            'periodo_sumatorio' => $data['periodo_sumatorio'] ?? false,
+        ], $data['opciones'], $request->user());
+
+        return response()->json(['data' => $this->present($target)], 201);
+    }
+
+    /** Copia secciones pendientes a un año ya existente sin sobrescribirlo. */
+    public function copiarConfiguracion(Request $request, string $id, DuplicarAnoLectivoService $service): JsonResponse
+    {
+        $target = AnoLectivo::findOrFail($id);
+        $data = $request->validate([
+            'origen_id' => ['required', 'integer', 'exists:anos_lectivos,id'],
+            'opciones' => ['required', 'array:'.implode(',', DuplicarAnoLectivoService::OPTIONS)],
+            'opciones.*' => ['boolean'],
+        ]);
+        $source = AnoLectivo::findOrFail($data['origen_id']);
+        $updated = $service->copiarConfiguracion($source, $target, $data['opciones'], $request->user());
+
+        return response()->json(['data' => $this->present($updated)]);
+    }
+
     /** Edita un año lectivo (bloqueado si está cerrado/archivado — RN-PA-006). */
     public function update(Request $request, string $id): JsonResponse
     {
@@ -112,11 +172,15 @@ class AnoLectivoController extends Controller
             'tipo_calendario' => ['required', Rule::in([AnoLectivo::TIPO_A, AnoLectivo::TIPO_B])],
             'fecha_inicio' => ['required', 'date'],
             'fecha_fin' => ['required', 'date', 'after:fecha_inicio'],
-            'num_periodos' => ['required', 'integer', 'min:1', 'max:'.(($request->has('tiene_quinto_periodo') ? $request->boolean('tiene_quinto_periodo') : $ano->tiene_quinto_periodo) ? 11 : 12)],
-            'tiene_quinto_periodo' => ['nullable', 'boolean'],
+            'num_periodos' => ['required', 'integer', 'min:1', 'max:12'],
+            'periodo_sumatorio' => ['nullable', 'boolean'],
         ]);
 
-        $nuevoTotalPeriodos = $data['num_periodos'] + (($data['tiene_quinto_periodo'] ?? $ano->tiene_quinto_periodo) ? 1 : 0);
+        $nuevoTotalPeriodos = $data['num_periodos'];
+        if (($data['periodo_sumatorio'] ?? $ano->periodo_sumatorio)
+            && ($ano->siee['modo_anual'] ?? null) === 'MANUAL') {
+            abort(422, 'El período sumatorio requiere un cálculo anual simple o ponderado en el SIEE.');
+        }
         $ultimoPeriodoConfigurado = (int) $ano->periodos()->max('orden');
         if ($ultimoPeriodoConfigurado > $nuevoTotalPeriodos) {
             abort(422, "El periodo {$ultimoPeriodoConfigurado} ya está configurado. Elimínalo desde Periodos antes de reducir la cantidad.");
@@ -150,7 +214,7 @@ class AnoLectivoController extends Controller
             'fecha_inicio' => $data['fecha_inicio'],
             'fecha_fin' => $data['fecha_fin'],
             'num_periodos' => $data['num_periodos'],
-            'tiene_quinto_periodo' => $data['tiene_quinto_periodo'] ?? $ano->tiene_quinto_periodo,
+            'periodo_sumatorio' => $data['periodo_sumatorio'] ?? $ano->periodo_sumatorio,
         ]);
 
         AuditLogger::tenant(
@@ -235,6 +299,9 @@ class AnoLectivoController extends Controller
         }
 
         $this->validarPeriodosCompletos($ano);
+        if ($ano->periodo_sumatorio && ($ano->siee['modo_anual'] ?? null) === 'MANUAL') {
+            abort(422, 'El período sumatorio requiere un cálculo anual simple o ponderado en el SIEE.');
+        }
 
         $otroEnCurso = AnoLectivo::query()
             ->where('estado', AnoLectivo::ESTADO_EN_CURSO)
@@ -402,7 +469,7 @@ class AnoLectivoController extends Controller
         if (($ano->siee['modo_anual'] ?? null) === 'WEIGHTED_AVERAGE') {
             GradeCalculationService::assertWeights($periodos->pluck('peso')->all());
         }
-        $esperados = $ano->num_periodos + ($ano->tiene_quinto_periodo ? 1 : 0);
+        $esperados = $ano->num_periodos;
 
         if ($periodos->count() !== $esperados) {
             abort(422, "No se puede iniciar el año lectivo: debes configurar sus {$esperados} períodos.");
@@ -440,6 +507,10 @@ class AnoLectivoController extends Controller
      */
     private function tieneInformacionAnclada(AnoLectivo $ano): bool
     {
+        if (Schema::hasTable('copias_configuracion_anual')
+            && DB::table('copias_configuracion_anual')->where('origen_id', $ano->id)->exists()) {
+            return true;
+        }
         $periodoIds = Periodo::withTrashed()
             ->where('ano_lectivo_id', $ano->id)
             ->pluck('id')
@@ -448,7 +519,7 @@ class AnoLectivoController extends Controller
         try {
             foreach (Schema::getTables() as $tabla) {
                 $nombre = is_array($tabla) ? $tabla['name'] : $tabla->name;
-                if (in_array($nombre, [$ano->getTable(), 'periodos'], true)) {
+                if (in_array($nombre, [$ano->getTable(), 'periodos', 'copias_configuracion_anual'], true)) {
                     continue;
                 }
 
@@ -487,7 +558,7 @@ class AnoLectivoController extends Controller
             'fecha_inicio' => $ano->fecha_inicio?->toDateString(),
             'fecha_fin' => $ano->fecha_fin?->toDateString(),
             'num_periodos' => $ano->num_periodos,
-            'tiene_quinto_periodo' => $ano->tiene_quinto_periodo,
+            'periodo_sumatorio' => $ano->periodo_sumatorio,
             'periodos_configurados' => $ano->periodos_count,
             'estado' => $ano->estado,
         ];
@@ -500,12 +571,14 @@ class AnoLectivoController extends Controller
     {
         $payload = [
             'id' => $ano->id,
+            // Stable, tenant-bound opaque URL selector. Authorization still happens server-side.
+            'url_token' => hash_hmac('sha256', (string) tenancy()->tenant?->getTenantKey().'|ano-lectivo|'.$ano->id, (string) config('app.key')),
             'nombre' => $ano->nombre,
             'tipo_calendario' => $ano->tipo_calendario,
             'fecha_inicio' => $ano->fecha_inicio?->toDateString(),
             'fecha_fin' => $ano->fecha_fin?->toDateString(),
             'num_periodos' => $ano->num_periodos,
-            'tiene_quinto_periodo' => $ano->tiene_quinto_periodo,
+            'periodo_sumatorio' => $ano->periodo_sumatorio,
             'estado' => $ano->estado,
             'created_at' => $ano->created_at?->toIso8601String(),
         ];

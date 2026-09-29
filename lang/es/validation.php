@@ -194,7 +194,7 @@ return [
         'fecha_inicio' => 'fecha de inicio',
         'fecha_fin' => 'fecha de fin',
         'num_periodos' => 'número de periodos',
-        'tiene_quinto_periodo' => 'quinto periodo',
+        'periodo_sumatorio' => 'período sumatorio',
 
         // Periodos académicos
         'peso' => 'peso',

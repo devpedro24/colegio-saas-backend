@@ -252,7 +252,7 @@ class PeriodoController extends Controller
     {
         return $request->validate([
             'nombre' => ['nullable', 'string', 'max:120'],
-            'orden' => ['required', 'integer', 'min:1', 'max:13'],
+            'orden' => ['required', 'integer', 'min:1', 'max:12'],
             'fecha_inicio' => ['required', 'date'],
             'fecha_fin' => ['required', 'date', 'after_or_equal:fecha_inicio'],
             'peso' => ['nullable', 'numeric', 'min:0', 'max:100'],
@@ -261,11 +261,11 @@ class PeriodoController extends Controller
 
     /**
      * El orden del periodo no debe exceder el número de periodos del año
-     * (+1 si el año maneja quinto periodo — RN-PA-008).
+     * El resultado sumatorio no es un período real y no consume un orden.
      */
     private function validarOrdenDentroDelLimite(AnoLectivo $ano, int $orden): void
     {
-        $maximo = $ano->num_periodos + ($ano->tiene_quinto_periodo ? 1 : 0);
+        $maximo = $ano->num_periodos;
 
         if ($orden > $maximo) {
             abort(422, "El orden del periodo excede el número de periodos del año lectivo (máximo {$maximo}).");

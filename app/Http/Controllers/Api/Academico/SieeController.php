@@ -32,9 +32,9 @@ class SieeController extends Controller
             'escalas' => EscalaValorativa::where('ano_lectivo_id', $id)->get(),
             'metodos' => MetodoAprobacion::where('ano_lectivo_id', $id)->get(),
             'curriculo' => DB::table('materias_curriculares')->where('ano_lectivo_id', $id)->get(),
-            'grados' => Grado::where('estado', 'activo')->get(['id', 'nombre']),
-            'materias' => Materia::where('estado', 'activo')->get(['id', 'nombre']),
-            'areas' => Area::where('estado', 'activo')->get(['id', 'nombre']),
+            'grados' => Grado::where('ano_lectivo_id', $id)->where('estado', 'activo')->get(['id', 'nombre']),
+            'materias' => Materia::where('ano_lectivo_id', $id)->where('estado', 'activo')->get(['id', 'nombre']),
+            'areas' => Area::where('ano_lectivo_id', $id)->where('estado', 'activo')->get(['id', 'nombre']),
         ]]);
     }
 
@@ -54,6 +54,8 @@ class SieeController extends Controller
         ]);
         DB::transaction(function () use ($id, $data, $request) {
             $year = AnoLectivo::lockForUpdate()->findOrFail($id);
+            abort_if($year->periodo_sumatorio && $data['modo_anual'] === 'MANUAL', 422,
+                'El período sumatorio necesita un cálculo anual simple o ponderado. Cambia el método anual o desactiva el período sumatorio.');
             abort_if($year->estaCerrado(), 422, 'El año está cerrado; su SIEE es inmutable.');
             abort_if($year->periodos()->where('estado', 'cerrado')->exists(), 422, 'Hay períodos cerrados; no se puede alterar su configuración SIEE.');
             abort_if($data['usar_areas'] && $data['modo_area'] === 'DISABLED', 422, 'Selecciona un cálculo de área o desactiva el uso de áreas.');
@@ -71,9 +73,9 @@ class SieeController extends Controller
     public function curriculo(Request $request, int $id): JsonResponse
     {
         $data = $request->validate([
-            'grado_id' => ['required', 'integer', Rule::exists('grados', 'id')->whereNull('deleted_at')],
-            'materia_id' => ['required', 'integer', Rule::exists('materias', 'id')->whereNull('deleted_at')],
-            'area_id' => ['nullable', 'integer', Rule::exists('areas', 'id')->whereNull('deleted_at')],
+            'grado_id' => ['required', 'integer', Rule::exists('grados', 'id')->where('ano_lectivo_id', $id)->whereNull('deleted_at')],
+            'materia_id' => ['required', 'integer', Rule::exists('materias', 'id')->where('ano_lectivo_id', $id)->whereNull('deleted_at')],
+            'area_id' => ['nullable', 'integer', Rule::exists('areas', 'id')->where('ano_lectivo_id', $id)->whereNull('deleted_at')],
             'peso_area' => ['nullable', 'numeric', 'decimal:0,4', 'min:0', 'max:100'],
         ]);
         DB::transaction(function () use ($id, $data, $request) {

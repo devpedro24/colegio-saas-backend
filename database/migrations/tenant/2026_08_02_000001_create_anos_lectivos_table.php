@@ -32,7 +32,7 @@ return new class extends Migration
             $table->date('fecha_inicio');
             $table->date('fecha_fin');
             $table->unsignedTinyInteger('num_periodos')->default(4);
-            $table->boolean('tiene_quinto_periodo')->default(false);  // periodo sumatorio opcional (RN-PA-008)
+            $table->boolean('tiene_quinto_periodo')->default(false);  // nombre legado, renombrado por una migración posterior
             $table->string('estado')->default('planificado');         // planificado|en_curso|cerrado|archivado
             $table->timestamps();
             $table->softDeletes();

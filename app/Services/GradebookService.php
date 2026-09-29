@@ -139,6 +139,7 @@ final class GradebookService
         return ['tipo' => 'VISTA_PREVIA', 'generado_en' => now()->toIso8601String(), 'institucion' => tenant('name'),
             'estudiante' => $enrollment->estudiante->only('id', 'name'), 'grupo' => $enrollment->grupo->nombre, 'grado' => $enrollment->grupo->grado->nombre,
             'ano' => $year->nombre, 'configuracion' => $config, 'periodos' => $periods->map->only(['id', 'nombre', 'peso', 'estado']),
+            'periodo_sumatorio' => $year->periodo_sumatorio ? ['orden' => $year->num_periodos + 1, 'nombre' => 'P'.($year->num_periodos + 1), 'modo' => $config['modo_anual']] : null,
             'asignaturas' => $rows->values(), 'areas' => $areas,
             'advertencias' => $curriculum->keys()->diff($subjects->pluck('materia_id'))->isNotEmpty() ? ['Hay asignaturas del currículo sin docente asignado; este informe no está completo.'] : [],
         ];
@@ -146,7 +147,7 @@ final class GradebookService
 
     private function annual(array $results, $periods, AnoLectivo $year, array $config): array
     {
-        if ($periods->count() !== $year->num_periodos + ($year->tiene_quinto_periodo ? 1 : 0)) {
+        if ($periods->count() !== $year->num_periodos) {
             return ['estado' => 'pendiente', 'motivo' => 'Faltan períodos por configurar.'];
         }
         $inputs = $periods->map(fn ($period, $index) => ['reference' => 'periodo:'.$period->id, 'weight' => $period->peso, 'value' => $results[$index]['exact_value'] ?? null])->all();

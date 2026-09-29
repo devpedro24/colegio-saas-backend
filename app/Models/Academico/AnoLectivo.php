@@ -24,7 +24,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon $fecha_inicio
  * @property Carbon $fecha_fin
  * @property int $num_periodos
- * @property bool $tiene_quinto_periodo
+ * @property bool $periodo_sumatorio
  * @property string $estado
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
@@ -66,7 +66,7 @@ class AnoLectivo extends Model
         'fecha_inicio',
         'fecha_fin',
         'num_periodos',
-        'tiene_quinto_periodo',
+        'periodo_sumatorio',
         'estado',
     ];
 
@@ -81,7 +81,7 @@ class AnoLectivo extends Model
             'fecha_inicio' => 'date',
             'fecha_fin' => 'date',
             'num_periodos' => 'integer',
-            'tiene_quinto_periodo' => 'boolean',
+            'periodo_sumatorio' => 'boolean',
         ];
     }
 

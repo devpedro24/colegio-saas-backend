@@ -16,8 +16,7 @@ use Illuminate\Support\Facades\Schema;
  * Estados (FSM): planificado → abierto → cerrado.
  *   - Un periodo cerrado es inmutable (RN-PA-006).
  *
- * `orden` es la posición del periodo dentro del año (1..N, +1 si hay quinto
- * periodo); único por año lectivo.
+ * `orden` es la posición del período real dentro del año (1..N); único por año.
  */
 return new class extends Migration
 {
