@@ -79,7 +79,7 @@ class SedeProvisioner
             'legal_name' => $colegio->legal_name,
             'nit' => $colegio->nit,
             'plan' => $colegio->plan,
-            'status' => Tenant::STATUS_CONFIGURING,
+            'status' => Tenant::STATUS_PROVISIONING,
             'tipo' => Tenant::TIPO_SEDE,
             'parent_id' => $colegio->id,
             // Contrasena temporal del coordinador CIFRADA (cast 'encrypted'):
@@ -90,32 +90,40 @@ class SedeProvisioner
             'data' => ['parent_slug' => $colegio->slug],
         ]);
 
-        // Subdominio anidado: <sede>.<colegio>. En dev se visita como
-        // <sede>.<colegio>.localhost (middleware propio de identificacion).
-        $sede->domains()->create(['domain' => $domain]);
-
         // Dentro de la BD de la sede: RBAC + (opcional) coordinador
         // + (opcional) configuracion heredada del colegio.
-        $sede->run(function () use ($data, $tempPassword, $snapshot) {
-            (new RbacSeeder(firstSeed: true))->run();
+        $originalTenant = tenant();
+        try {
+            $sede->run(function () use ($data, $tempPassword, $snapshot) {
+                (new RbacSeeder(firstSeed: true))->run();
 
-            if (! empty($data['coordinador_email'])) {
-                $coordinador = User::create([
-                    'name' => $data['coordinador_name'] ?? 'Coordinador',
-                    'email' => $data['coordinador_email'],
-                    'password' => Hash::make($tempPassword),
-                    'role' => 'coord_combinado',
-                    'status' => 'active',
-                    'must_change_password' => true,
-                ]);
+                if (! empty($data['coordinador_email'])) {
+                    $coordinador = User::create([
+                        'name' => $data['coordinador_name'] ?? 'Coordinador',
+                        'email' => $data['coordinador_email'],
+                        'password' => Hash::make($tempPassword),
+                        'role' => 'coord_combinado',
+                        'status' => 'active',
+                        'must_change_password' => true,
+                    ]);
 
-                $coordinador->assignRole('coord_combinado');
+                    $coordinador->assignRole('coord_combinado');
+                }
+
+                if ($snapshot !== null) {
+                    $this->applySnapshot($snapshot);
+                }
+            });
+        } finally {
+            if ($originalTenant) {
+                tenancy()->initialize($originalTenant);
+            } else {
+                tenancy()->end();
             }
+        }
 
-            if ($snapshot !== null) {
-                $this->applySnapshot($snapshot);
-            }
-        });
+        // Publica el dominio solo cuando migración, RBAC y herencia terminaron.
+        $sede->domains()->create(['domain' => $domain]);
 
         // Provisioning sincrono y exitoso: la sede queda operativa (patron
         // ConfigurationGate del colegio principal).
@@ -244,6 +252,10 @@ class SedeProvisioner
      */
     public function applySnapshot(array $snapshot): void
     {
+        if (! isset($snapshot['anos']) && (isset($snapshot['niveles']) || isset($snapshot['escalas'])
+            || isset($snapshot['metodos']) || isset($snapshot['modelos']))) {
+            abort(422, 'Incluye los años lectivos al heredar configuraciones académicas a una sede.');
+        }
         $anoMap = [];
         if (isset($snapshot['anos'])) {
             foreach ($snapshot['anos'] as $ano) {
@@ -254,7 +266,7 @@ class SedeProvisioner
                         'fecha_inicio' => $ano['fecha_inicio'],
                         'fecha_fin' => $ano['fecha_fin'],
                         'num_periodos' => $ano['num_periodos'],
-                        'tiene_quinto_periodo' => $ano['tiene_quinto_periodo'],
+                        'periodo_sumatorio' => $ano['periodo_sumatorio'],
                         'estado' => $ano['estado'],
                     ],
                 );
@@ -312,13 +324,17 @@ class SedeProvisioner
         if (isset($snapshot['niveles'])) {
             $gradosPorCrear = [];
             foreach ($snapshot['niveles'] as $nivel) {
+                if (isset($nivel['ano_lectivo_id']) && ! isset($anoMap[$nivel['ano_lectivo_id']])) {
+                    abort(422, 'El nivel pertenece a un año lectivo que no se pudo heredar.');
+                }
                 $nuevoNivel = Nivel::firstOrCreate(
-                    ['nivel_educativo' => $nivel['nivel_educativo'], 'nombre' => $nivel['nombre']],
+                    ['ano_lectivo_id' => isset($nivel['ano_lectivo_id']) ? ($anoMap[$nivel['ano_lectivo_id']] ?? null) : null,
+                        'nivel_educativo' => $nivel['nivel_educativo'], 'nombre' => $nivel['nombre']],
                     ['estado' => $nivel['estado']],
                 );
 
                 foreach ($nivel['grados'] ?? [] as $grado) {
-                    $gradosPorCrear[] = ['nivel_id' => $nuevoNivel->id, 'grado' => $grado];
+                    $gradosPorCrear[] = ['nivel_id' => $nuevoNivel->id, 'ano_lectivo_id' => $nuevoNivel->ano_lectivo_id, 'grado' => $grado];
                 }
             }
 
@@ -332,7 +348,7 @@ class SedeProvisioner
             foreach ($gradosPorCrear as $item) {
                 $grado = $item['grado'];
                 Grado::firstOrCreate(
-                    ['nivel_id' => $item['nivel_id'], 'codigo' => $grado['codigo']],
+                    ['ano_lectivo_id' => $item['ano_lectivo_id'], 'nivel_id' => $item['nivel_id'], 'codigo' => $grado['codigo']],
                     ['nombre' => $grado['nombre'], 'estado' => $grado['estado']],
                 );
             }

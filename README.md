@@ -27,6 +27,7 @@ Crea la base de datos central (una sola vez) y migra:
 ```bash
 # En psql / pgAdmin:  CREATE DATABASE colegio_saas_central;
 php artisan migrate
+php artisan db:seed --force # Primera instalación: planes y catálogo central de roles/permisos
 ```
 
 Levanta el servidor:
@@ -44,6 +45,13 @@ php artisan tenant:create "Colegio San Jose" colegio-san-jose rector@sanjose.edu
 Esto crea la BD aislada del colegio (`tenant<uuid>`), corre sus migraciones y
 crea el usuario **rector** con una contraseña temporal (debe cambiarla en el
 primer ingreso, `RN-AU-360`).
+
+### Migraciones en nuevos tenants y despliegues
+
+- Al crear un colegio o una sede, el evento `TenantCreated` crea su base y ejecuta **todas** las migraciones de `database/migrations/tenant/` antes de sembrar roles o usuarios. Se verifica que no falte ninguna migración ni las columnas académicas anuales. El tenant permanece en `provisioning` y sin dominio publicado hasta terminar; si falla, no queda anunciado como configurado u operativo.
+- Al desplegar cambios sobre tenants que **ya existen**, primero realiza respaldo y prueba en PostgreSQL de staging; después ejecuta `php artisan migrate --force` para la base central y `php artisan tenants:migrate --force` para todas las bases de tenant. Si cambia el catálogo RBAC central, actualízalo con `php artisan db:seed --class=RbacCatalogSeeder --force` y sincroniza los tenants con `php artisan rbac:sync`. Crear tenants nuevos no sustituye este paso para los existentes.
+- La migración anual protege históricos: si encuentra varios años con datos académicos que antes compartían catálogos, se detiene antes de modificar esos catálogos. Ese caso necesita remapeo histórico específico antes del despliegue; no se deben borrar ni recrear datos para forzarla.
+- Verifica el alta de un colegio y una sede nuevos en PostgreSQL de staging, además de un tenant existente migrado, antes de producción. Las pruebas automatizadas con SQLite no reemplazan esa verificación.
 
 ### Probar el aislamiento
 

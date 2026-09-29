@@ -42,30 +42,39 @@ class TenantProvisioner
             'legal_name' => $data['legal_name'] ?? null,
             'nit' => $data['nit'] ?? null,
             'plan' => $data['plan'] ?? Tenant::PLAN_ESENCIAL,
-            'status' => Tenant::STATUS_CONFIGURING,
+            'status' => Tenant::STATUS_PROVISIONING,
             // Se guarda CIFRADA (cast 'encrypted') para poder mostrarla al
             // superadmin mientras siga vigente (must_change_password = true).
             'rector_temporary_password' => $tempPassword,
         ]);
 
-        // Registra el subdominio del colegio.
-        $tenant->domains()->create(['domain' => $slug]);
-
         // Dentro de la BD del colegio: RBAC (sembrado desde central + plan) + rector.
-        $tenant->run(function () use ($data, $tempPassword) {
-            (new RbacSeeder(firstSeed: true))->run();
+        $originalTenant = tenant();
+        try {
+            $tenant->run(function () use ($data, $tempPassword) {
+                (new RbacSeeder(firstSeed: true))->run();
 
-            $rector = User::create([
-                'name' => $data['rector_name'] ?? 'Rector',
-                'email' => $data['rector_email'],
-                'password' => Hash::make($tempPassword),
-                'role' => 'rector',
-                'status' => 'active',
-                'must_change_password' => true,
-            ]);
+                $rector = User::create([
+                    'name' => $data['rector_name'] ?? 'Rector',
+                    'email' => $data['rector_email'],
+                    'password' => Hash::make($tempPassword),
+                    'role' => 'rector',
+                    'status' => 'active',
+                    'must_change_password' => true,
+                ]);
 
-            $rector->assignRole('rector');
-        });
+                $rector->assignRole('rector');
+            });
+        } finally {
+            if ($originalTenant) {
+                tenancy()->initialize($originalTenant);
+            } else {
+                tenancy()->end();
+            }
+        }
+
+        $tenant->domains()->create(['domain' => $slug]);
+        $tenant->update(['status' => Tenant::STATUS_CONFIGURING]);
 
         return ['tenant' => $tenant, 'password' => $tempPassword];
     }

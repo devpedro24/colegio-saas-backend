@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Jobs\VerifyTenantMigrations;
+use App\Jobs\MigrateTenantDatabase;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
@@ -26,7 +28,8 @@ class TenancyServiceProvider extends ServiceProvider
             Events\TenantCreated::class => [
                 JobPipeline::make([
                     Jobs\CreateDatabase::class,
-                    Jobs\MigrateDatabase::class,
+                    MigrateTenantDatabase::class,
+                    VerifyTenantMigrations::class,
                     // Jobs\SeedDatabase::class,
 
                     // Your own jobs to prepare the tenant.
