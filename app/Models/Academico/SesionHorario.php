@@ -14,7 +14,7 @@ class SesionHorario extends Model
 
     protected $table = 'sesiones_horario';
 
-    protected $fillable = ['asignacion_id', 'grupo_id', 'materia_id', 'docente_id', 'dia', 'bloque_horario_id', 'hora_inicio', 'hora_fin', 'espacio_fisico_id'];
+    protected $fillable = ['ano_lectivo_id', 'asignacion_id', 'grupo_id', 'materia_id', 'docente_id', 'dia', 'bloque_horario_id', 'hora_inicio', 'hora_fin', 'espacio_fisico_id'];
 
     public const DIAS = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'];
 

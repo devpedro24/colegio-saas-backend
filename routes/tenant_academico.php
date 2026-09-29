@@ -51,6 +51,9 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('can:academico.anos.gestionar')->group(function () {
     Route::get('/anos-lectivos', [AnoLectivoController::class, 'index']);
     Route::post('/anos-lectivos', [AnoLectivoController::class, 'store']);
+    Route::post('/anos-lectivos/{id}/duplicar', [AnoLectivoController::class, 'duplicar']);
+    Route::post('/anos-lectivos/{id}/copiar-configuracion', [AnoLectivoController::class, 'copiarConfiguracion']);
+    Route::get('/anos-lectivos/{id}/estado-copia', [AnoLectivoController::class, 'estadoCopia']);
     Route::get('/anos-lectivos/{id}', [AnoLectivoController::class, 'show']);
     Route::put('/anos-lectivos/{id}', [AnoLectivoController::class, 'update']);
     Route::delete('/anos-lectivos/{id}', [AnoLectivoController::class, 'destroy']);
@@ -191,6 +194,7 @@ Route::delete('/eventos/{id}', [EventoController::class, 'destroy']);
 Route::post('/eventos/{id}/archivos', [EventoController::class, 'archivo']);
 Route::middleware('can:academico.plan_estudios.gestionar')->group(function () {
     Route::post('/asignaciones', [HorarioController::class, 'asignar']);
+    Route::put('/asignaciones/{id}', [HorarioController::class, 'editarAsignacion']);
     Route::delete('/asignaciones/{id}', [HorarioController::class, 'desasignar']);
     Route::post('/horarios', [HorarioController::class, 'guardar']);
     Route::put('/horarios/{id}', [HorarioController::class, 'guardar']);
