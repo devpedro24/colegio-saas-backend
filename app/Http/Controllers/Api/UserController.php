@@ -11,13 +11,13 @@ use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Rbac\PermissionMatrix;
+use App\Support\PasswordPolicy;
 use App\Support\Audit\AuditLogger;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 /**
@@ -113,7 +113,7 @@ class UserController extends Controller
             return response()->json(['message' => 'Ya existe un usuario con ese correo.'], 422);
         }
 
-        $password = $data['password'] ?? Str::password(12);
+        $password = $data['password'] ?? PasswordPolicy::temporary(12);
         $user = User::create([
             'name' => $data['name'],
             'email' => $data['email'],
@@ -240,7 +240,7 @@ class UserController extends Controller
     private function resolveAndUpdate(Request $request, $id, bool $readOnly = false): array
     {
         $sedeId = $request->query('sede_id');
-        $password = $readOnly ? '' : Str::password(12);
+        $password = $readOnly ? '' : PasswordPolicy::temporary(12);
 
         if ($sedeId !== null) {
             $sede = $this->sedeDestino((int) $sedeId);
@@ -325,7 +325,7 @@ class UserController extends Controller
             'role' => [Rule::when($crear, 'required'), Rule::in(PermissionMatrix::roleKeys())],
             'sede_id' => ['nullable', 'integer', 'exists:sedes,id'],
             'status' => ['nullable', Rule::in([User::STATUS_ACTIVE, User::STATUS_INACTIVE, User::STATUS_SUSPENDED])],
-            'password' => ['nullable', 'string', 'min:8'],
+            'password' => ['nullable', PasswordPolicy::rule()],
         ]);
     }
 
@@ -400,7 +400,7 @@ class UserController extends Controller
                 return ['error' => 'Ya existe un usuario con ese correo.'];
             }
 
-            $password = $data['password'] ?? Str::password(12);
+            $password = $data['password'] ?? PasswordPolicy::temporary(12);
             $user = User::create([
                 'name' => $data['name'],
                 'email' => $data['email'],

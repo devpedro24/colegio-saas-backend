@@ -106,6 +106,14 @@ class AccountTest extends TestCase
             'new_password_confirmation' => 'sololetras2026',
         ])->assertStatus(422);
 
+        foreach (['Ab1!', 'abcdefgh1!', 'ABCDEFGH1!', 'Abcdefgh!', 'Abcdefgh1', str_repeat('A', 129).'a1!'] as $weak) {
+            $this->withToken($token)->postJson('/api/account/password', [
+                'current_password' => self::PASSWORD,
+                'new_password' => $weak,
+                'new_password_confirmation' => $weak,
+            ])->assertStatus(422)->assertJsonValidationErrors('new_password');
+        }
+
         // Correcto -> cambia y marca que ya no debe cambiarla.
         $this->withToken($token)->postJson('/api/account/password', [
             'current_password' => self::PASSWORD,
@@ -116,6 +124,14 @@ class AccountTest extends TestCase
         $fresh = $user->fresh();
         $this->assertTrue(Hash::check('NuevaClave!2026', $fresh->password));
         $this->assertFalse((bool) $fresh->must_change_password);
+
+        // El límite inferior solicitado de ocho caracteres también es válido.
+        $this->withToken($token)->postJson('/api/account/password', [
+            'current_password' => 'NuevaClave!2026',
+            'new_password' => 'Abcde1!x',
+            'new_password_confirmation' => 'Abcde1!x',
+        ])->assertOk();
+        $this->assertTrue(Hash::check('Abcde1!x', $user->fresh()->password));
     }
 
     public function test_desactivar_cuenta_bloquea_el_login_y_revoca_tokens(): void

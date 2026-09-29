@@ -37,9 +37,11 @@ class SecurityFlowsTest extends TestCase
             return true;
         });
         $this->assertNotSame($token, DB::table('password_reset_tokens')->value('token'));
-        $data = ['email' => $user->email, 'token' => $token, 'password' => 'NewPassword12345', 'password_confirmation' => 'NewPassword12345'];
+        $weak = ['email' => $user->email, 'token' => $token, 'password' => 'NewPassword12345', 'password_confirmation' => 'NewPassword12345'];
+        $this->postJson('/api/reset-password', $weak)->assertUnprocessable()->assertJsonValidationErrors('password');
+        $data = ['email' => $user->email, 'token' => $token, 'password' => 'NewPassword!12345', 'password_confirmation' => 'NewPassword!12345'];
         $this->postJson('/api/reset-password', $data)->assertOk();
-        $this->assertTrue(Hash::check('NewPassword12345', $user->fresh()->password));
+        $this->assertTrue(Hash::check('NewPassword!12345', $user->fresh()->password));
         $this->assertSame(0, $user->tokens()->count());
         $this->postJson('/api/reset-password', $data)->assertUnprocessable();
         $this->assertDatabaseHas('platform_audit_logs', ['accion' => 'PASSWORD_RESET']);

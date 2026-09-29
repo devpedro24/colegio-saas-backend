@@ -15,6 +15,7 @@ use App\Models\Academico\Periodo;
 use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Support\PasswordPolicy;
 use Database\Seeders\RbacSeeder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
@@ -70,7 +71,7 @@ class SedeProvisioner
             $snapshot = $this->capturarConfiguracion($colegio, true);
         }
 
-        $tempPassword = Str::password(14);
+        $tempPassword = PasswordPolicy::temporary();
 
         /** @var Tenant $sede */
         $sede = Tenant::create([

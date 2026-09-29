@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Support\PasswordPolicy;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Auth\Passwords\PasswordBrokerManager;
 use Illuminate\Http\JsonResponse;
@@ -14,7 +15,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rules\Password as PasswordRule;
 use Illuminate\Validation\ValidationException;
 
 class PasswordResetController extends Controller
@@ -37,7 +37,7 @@ class PasswordResetController extends Controller
         $data = $request->validate([
             'email' => ['required', 'email', 'max:255'],
             'token' => ['required', 'string', 'max:255'],
-            'password' => ['required', 'confirmed', PasswordRule::min(12)->letters()->numbers()],
+            'password' => ['required', 'confirmed', PasswordPolicy::rule()],
         ]);
         if ($data['email'] === User::PLATFORM_SUPERADMIN_EMAIL) {
             throw ValidationException::withMessages(['token' => 'El enlace es inválido o ha expirado.']);

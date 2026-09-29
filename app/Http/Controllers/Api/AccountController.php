@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Support\PasswordPolicy;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -14,7 +15,6 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\Rule;
-use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -115,7 +115,7 @@ class AccountController extends Controller
     {
         $data = $request->validate([
             'current_password' => ['required', 'string'],
-            'new_password' => ['required', Password::min(8)->letters()->numbers()->symbols()],
+            'new_password' => ['required', PasswordPolicy::rule()],
             'new_password_confirmation' => ['required', 'same:new_password'],
         ]);
 
@@ -130,7 +130,12 @@ class AccountController extends Controller
         $user->update([
             'password' => $data['new_password'],
             'must_change_password' => false,
+            ...(tenancy()->initialized ? ['temporary_password' => null] : []),
         ]);
+
+        if (tenancy()->initialized && $user->hasRole('rector')) {
+            tenant()->update(['rector_temporary_password' => null]);
+        }
 
         // Se mantiene la sesion actual; se invalida el resto por si hubo filtracion.
         $user->tokens()

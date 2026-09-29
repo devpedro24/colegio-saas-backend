@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use App\Models\User;
+use App\Support\PasswordPolicy;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Validator;
 
 /**
  * Crea un Superadministrador de la Plataforma (ROL-01) en la BD CENTRAL.
@@ -34,7 +35,13 @@ class CreateSuperAdmin extends Command
             return self::FAILURE;
         }
 
-        $password = (string) ($this->option('password') ?: Str::password(14));
+        $password = (string) ($this->option('password') ?: PasswordPolicy::temporary());
+        $validation = Validator::make(['password' => $password], ['password' => PasswordPolicy::rule()]);
+        if ($validation->fails()) {
+            $this->error($validation->errors()->first('password'));
+
+            return self::FAILURE;
+        }
 
         User::create([
             'name' => (string) $this->option('name'),

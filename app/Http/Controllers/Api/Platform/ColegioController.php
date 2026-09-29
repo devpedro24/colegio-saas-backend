@@ -11,6 +11,7 @@ use App\Http\Controllers\PaginatesRequests;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\TenantProvisioner;
+use App\Support\PasswordPolicy;
 use App\Support\Audit\AuditLogger;
 use App\Tenancy\TenantDatabaseName;
 use Database\Seeders\RbacSeeder;
@@ -18,7 +19,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -323,7 +323,7 @@ class ColegioController extends Controller
     public function resetRectorPassword(string $id): JsonResponse
     {
         $tenant = Tenant::findOrFail($id);
-        $password = Str::password(14);
+        $password = PasswordPolicy::temporary();
         $rectorEmail = null;
 
         $tenant->run(function () use ($password, &$rectorEmail) {

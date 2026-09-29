@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Support\PasswordPolicy;
 use Database\Seeders\RbacSeeder;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -33,7 +34,7 @@ class TenantProvisioner
             throw new RuntimeException("Ya existe un colegio con el slug '{$slug}'.");
         }
 
-        $tempPassword = Str::password(14);
+        $tempPassword = PasswordPolicy::temporary();
 
         /** @var Tenant $tenant */
         $tenant = Tenant::create([
