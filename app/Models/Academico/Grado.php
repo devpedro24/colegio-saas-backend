@@ -40,6 +40,7 @@ class Grado extends Model
      * @var list<string>
      */
     protected $fillable = [
+        'ano_lectivo_id',
         'nivel_id',
         'nombre',
         'codigo',

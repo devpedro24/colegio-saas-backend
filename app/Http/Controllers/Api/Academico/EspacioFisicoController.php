@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\EspacioFisico;
+use App\Services\AcademicYearSelection;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -23,6 +24,7 @@ class EspacioFisicoController extends Controller
     {
         $espacios = EspacioFisico::query()
             ->with('sede:id,nombre')
+            ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('sede_id'), fn ($q) => $q->where('sede_id', (int) $request->query('sede_id')))
             ->orderBy('sede_id')
             ->orderBy('nombre')
@@ -40,9 +42,12 @@ class EspacioFisicoController extends Controller
     /** Crea un espacio físico. */
     public function store(Request $request): JsonResponse
     {
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::editable($year);
         $data = $request->validate($this->reglas(null));
 
         $existe = EspacioFisico::query()
+            ->where('ano_lectivo_id', $year->id)
             ->where('sede_id', $data['sede_id'] ?? null)
             ->where('nombre', $data['nombre'])
             ->exists();
@@ -51,6 +56,7 @@ class EspacioFisicoController extends Controller
         }
 
         $espacio = EspacioFisico::create([
+            'ano_lectivo_id' => $year->id,
             'sede_id' => $data['sede_id'] ?? null,
             'nombre' => $data['nombre'],
             'tipo' => $data['tipo'],
@@ -72,12 +78,16 @@ class EspacioFisicoController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $espacio = EspacioFisico::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($espacio->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
 
         $data = $request->validate($this->reglas($espacio->id));
 
         $sedeId = array_key_exists('sede_id', $data) ? $data['sede_id'] : $espacio->sede_id;
         $nombre = $data['nombre'] ?? $espacio->nombre;
         $existe = EspacioFisico::query()
+            ->where('ano_lectivo_id', $year->id)
             ->where('sede_id', $sedeId)
             ->where('nombre', $nombre)
             ->where('id', '!=', $espacio->id)
@@ -102,6 +112,9 @@ class EspacioFisicoController extends Controller
     public function destroy(Request $request, int $id): JsonResponse
     {
         $espacio = EspacioFisico::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($espacio->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
         $prev = $this->snapshot($espacio);
 
         $espacio->delete();

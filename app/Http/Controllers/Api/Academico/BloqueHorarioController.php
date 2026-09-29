@@ -9,6 +9,7 @@ use App\Events\TenantDataChanged;
 use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\Jornada;
 use App\Models\Academico\SesionHorario;
+use App\Services\AcademicYearSelection;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -25,6 +26,7 @@ class BloqueHorarioController extends Controller
     {
         $bloques = BloqueHorario::query()
             ->with('jornada.sede:id,nombre')
+            ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('jornada_id'), fn ($q) => $q->where('jornada_id', (int) $request->query('jornada_id')))
             ->orderBy('jornada_id')
             ->orderBy('hora_inicio')
@@ -54,10 +56,14 @@ class BloqueHorarioController extends Controller
         ]);
 
         $jornadaId = (int) $data['jornada_id'];
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::editable($year);
+        AcademicYearSelection::assertSame(Jornada::findOrFail($jornadaId)->ano_lectivo_id, $year);
         $this->validarDentroDeJornada($jornadaId, $data['hora_inicio'], $data['hora_fin']);
         $this->validarSolapamiento($jornadaId, $data['hora_inicio'], $data['hora_fin'], null);
 
         $bloque = BloqueHorario::create([
+            'ano_lectivo_id' => $year->id,
             'jornada_id' => $jornadaId,
             'nombre' => $data['nombre'],
             'hora_inicio' => $data['hora_inicio'],
@@ -79,6 +85,9 @@ class BloqueHorarioController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $bloque = BloqueHorario::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($bloque->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
 
         $data = $request->validate([
             'jornada_id' => ['sometimes', 'integer', 'exists:jornadas,id'],
@@ -90,6 +99,7 @@ class BloqueHorarioController extends Controller
         ]);
 
         $jornadaId = (int) ($data['jornada_id'] ?? $bloque->jornada_id);
+        AcademicYearSelection::assertSame(Jornada::findOrFail($jornadaId)->ano_lectivo_id, $year);
         $inicio = $data['hora_inicio'] ?? $bloque->hora_inicio;
         $fin = $data['hora_fin'] ?? $bloque->hora_fin;
         if (SesionHorario::where('bloque_horario_id', $bloque->id)->exists()
@@ -121,6 +131,9 @@ class BloqueHorarioController extends Controller
     public function destroy(Request $request, int $id): JsonResponse
     {
         $bloque = BloqueHorario::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($bloque->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
         abort_if(
             SesionHorario::where('bloque_horario_id', $bloque->id)->exists(),
             422,

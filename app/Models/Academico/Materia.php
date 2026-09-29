@@ -17,7 +17,7 @@ class Materia extends Model
     public const ESTADO_ACTIVO = 'activo';
     public const ESTADO_INACTIVO = 'inactivo';
 
-    protected $fillable = ['area_id', 'nivel_id', 'nombre', 'codigo', 'intensidad_horaria', 'estado'];
+    protected $fillable = ['ano_lectivo_id', 'area_id', 'nivel_id', 'nombre', 'codigo', 'intensidad_horaria', 'estado'];
 
     protected function casts(): array
     {

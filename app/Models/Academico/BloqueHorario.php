@@ -39,6 +39,7 @@ class BloqueHorario extends Model
      * @var list<string>
      */
     protected $fillable = [
+        'ano_lectivo_id',
         'jornada_id',
         'nombre',
         'hora_inicio',

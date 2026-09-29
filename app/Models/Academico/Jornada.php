@@ -40,6 +40,7 @@ class Jornada extends Model
      * @var list<string>
      */
     protected $fillable = [
+        'ano_lectivo_id',
         'sede_id',
         'nombre',
         'hora_inicio',

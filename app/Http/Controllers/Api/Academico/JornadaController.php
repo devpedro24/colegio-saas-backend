@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\Jornada;
+use App\Services\AcademicYearSelection;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -23,6 +24,7 @@ class JornadaController extends Controller
     {
         $jornadas = Jornada::query()
             ->with('sede:id,nombre')
+            ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('sede_id'), fn ($q) => $q->where('sede_id', (int) $request->query('sede_id')))
             ->orderBy('sede_id')
             ->orderBy('nombre')
@@ -42,6 +44,8 @@ class JornadaController extends Controller
     /** Crea una jornada. */
     public function store(Request $request): JsonResponse
     {
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::editable($year);
         $data = $request->validate([
             'sede_id' => ['required', 'integer', 'exists:sedes,id'],
             'nombre' => ['required', 'string', 'max:80'],
@@ -50,12 +54,13 @@ class JornadaController extends Controller
             'estado' => ['nullable', Rule::in([Jornada::ESTADO_ACTIVA, Jornada::ESTADO_INACTIVA])],
         ]);
 
-        $existe = Jornada::query()->where('sede_id', $data['sede_id'])->where('nombre', $data['nombre'])->exists();
+        $existe = Jornada::query()->where('ano_lectivo_id', $year->id)->where('sede_id', $data['sede_id'])->where('nombre', $data['nombre'])->exists();
         if ($existe) {
             abort(422, 'La sede ya tiene una jornada con ese nombre.');
         }
 
         $jornada = Jornada::create([
+            'ano_lectivo_id' => $year->id,
             'sede_id' => $data['sede_id'],
             'nombre' => $data['nombre'],
             'hora_inicio' => $data['hora_inicio'] ?? null,
@@ -80,6 +85,9 @@ class JornadaController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $jornada = Jornada::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($jornada->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
 
         $data = $request->validate([
             'sede_id' => ['sometimes', 'integer', 'exists:sedes,id'],
@@ -89,10 +97,11 @@ class JornadaController extends Controller
             'estado' => ['nullable', Rule::in([Jornada::ESTADO_ACTIVA, Jornada::ESTADO_INACTIVA])],
         ]);
 
-        if (isset($data['sede_id'], $data['nombre'])) {
+        if (isset($data['sede_id']) || isset($data['nombre'])) {
             $existe = Jornada::query()
-                ->where('sede_id', $data['sede_id'])
-                ->where('nombre', $data['nombre'])
+                ->where('ano_lectivo_id', $jornada->ano_lectivo_id)
+                ->where('sede_id', $data['sede_id'] ?? $jornada->sede_id)
+                ->where('nombre', $data['nombre'] ?? $jornada->nombre)
                 ->where('id', '!=', $jornada->id)
                 ->exists();
             if ($existe) {
@@ -116,6 +125,9 @@ class JornadaController extends Controller
     public function destroy(Request $request, int $id): JsonResponse
     {
         $jornada = Jornada::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($jornada->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
         $prev = $this->snapshot($jornada);
 
         $jornada->delete();

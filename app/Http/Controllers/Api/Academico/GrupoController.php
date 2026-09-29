@@ -7,7 +7,9 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\Grupo;
+use App\Models\Academico\Grado;
 use App\Models\Academico\Jornada;
+use App\Services\AcademicYearSelection;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -56,6 +58,11 @@ class GrupoController extends Controller
             'estado' => ['nullable', Rule::in([Grupo::ESTADO_ACTIVO, Grupo::ESTADO_INACTIVO])],
         ]);
 
+        $year = AcademicYearSelection::fromRequest($request);
+        abort_if($year->id !== (int) $data['ano_lectivo_id'], 422, 'El grupo pertenece a otro año lectivo.');
+        AcademicYearSelection::editable($year);
+        $this->validarCatalogosDelAno((int) $data['grado_id'], $data['jornada_id'] ?? null, $year);
+
         $this->sincronizarSedeConJornada($data, null);
 
         // RN-JO-002: único por (grado, año lectivo, jornada, nombre).
@@ -92,6 +99,9 @@ class GrupoController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $grupo = Grupo::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($grupo->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
 
         $data = $request->validate([
             'grado_id' => ['sometimes', 'integer', 'exists:grados,id'],
@@ -105,6 +115,12 @@ class GrupoController extends Controller
 
         $gradoId = $data['grado_id'] ?? $grupo->grado_id;
         $anoId = $data['ano_lectivo_id'] ?? $grupo->ano_lectivo_id;
+        abort_if((int) $anoId !== $year->id, 422, 'No puedes trasladar un grupo a otro año lectivo.');
+        $this->validarCatalogosDelAno(
+            (int) $gradoId,
+            array_key_exists('jornada_id', $data) ? $data['jornada_id'] : $grupo->jornada_id,
+            $year,
+        );
         $nombre = $data['nombre'] ?? $grupo->nombre;
 
         $this->sincronizarSedeConJornada($data, $grupo);
@@ -137,6 +153,9 @@ class GrupoController extends Controller
     public function destroy(Request $request, int $id): JsonResponse
     {
         $grupo = Grupo::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($grupo->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
         $prev = $this->snapshot($grupo);
 
         $grupo->delete();
@@ -190,5 +209,13 @@ class GrupoController extends Controller
         }
 
         $data['sede_id'] = $jornada->sede_id;
+    }
+
+    private function validarCatalogosDelAno(int $gradoId, mixed $jornadaId, \App\Models\Academico\AnoLectivo $year): void
+    {
+        AcademicYearSelection::assertSame(Grado::findOrFail($gradoId)->ano_lectivo_id, $year);
+        if ($jornadaId !== null) {
+            AcademicYearSelection::assertSame(Jornada::findOrFail((int) $jornadaId)->ano_lectivo_id, $year);
+        }
     }
 }

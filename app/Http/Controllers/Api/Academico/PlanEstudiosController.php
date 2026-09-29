@@ -8,6 +8,8 @@ use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
 use App\Models\Academico\Area;
 use App\Models\Academico\Materia;
+use App\Models\Academico\Nivel;
+use App\Services\AcademicYearSelection;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,19 +18,23 @@ use Illuminate\Validation\Rule;
 /** Áreas y materias persistentes del plan de estudios. */
 class PlanEstudiosController extends Controller
 {
-    public function areas(): JsonResponse
+    public function areas(Request $request): JsonResponse
     {
-        return response()->json(['data' => Area::query()->withCount('materias')->orderBy('nombre')->get()]);
+        return response()->json(['data' => Area::query()->withCount('materias')
+            ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
+            ->orderBy('nombre')->get()]);
     }
 
     public function storeArea(Request $request): JsonResponse
     {
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::editable($year);
         $data = $request->validate([
-            'nombre' => ['required', 'string', 'max:120', 'unique:areas,nombre'],
+            'nombre' => ['required', 'string', 'max:120', Rule::unique('areas', 'nombre')->where('ano_lectivo_id', $year->id)],
             'descripcion' => ['nullable', 'string', 'max:2000'],
             'estado' => ['nullable', Rule::in([Area::ESTADO_ACTIVO, Area::ESTADO_INACTIVO])],
         ]);
-        $area = Area::create($data + ['estado' => $data['estado'] ?? Area::ESTADO_ACTIVO]);
+        $area = Area::create($data + ['ano_lectivo_id' => $year->id, 'estado' => $data['estado'] ?? Area::ESTADO_ACTIVO]);
         AuditLogger::tenant($request->user(), 'CREATE', 'area', (string) $area->id, null, $area->toArray());
         TenantDataChanged::dispatch('area', 'created', $area->nombre);
 
@@ -38,8 +44,11 @@ class PlanEstudiosController extends Controller
     public function updateArea(Request $request, int $id): JsonResponse
     {
         $area = Area::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($area->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
         $data = $request->validate([
-            'nombre' => ['sometimes', 'string', 'max:120', Rule::unique('areas', 'nombre')->ignore($area->id)],
+            'nombre' => ['sometimes', 'string', 'max:120', Rule::unique('areas', 'nombre')->where('ano_lectivo_id', $year->id)->ignore($area->id)],
             'descripcion' => ['nullable', 'string', 'max:2000'],
             'estado' => ['nullable', Rule::in([Area::ESTADO_ACTIVO, Area::ESTADO_INACTIVO])],
         ]);
@@ -54,6 +63,9 @@ class PlanEstudiosController extends Controller
     public function destroyArea(Request $request, int $id): JsonResponse
     {
         $area = Area::withCount('materias')->findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($area->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
         if ($area->materias_count > 0) {
             return response()->json(['message' => 'No puedes eliminar un área que aún tiene materias.'], 422);
         }
@@ -68,6 +80,7 @@ class PlanEstudiosController extends Controller
     public function materias(Request $request): JsonResponse
     {
         $materias = Materia::query()->with(['area:id,nombre', 'nivel:id,nombre'])
+            ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('area_id'), fn ($q) => $q->where('area_id', $request->integer('area_id')))
             ->when($request->filled('nivel_id'), fn ($q) => $q->where('nivel_id', $request->integer('nivel_id')))
             ->orderBy('nombre')->get();
@@ -77,8 +90,11 @@ class PlanEstudiosController extends Controller
 
     public function storeMateria(Request $request): JsonResponse
     {
-        $data = $this->validarMateria($request);
-        $materia = Materia::create($data + ['estado' => $data['estado'] ?? Materia::ESTADO_ACTIVO]);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::editable($year);
+        $data = $this->validarMateria($request, $year->id);
+        $this->validarPadresMateria($data, $year);
+        $materia = Materia::create($data + ['ano_lectivo_id' => $year->id, 'estado' => $data['estado'] ?? Materia::ESTADO_ACTIVO]);
         AuditLogger::tenant($request->user(), 'CREATE', 'materia', (string) $materia->id, null, $materia->toArray());
         TenantDataChanged::dispatch('materia', 'created', $materia->nombre);
 
@@ -88,7 +104,11 @@ class PlanEstudiosController extends Controller
     public function updateMateria(Request $request, int $id): JsonResponse
     {
         $materia = Materia::findOrFail($id);
-        $data = $this->validarMateria($request, $materia);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($materia->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
+        $data = $this->validarMateria($request, $year->id, $materia);
+        $this->validarPadresMateria($data, $year);
         $before = $materia->toArray();
         $materia->update($data);
         AuditLogger::tenant($request->user(), 'UPDATE', 'materia', (string) $materia->id, $before, $materia->fresh()->toArray());
@@ -100,6 +120,9 @@ class PlanEstudiosController extends Controller
     public function destroyMateria(Request $request, int $id): JsonResponse
     {
         $materia = Materia::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($materia->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
         $before = $materia->toArray();
         $materia->delete();
         AuditLogger::tenant($request->user(), 'DELETE', 'materia', (string) $materia->id, $before, null);
@@ -109,15 +132,25 @@ class PlanEstudiosController extends Controller
     }
 
     /** @return array<string, mixed> */
-    private function validarMateria(Request $request, ?Materia $materia = null): array
+    private function validarMateria(Request $request, int $yearId, ?Materia $materia = null): array
     {
         return $request->validate([
             'area_id' => ['nullable', 'integer', Rule::exists('areas', 'id')->whereNull('deleted_at')],
             'nivel_id' => ['nullable', 'integer', 'exists:niveles,id'],
             'nombre' => [$materia ? 'sometimes' : 'required', 'string', 'max:120'],
-            'codigo' => ['nullable', 'string', 'max:30', Rule::unique('materias', 'codigo')->ignore($materia?->id)],
+            'codigo' => ['nullable', 'string', 'max:30', Rule::unique('materias', 'codigo')->where('ano_lectivo_id', $yearId)->ignore($materia?->id)],
             'intensidad_horaria' => [$materia ? 'sometimes' : 'required', 'integer', 'min:1', 'max:40'],
             'estado' => ['nullable', Rule::in([Materia::ESTADO_ACTIVO, Materia::ESTADO_INACTIVO])],
         ]);
+    }
+
+    private function validarPadresMateria(array $data, \App\Models\Academico\AnoLectivo $year): void
+    {
+        if (! empty($data['area_id'])) {
+            AcademicYearSelection::assertSame(Area::findOrFail($data['area_id'])->ano_lectivo_id, $year);
+        }
+        if (! empty($data['nivel_id'])) {
+            AcademicYearSelection::assertSame(Nivel::findOrFail($data['nivel_id'])->ano_lectivo_id, $year);
+        }
     }
 }

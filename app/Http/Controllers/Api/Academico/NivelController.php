@@ -7,6 +7,8 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\Nivel;
+use App\Models\Academico\AnoLectivo;
+use App\Services\AcademicYearSelection;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,9 +20,11 @@ use Illuminate\Validation\Rule;
 class NivelController extends Controller
 {
     /** Lista los niveles en el orden en que fueron creados. */
-    public function index(): JsonResponse
+    public function index(?Request $request = null): JsonResponse
     {
+        $request ??= request();
         $niveles = Nivel::query()
+            ->when($request->filled('ano_lectivo_id'), fn ($query) => $query->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->withCount('grados')
             ->orderBy('created_at')
             ->orderBy('id')
@@ -38,13 +42,16 @@ class NivelController extends Controller
     /** Crea un nivel. */
     public function store(Request $request): JsonResponse
     {
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::editable($year);
         $data = $request->validate([
-            'nivel_educativo' => ['required', 'string', 'max:40', 'unique:niveles,nivel_educativo'],
+            'nivel_educativo' => ['required', 'string', 'max:40', Rule::unique('niveles', 'nivel_educativo')->where('ano_lectivo_id', $year->id)],
             'nombre' => ['required', 'string', 'max:120'],
             'estado' => ['nullable', Rule::in([Nivel::ESTADO_ACTIVO, Nivel::ESTADO_INACTIVO])],
         ]);
 
         $nivel = Nivel::create([
+            'ano_lectivo_id' => $year->id,
             'nivel_educativo' => $data['nivel_educativo'],
             'nombre' => $data['nombre'],
             'estado' => $data['estado'] ?? Nivel::ESTADO_ACTIVO,
@@ -63,9 +70,12 @@ class NivelController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $nivel = Nivel::findOrFail($id);
+        $year = $nivel->ano_lectivo_id ? AnoLectivo::findOrFail($nivel->ano_lectivo_id) : AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($nivel->ano_lectivo_id, AcademicYearSelection::fromRequest($request));
+        AcademicYearSelection::editable($year);
 
         $data = $request->validate([
-            'nivel_educativo' => ['sometimes', 'string', 'max:40', Rule::unique('niveles', 'nivel_educativo')->ignore($nivel->id)],
+            'nivel_educativo' => ['sometimes', 'string', 'max:40', Rule::unique('niveles', 'nivel_educativo')->where('ano_lectivo_id', $year->id)->ignore($nivel->id)],
             'nombre' => ['sometimes', 'string', 'max:120'],
             'estado' => ['nullable', Rule::in([Nivel::ESTADO_ACTIVO, Nivel::ESTADO_INACTIVO])],
         ]);
@@ -86,6 +96,9 @@ class NivelController extends Controller
     public function destroy(Request $request, int $id): JsonResponse
     {
         $nivel = Nivel::findOrFail($id);
+        $year = AcademicYearSelection::fromRequest($request);
+        AcademicYearSelection::assertSame($nivel->ano_lectivo_id, $year);
+        AcademicYearSelection::editable($year);
         $prev = $this->snapshot($nivel);
 
         $nivel->delete();

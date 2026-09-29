@@ -45,6 +45,7 @@ class Nivel extends Model
      * @var list<string>
      */
     protected $fillable = [
+        'ano_lectivo_id',
         'nivel_educativo',
         'nombre',
         'estado',

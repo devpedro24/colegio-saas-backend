@@ -64,6 +64,7 @@ class EspacioFisico extends Model
      * @var list<string>
      */
     protected $fillable = [
+        'ano_lectivo_id',
         'sede_id',
         'nombre',
         'tipo',

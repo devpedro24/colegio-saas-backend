@@ -17,7 +17,7 @@ class Area extends Model
     public const ESTADO_ACTIVO = 'activo';
     public const ESTADO_INACTIVO = 'inactivo';
 
-    protected $fillable = ['nombre', 'descripcion', 'estado'];
+    protected $fillable = ['ano_lectivo_id', 'nombre', 'descripcion', 'estado'];
 
     /** @return HasMany<Materia> */
     public function materias(): HasMany
