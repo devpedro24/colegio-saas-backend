@@ -57,17 +57,24 @@ Route::middleware('can:academico.anos.gestionar')->group(function () {
     Route::get('/anos-lectivos/{id}', [AnoLectivoController::class, 'show']);
     Route::put('/anos-lectivos/{id}', [AnoLectivoController::class, 'update']);
     Route::delete('/anos-lectivos/{id}', [AnoLectivoController::class, 'destroy']);
-    Route::post('/anos-lectivos/{id}/iniciar', [AnoLectivoController::class, 'iniciar']);
-    Route::post('/anos-lectivos/{id}/cerrar', [AnoLectivoController::class, 'cerrar']);
-    Route::post('/anos-lectivos/{id}/reabrir', [AnoLectivoController::class, 'reabrir']);
 
     // Periodos: index/store anidados bajo el año; mutaciones por id de periodo.
     Route::get('/anos-lectivos/{ano}/periodos', [PeriodoController::class, 'index']);
     Route::post('/anos-lectivos/{ano}/periodos', [PeriodoController::class, 'store']);
     Route::put('/periodos/{id}', [PeriodoController::class, 'update']);
     Route::delete('/periodos/{id}', [PeriodoController::class, 'destroy']);
+});
+
+// La gestión del calendario puede delegarse; sus cambios de estado son del rector.
+Route::middleware('can:academico.anos.transicionar')->group(function () {
+    Route::post('/anos-lectivos/{id}/iniciar', [AnoLectivoController::class, 'iniciar']);
+    Route::post('/anos-lectivos/{id}/cerrar', [AnoLectivoController::class, 'cerrar']);
+    Route::post('/anos-lectivos/{id}/reabrir', [AnoLectivoController::class, 'reabrir']);
+});
+Route::middleware('can:academico.periodos.transicionar')->group(function () {
     Route::post('/periodos/{id}/abrir', [PeriodoController::class, 'abrir']);
     Route::post('/periodos/{id}/cerrar', [PeriodoController::class, 'cerrar']);
+    Route::post('/periodos/{id}/reabrir', [PeriodoController::class, 'reabrir']);
 });
 
 // Configuración del colegio: permiso 'academico.configurar'.

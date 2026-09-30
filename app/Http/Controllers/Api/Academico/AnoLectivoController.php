@@ -11,6 +11,7 @@ use App\Models\Academico\Periodo;
 use App\Services\ConfigurationGate;
 use App\Services\DuplicarAnoLectivoService;
 use App\Services\GradeCalculationService;
+use App\Services\PeriodoLifecycleService;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use Illuminate\Http\JsonResponse;
@@ -46,7 +47,9 @@ class AnoLectivoController extends Controller
     /** Detalle de un año lectivo (incluye sus periodos). */
     public function show(string $id): JsonResponse
     {
-        $ano = AnoLectivo::with('periodos')->findOrFail($id);
+        $ano = AnoLectivo::findOrFail($id);
+        app(PeriodoLifecycleService::class)->synchronize($ano);
+        $ano->load('periodos');
 
         return response()->json(['data' => $this->present($ano, true)]);
     }
@@ -281,6 +284,7 @@ class AnoLectivoController extends Controller
      */
     public function iniciar(Request $request, string $id): JsonResponse
     {
+        $this->assertTransitionActor($request);
         $ano = AnoLectivo::findOrFail($id);
 
         if ($ano->estado !== AnoLectivo::ESTADO_PLANIFICADO) {
@@ -294,7 +298,7 @@ class AnoLectivoController extends Controller
             'fecha_inicio' => $ano->fecha_inicio->toDateString(),
             'fecha_fin' => $ano->fecha_fin->toDateString(),
         ]);
-        $hoy = now()->startOfDay();
+        $hoy = Carbon::parse(PeriodoLifecycleService::today())->startOfDay();
         if ($hoy->lt($ano->fecha_inicio) || $hoy->gt($ano->fecha_fin)) {
             abort(422, "No se puede iniciar este año lectivo fuera de su rango ({$ano->fecha_inicio->toDateString()} a {$ano->fecha_fin->toDateString()}).");
         }
@@ -315,6 +319,7 @@ class AnoLectivoController extends Controller
 
         $prev = $this->snapshot($ano);
         $ano->update(['estado' => AnoLectivo::ESTADO_EN_CURSO]);
+        app(PeriodoLifecycleService::class)->synchronize($ano);
 
         AuditLogger::tenant(
             $request->user(),
@@ -337,6 +342,7 @@ class AnoLectivoController extends Controller
     /** Transición: en_curso → cerrado (RN-PA-006, datos inmutables tras el cierre). */
     public function cerrar(Request $request, string $id): JsonResponse
     {
+        $this->assertTransitionActor($request);
         $ano = AnoLectivo::findOrFail($id);
 
         if ($ano->estado !== AnoLectivo::ESTADO_EN_CURSO) {
@@ -362,6 +368,17 @@ class AnoLectivoController extends Controller
         }
 
         return response()->json(['data' => $this->present($ano)]);
+    }
+
+    private function assertTransitionActor(Request $request): void
+    {
+        $actor = $request->user();
+        abort_unless(
+            $actor && $actor->can('academico.anos.transicionar')
+                && ($actor->hasRole('rector') || $actor->esSuperadminPlataforma()),
+            403,
+            'Solo el rector o el superadministrador dentro del colegio puede iniciar o cerrar años lectivos.',
+        );
     }
 
     /** Reabre un año cerrado. Es una corrección excepcional, exclusiva de plataforma. */
@@ -586,6 +603,7 @@ class AnoLectivoController extends Controller
         ];
 
         if ($conPeriodos) {
+            $today = PeriodoLifecycleService::today();
             $payload['periodos'] = $ano->periodos->map(fn ($periodo) => [
                 'id' => $periodo->id,
                 'nombre' => $periodo->nombre,
@@ -594,6 +612,10 @@ class AnoLectivoController extends Controller
                 'fecha_fin' => $periodo->fecha_fin?->toDateString(),
                 'peso' => $periodo->peso,
                 'estado' => $periodo->estado,
+                'reapertura_manual' => $periodo->reapertura_manual,
+                'es_actual' => $periodo->estado === Periodo::ESTADO_ABIERTO
+                    && $periodo->fecha_inicio->toDateString() <= $today
+                    && $periodo->fecha_fin->toDateString() >= $today,
             ])->values();
         }
 

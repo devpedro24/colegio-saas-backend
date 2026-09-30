@@ -23,6 +23,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * @property \Illuminate\Support\Carbon       $fecha_fin
  * @property string|null                     $peso
  * @property string                          $estado
+ * @property bool                            $reapertura_manual
  * @property \Illuminate\Support\Carbon|null  $created_at
  * @property \Illuminate\Support\Carbon|null  $updated_at
  * @property \Illuminate\Support\Carbon|null  $deleted_at
@@ -54,6 +55,7 @@ class Periodo extends Model
         'fecha_fin',
         'peso',
         'estado',
+        'reapertura_manual',
     ];
 
     /**
@@ -66,6 +68,7 @@ class Periodo extends Model
             'orden' => 'integer',
             'fecha_inicio' => 'date',
             'fecha_fin' => 'date',
+            'reapertura_manual' => 'boolean',
         ];
     }
 

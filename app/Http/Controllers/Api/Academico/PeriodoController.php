@@ -8,6 +8,7 @@ use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
+use App\Services\PeriodoLifecycleService;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,7 +23,7 @@ use Illuminate\Support\Facades\Schema;
  * resuelven por el id del periodo, alineadas con el frontend.
  *
  * El backend es la AUTORIDAD de la FSM del periodo:
- *   planificado → abierto → cerrado.
+ *   planificado → abierto → cerrado → abierto (reapertura excepcional).
  * Los periodos quedan dentro del rango del año y no se solapan.
  */
 class PeriodoController extends Controller
@@ -31,6 +32,7 @@ class PeriodoController extends Controller
     public function index(string $anoLectivoId): JsonResponse
     {
         $ano = AnoLectivo::findOrFail($anoLectivoId);
+        app(PeriodoLifecycleService::class)->synchronize($ano);
 
         $periodos = $ano->periodos()
             ->get()
@@ -98,7 +100,7 @@ class PeriodoController extends Controller
 
         // RN-PA-006: un periodo cerrado es inmutable.
         if ($periodo->estaCerrado()) {
-            abort(422, 'El periodo está cerrado y sus datos son inmutables.');
+            abort(422, 'El período está cerrado. Solo el rector puede reabrirlo antes de modificarlo.');
         }
 
         $data = $this->validated($request);
@@ -153,6 +155,10 @@ class PeriodoController extends Controller
             abort(422, 'El año lectivo está cerrado y sus datos son inmutables.');
         }
 
+        if ($periodo->estaCerrado()) {
+            abort(422, 'El período está cerrado. Solo el rector puede reabrirlo antes de modificarlo.');
+        }
+
         if ($this->tieneInformacionAnclada($periodo)) {
             abort(422, 'No se puede eliminar el periodo porque tiene notas, informes u otra información asociada.');
         }
@@ -181,19 +187,22 @@ class PeriodoController extends Controller
     /** Transición: planificado → abierto. Permite registrar notas/asistencia/logros. */
     public function abrir(Request $request, string $id): JsonResponse
     {
-        $periodo = Periodo::findOrFail($id);
-        $ano = $periodo->anoLectivo()->firstOrFail();
+        $this->assertTransitionActor($request);
+        $ano = Periodo::findOrFail($id)->anoLectivo()->firstOrFail();
+        app(PeriodoLifecycleService::class)->synchronize($ano);
+        [$periodo, $prev] = DB::transaction(function () use ($id): array {
+            $periodo = Periodo::query()->lockForUpdate()->findOrFail($id);
+            if ($periodo->anoLectivo()->firstOrFail()->estado !== AnoLectivo::ESTADO_EN_CURSO) {
+                abort(422, 'Solo se pueden abrir períodos de un año lectivo en curso.');
+            }
+            if ($periodo->estado !== Periodo::ESTADO_PLANIFICADO) {
+                abort(422, 'Solo un período planificado puede abrirse.');
+            }
+            $prev = $this->snapshot($periodo);
+            $periodo->update(['estado' => Periodo::ESTADO_ABIERTO, 'reapertura_manual' => false]);
 
-        if ($ano->estado !== AnoLectivo::ESTADO_EN_CURSO) {
-            abort(422, 'Solo se pueden abrir periodos de un año lectivo en curso.');
-        }
-
-        if ($periodo->estado !== Periodo::ESTADO_PLANIFICADO) {
-            abort(422, 'Solo un periodo en estado planificado puede abrirse.');
-        }
-
-        $prev = $this->snapshot($periodo);
-        $periodo->update(['estado' => Periodo::ESTADO_ABIERTO]);
+            return [$periodo, $prev];
+        });
 
         AuditLogger::tenant(
             $request->user(),
@@ -216,14 +225,20 @@ class PeriodoController extends Controller
     /** Transición: abierto → cerrado (RN-PA-006, datos inmutables tras el cierre). */
     public function cerrar(Request $request, string $id): JsonResponse
     {
-        $periodo = Periodo::findOrFail($id);
+        $this->assertTransitionActor($request);
+        [$periodo, $prev] = DB::transaction(function () use ($id): array {
+            $periodo = Periodo::query()->lockForUpdate()->findOrFail($id);
+            if ($periodo->anoLectivo()->firstOrFail()->estado !== AnoLectivo::ESTADO_EN_CURSO) {
+                abort(422, 'El año lectivo debe estar en curso para cerrar un período.');
+            }
+            if ($periodo->estado !== Periodo::ESTADO_ABIERTO) {
+                abort(422, 'Solo un período abierto puede cerrarse.');
+            }
+            $prev = $this->snapshot($periodo);
+            $periodo->update(['estado' => Periodo::ESTADO_CERRADO, 'reapertura_manual' => false]);
 
-        if ($periodo->estado !== Periodo::ESTADO_ABIERTO) {
-            abort(422, 'Solo un periodo abierto puede cerrarse.');
-        }
-
-        $prev = $this->snapshot($periodo);
-        $periodo->update(['estado' => Periodo::ESTADO_CERRADO]);
+            return [$periodo, $prev];
+        });
 
         AuditLogger::tenant(
             $request->user(),
@@ -241,6 +256,48 @@ class PeriodoController extends Controller
         }
 
         return response()->json(['data' => $this->present($periodo)]);
+    }
+
+    /** Reapertura excepcional: cerrado → abierto, aunque ya terminó su fecha. */
+    public function reabrir(Request $request, string $id): JsonResponse
+    {
+        $this->assertTransitionActor($request);
+        [$periodo, $prev] = DB::transaction(function () use ($id): array {
+            $periodo = Periodo::query()->lockForUpdate()->findOrFail($id);
+            if ($periodo->anoLectivo()->firstOrFail()->estado !== AnoLectivo::ESTADO_EN_CURSO) {
+                abort(422, 'El año lectivo debe estar en curso para reabrir un período.');
+            }
+            if ($periodo->estado !== Periodo::ESTADO_CERRADO) {
+                abort(422, 'Solo un período cerrado puede reabrirse.');
+            }
+            $prev = $this->snapshot($periodo);
+            $periodo->update(['estado' => Periodo::ESTADO_ABIERTO, 'reapertura_manual' => true]);
+
+            return [$periodo, $prev];
+        });
+
+        AuditLogger::tenant(
+            $request->user(), 'UPDATE', 'periodo', (string) $periodo->id,
+            $prev, $this->snapshot($periodo),
+            'Reapertura manual excepcional; permanece abierto hasta el cierre del rector.',
+        );
+        try {
+            TenantDataChanged::dispatch('periodo', 'updated', $periodo->nombre);
+        } catch (\Throwable) {
+        }
+
+        return response()->json(['data' => $this->present($periodo)]);
+    }
+
+    private function assertTransitionActor(Request $request): void
+    {
+        $actor = $request->user();
+        abort_unless(
+            $actor && $actor->can('academico.periodos.transicionar')
+                && ($actor->hasRole('rector') || $actor->esSuperadminPlataforma()),
+            403,
+            'Solo el rector o el superadministrador dentro del colegio puede abrir o cerrar períodos.',
+        );
     }
 
     /**
@@ -367,6 +424,7 @@ class PeriodoController extends Controller
             'fecha_fin' => $periodo->fecha_fin?->toDateString(),
             'peso' => $periodo->peso,
             'estado' => $periodo->estado,
+            'reapertura_manual' => $periodo->reapertura_manual,
         ];
     }
 
@@ -375,6 +433,8 @@ class PeriodoController extends Controller
      */
     private function present(Periodo $periodo): array
     {
+        $today = PeriodoLifecycleService::today();
+
         return [
             'id' => $periodo->id,
             'ano_lectivo_id' => $periodo->ano_lectivo_id,
@@ -384,6 +444,10 @@ class PeriodoController extends Controller
             'fecha_fin' => $periodo->fecha_fin?->toDateString(),
             'peso' => $periodo->peso,
             'estado' => $periodo->estado,
+            'reapertura_manual' => $periodo->reapertura_manual,
+            'es_actual' => $periodo->estado === Periodo::ESTADO_ABIERTO
+                && $periodo->fecha_inicio->toDateString() <= $today
+                && $periodo->fecha_fin->toDateString() >= $today,
             'created_at' => $periodo->created_at?->toIso8601String(),
         ];
     }

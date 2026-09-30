@@ -67,6 +67,8 @@ class PermissionMatrix
 
             // ---- Academico (Fase 1 Bloque A): años lectivos, periodos y configuracion ----
             ['key' => 'academico.anos.gestionar', 'module' => 'academico', 'action' => 'anos.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
+            ['key' => 'academico.anos.transicionar', 'module' => 'academico', 'action' => 'anos.iniciar_cerrar', 'cells' => ['rector' => 'editar']],
+            ['key' => 'academico.periodos.transicionar', 'module' => 'academico', 'action' => 'periodos.abrir_cerrar_reabrir', 'cells' => ['rector' => 'editar']],
             ['key' => 'academico.configurar', 'module' => 'academico', 'action' => 'configurar', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar']],
 
             // ---- Academico (Fase 1 Bloque B): jerarquía organizacional ----
