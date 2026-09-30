@@ -45,12 +45,15 @@ class AccountTest extends TestCase
         $user = $this->createSuperadmin();
         $token = $this->createTokenFor($user);
 
-        $this->withToken($token)->putJson('/api/account/profile', [
+        $response = $this->withToken($token)->putJson('/api/account/profile', [
             'name' => 'Nuevo Nombre',
             'phone' => '+57 300 123 4567',
         ])->assertStatus(200)
             ->assertJsonPath('user.name', 'Nuevo Nombre')
             ->assertJsonPath('user.phone', '+57 300 123 4567');
+
+        $this->assertMatchesRegularExpression('/\A[A-Za-z0-9_-]{24}\z/', $response->json('user.id'));
+        $this->assertNotSame((string) $user->id, $response->json('user.id'));
 
         $this->assertSame('Nuevo Nombre', $user->fresh()->name);
         $this->assertSame('+57 300 123 4567', $user->fresh()->phone);

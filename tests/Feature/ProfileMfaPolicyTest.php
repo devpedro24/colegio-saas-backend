@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Services\TenantProvisioner;
+use App\Support\Auth\BrowserAuthCookies;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use PragmaRX\Google2FA\Google2FA;
@@ -12,6 +13,12 @@ use Tests\TestCase;
 class ProfileMfaPolicyTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->withCredentials();
+    }
 
     protected function tearDown(): void
     {
@@ -23,23 +30,25 @@ class ProfileMfaPolicyTest extends TestCase
     {
         $user = User::create(['name' => 'Admin', 'email' => 'mfa@example.test', 'password' => 'Clave123!',
             'role' => 'superadmin', 'status' => 'active', 'must_change_password' => false]);
-        $login = $this->postJson('/api/login', ['email' => $user->email, 'password' => 'Clave123!'])->assertOk()
+        $this->withHeader('Origin', 'http://localhost');
+        $login = $this->postJson('http://localhost/api/login', ['email' => $user->email, 'password' => 'Clave123!'])->assertOk()
             ->assertJsonPath('user.mfa_required', false);
         $this->assertSame(['*'], $user->tokens()->latest('id')->first()->abilities);
-        $this->withToken($login->json('token'))->getJson('/api/colegios')->assertOk();
-        $old = $this->postJson('/api/mfa/setup', ['password' => 'Clave123!'])->assertOk()->json('secret');
-        $secret = $this->postJson('/api/mfa/setup', ['password' => 'Clave123!'])->assertOk()->json('secret');
+        $this->useBrowserSession($login, BrowserAuthCookies::PLATFORM);
+        $this->getJson('http://localhost/api/colegios')->assertOk();
+        $old = $this->postJson('http://localhost/api/mfa/setup', ['password' => 'Clave123!'])->assertOk()->json('secret');
+        $secret = $this->postJson('http://localhost/api/mfa/setup', ['password' => 'Clave123!'])->assertOk()->json('secret');
         $this->assertNotSame($old, $secret);
-        $codes = $this->postJson('/api/mfa/confirm', ['code' => (new Google2FA)->getCurrentOtp($secret)])
+        $codes = $this->postJson('http://localhost/api/mfa/confirm', ['code' => (new Google2FA)->getCurrentOtp($secret)])
             ->assertOk()->json('recovery_codes');
         $this->assertCount(8, $codes);
-        $this->postJson('/api/login', ['email' => $user->email, 'password' => 'Clave123!'])
+        $this->postJson('http://localhost/api/login', ['email' => $user->email, 'password' => 'Clave123!'])
             ->assertUnprocessable()->assertJsonPath('mfa_required', true);
-        $this->postJson('/api/login', ['email' => $user->email, 'password' => 'Clave123!', 'code' => $codes[0]])->assertOk();
-        $this->postJson('/api/login', ['email' => $user->email, 'password' => 'Clave123!', 'code' => $codes[0]])->assertUnprocessable();
-        $this->postJson('/api/mfa/disable', ['password' => 'Clave123!', 'code' => (new Google2FA)->getCurrentOtp($secret)])
+        $this->postJson('http://localhost/api/login', ['email' => $user->email, 'password' => 'Clave123!', 'code' => $codes[0]])->assertOk();
+        $this->postJson('http://localhost/api/login', ['email' => $user->email, 'password' => 'Clave123!', 'code' => $codes[0]])->assertUnprocessable();
+        $this->postJson('http://localhost/api/mfa/disable', ['password' => 'Clave123!', 'code' => (new Google2FA)->getCurrentOtp($secret)])
             ->assertOk()->assertJsonPath('mfa_enabled', false);
-        $this->postJson('/api/login', ['email' => $user->email, 'password' => 'Clave123!'])->assertOk();
+        $this->postJson('http://localhost/api/login', ['email' => $user->email, 'password' => 'Clave123!'])->assertOk();
     }
 
     public function test_legacy_enrollment_session_recovers_access(): void
@@ -59,13 +68,24 @@ class ProfileMfaPolicyTest extends TestCase
             'name' => 'Colegio', 'slug' => 'profile-'.uniqid(), 'rector_email' => 'rector@example.test',
         ]);
         $api = 'http://'.$tenant->slug.'.localhost/api';
+        $this->withHeader('Origin', 'http://'.$tenant->slug.'.localhost');
         $login = $this->postJson($api.'/login', ['email' => 'rector@example.test', 'password' => $password])->assertOk()
             ->assertJsonPath('user.mfa_required', false);
-        $this->withToken($login->json('token'));
+        $this->useBrowserSession($login, BrowserAuthCookies::TENANT);
         $this->getJson($api.'/onboarding/status')->assertOk();
         $this->postJson($api.'/account/password', ['current_password' => $password,
             'new_password' => 'Nueva123!', 'new_password_confirmation' => 'Nueva123!'])->assertOk();
         $this->app['auth']->forgetGuards();
         $this->getJson($api.'/onboarding/status')->assertOk()->assertJsonPath('institution_required', true);
+    }
+
+    private function useBrowserSession($login, string $name): void
+    {
+        $cookies = collect($login->baseResponse->headers->getCookies())->keyBy->getName();
+        $csrf = $cookies->get(BrowserAuthCookies::CSRF)->getValue();
+        $this->withUnencryptedCookies([
+            $name => $cookies->get($name)->getValue(), BrowserAuthCookies::CSRF => $csrf,
+        ])->withHeader('X-CSRF-Token', $csrf);
+        app('auth')->forgetGuards();
     }
 }

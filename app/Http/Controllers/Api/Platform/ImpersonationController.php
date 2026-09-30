@@ -9,6 +9,8 @@ use App\Models\Impersonation;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
+use App\Support\Auth\BrowserAuthCookies;
+use App\Support\Realtime\TenantChannelName;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -45,11 +47,14 @@ class ImpersonationController extends Controller
     public function impersonar(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'colegio_id' => ['required', 'string', 'exists:tenants,id'],
+            'colegio_slug' => ['required_without:colegio_id', 'string', 'exists:tenants,slug'],
+            'colegio_id' => ['required_without:colegio_slug', 'string', 'exists:tenants,id'],
         ]);
 
         $superadmin = $request->user();
-        $tenant = Tenant::findOrFail($data['colegio_id']);
+        $tenant = isset($data['colegio_slug'])
+            ? Tenant::where('slug', $data['colegio_slug'])->firstOrFail()
+            : Tenant::findOrFail($data['colegio_id']);
 
         // Ventana de validez en UTC (el token y la fila comparten expiracion).
         $expiresAt = Carbon::now('UTC')->addHours(self::TTL_HOURS);
@@ -127,17 +132,55 @@ class ImpersonationController extends Controller
             (string) $tenant->id,
         );
 
-        return response()->json([
+        $platformToken = $request->bearerToken();
+        abort_unless(is_string($platformToken) && $platformToken !== '', 401);
+        $csrf = BrowserAuthCookies::csrf($request) ?? BrowserAuthCookies::newCsrf();
+        $response = response()->json([
             'data' => [
                 'colegio' => [
-                    'id' => (string) $tenant->id,
                     'name' => $tenant->name,
                     'slug' => $tenant->slug,
+                    'channel_token' => TenantChannelName::tokenForId((string) $tenant->id),
                 ],
-                'token' => $plainToken,
                 'expires_at' => $expiresAt->toIso8601String(),
             ],
         ]);
+        if (BrowserAuthCookies::csrf($request) === null) {
+            $platformExpiry = $superadmin->currentAccessToken()?->expires_at?->timestamp
+                ?? now()->addHours(8)->timestamp;
+            BrowserAuthCookies::setSession($response, $request, BrowserAuthCookies::PLATFORM,
+                $platformToken, $platformExpiry, $csrf);
+        }
+        BrowserAuthCookies::setImpersonation($response, $request, $plainToken,
+            (string) $tenant->id, $platformToken, $expiresAt->timestamp, $csrf);
+
+        return $response;
+    }
+
+    /** Reconstitutes the platform user's selected school after a browser reload. */
+    public function estado(Request $request): JsonResponse
+    {
+        $cookie = BrowserAuthCookies::read($request, BrowserAuthCookies::IMPERSONATION);
+        $platformToken = $request->bearerToken();
+        $session = null;
+        if ($cookie && is_string($platformToken) && is_string($cookie['tenant_id'] ?? null)
+            && is_string($cookie['platform_token_hash'] ?? null)
+            && hash_equals($cookie['platform_token_hash'], hash('sha256', $platformToken))) {
+            $session = Impersonation::where('superadmin_id', $request->user()->id)
+                ->where('tenant_id', $cookie['tenant_id'])
+                ->where('token_id', (int) explode('|', $cookie['token'], 2)[0])
+                ->whereNull('ended_at')->where('expires_at', '>', now())->first();
+        }
+        $tenant = $session ? Tenant::find($session->tenant_id) : null;
+        $response = response()->json(['data' => ['colegio' => $tenant ? [
+            'name' => $tenant->name, 'slug' => $tenant->slug,
+            'channel_token' => TenantChannelName::tokenForId((string) $tenant->id),
+        ] : null]]);
+        if (! $tenant && $cookie) {
+            BrowserAuthCookies::clearImpersonation($response, $request);
+        }
+
+        return $response;
     }
 
     /**
@@ -147,11 +190,21 @@ class ImpersonationController extends Controller
     public function salir(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'colegio_id' => ['required', 'string', 'exists:tenants,id'],
+            'colegio_id' => ['nullable', 'string', 'exists:tenants,id'],
+            'colegio_slug' => ['nullable', 'string', 'exists:tenants,slug'],
         ]);
 
         $superadmin = $request->user();
-        $tenant = Tenant::findOrFail($data['colegio_id']);
+        $cookie = BrowserAuthCookies::read($request, BrowserAuthCookies::IMPERSONATION);
+        $cookieTenant = $cookie && is_string($cookie['tenant_id'] ?? null)
+            && is_string($cookie['platform_token_hash'] ?? null)
+            && hash_equals($cookie['platform_token_hash'], hash('sha256', (string) $request->bearerToken()))
+            ? $cookie['tenant_id'] : null;
+        abort_unless($cookieTenant || isset($data['colegio_slug']) || isset($data['colegio_id']), 422,
+            'No hay un colegio en administración.');
+        $tenant = $cookieTenant ? Tenant::findOrFail($cookieTenant)
+            : (isset($data['colegio_slug']) ? Tenant::where('slug', $data['colegio_slug'])->firstOrFail()
+                : Tenant::findOrFail($data['colegio_id']));
 
         // Cierra la(s) sesion(es) viva(s) de este superadmin sobre el colegio.
         $sessions = Impersonation::query()
@@ -193,8 +246,13 @@ class ImpersonationController extends Controller
             (string) $tenant->id,
         );
 
-        return response()->json([
+        $response = response()->json([
             'data' => ['ended' => true],
         ]);
+        if ($cookieTenant !== null) {
+            BrowserAuthCookies::clearImpersonation($response, $request);
+        }
+
+        return $response;
     }
 }

@@ -6,6 +6,8 @@ namespace App\Support\Account;
 
 use App\Models\Plan;
 use App\Models\User;
+use App\Support\PublicIdentityToken;
+use App\Support\Realtime\TenantChannelName;
 
 final class AccountPresenter
 {
@@ -35,10 +37,10 @@ final class AccountPresenter
         $tenant = tenancy()->initialized;
 
         return [
-            'id' => $user->id, 'name' => $user->name, 'email' => $user->email,
+            'id' => PublicIdentityToken::forUser($user), 'name' => $user->name, 'email' => $user->email,
             'phone' => $user->phone, 'google_email' => $user->google_email,
             'email_verified' => $user->email_verified_at !== null,
-            'tenant_id' => tenant()?->getKey(),
+            'tenant_channel' => tenant() ? TenantChannelName::tokenForId((string) tenant()->getTenantKey()) : null,
             'must_change_password' => (bool) $user->must_change_password,
             'mfa_enabled' => $user->hasTwoFactorEnabled(),
             'mfa_required' => false,

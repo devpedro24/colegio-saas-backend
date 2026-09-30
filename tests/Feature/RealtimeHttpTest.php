@@ -8,6 +8,7 @@ use App\Jobs\SynchronizeTenantPermissions;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\TenantProvisioner;
+use App\Support\Realtime\TenantChannelName;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Broadcast;
@@ -44,7 +45,7 @@ class RealtimeHttpTest extends TestCase
             $broadcaster->channel($name, $callback, ['guards' => ['sanctum']]);
         }
         config(['broadcasting.default' => 'reverb']);
-        $channel = ['channel_name' => 'private-tenant.'.$tenant->id, 'socket_id' => '123.456'];
+        $channel = ['channel_name' => 'private-tenant.'.TenantChannelName::tokenForId((string) $tenant->id), 'socket_id' => '123.456'];
         $this->withToken($token)->postJson('http://'.$tenant->slug.'.localhost/api/broadcasting/auth', $channel)
             ->assertOk()->assertJsonStructure(['auth']);
         $this->getJson('http://'.$tenant->slug.'.localhost/api/onboarding/status')->assertOk();

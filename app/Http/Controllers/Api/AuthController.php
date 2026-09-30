@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
+use App\Support\Auth\BrowserAuthCookies;
 use App\Support\Mfa\MfaVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -64,19 +65,28 @@ class AuthController extends Controller
             }
         }
 
-        $token = $user->createToken('web', ['*'], now()->addHours(8))->plainTextToken;
+        $expiresAt = now()->addHours(8);
+        $token = $user->createToken('web', ['*'], $expiresAt)->plainTextToken;
+        $csrf = BrowserAuthCookies::newCsrf();
 
         AuditLogger::tenant($user, 'LOGIN', 'auth', (string) $user->id);
 
-        return response()->json([
-            'token' => $token,
+        $response = response()->json([
             'user' => $this->userPayload($user),
+            'csrf_token' => $csrf,
         ]);
+        BrowserAuthCookies::setSession($response, $request, BrowserAuthCookies::TENANT,
+            $token, $expiresAt->timestamp, $csrf);
+
+        return $response;
     }
 
     public function me(Request $request): JsonResponse
     {
-        return response()->json(['user' => $this->userPayload($request->user())]);
+        return response()->json([
+            'user' => $this->userPayload($request->user()),
+            'csrf_token' => BrowserAuthCookies::csrf($request),
+        ]);
     }
 
     public function logout(Request $request): JsonResponse
@@ -84,7 +94,12 @@ class AuthController extends Controller
         AuditLogger::tenant($request->user(), 'LOGOUT', 'auth', (string) $request->user()->id);
         $request->user()->currentAccessToken()->delete();
 
-        return response()->json(['message' => 'Sesion cerrada.']);
+        $response = response()->json(['message' => 'Sesion cerrada.']);
+        if (BrowserAuthCookies::matches($request, BrowserAuthCookies::TENANT, $request->bearerToken())) {
+            BrowserAuthCookies::clearSession($response, $request, BrowserAuthCookies::TENANT);
+        }
+
+        return $response;
     }
 
     /**

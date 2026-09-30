@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Impersonation;
+use App\Models\Tenant;
 use App\Models\User;
 use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
@@ -13,10 +15,14 @@ use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 /**
  * Ajustes de cuenta del usuario autenticado (perfil, email, contraseña,
@@ -25,13 +31,15 @@ use Illuminate\Validation\ValidationException;
  * casos opera sobre $request->user() de la conexion activa.
  *
  * Google (anclar cuenta): OAuth2 estandar sin dependencias extra. El paso 1
- * devuelve una URL de autorizacion firmada; el "state" guarda el id del usuario
- * y vence en 10 minutos (no hay sesion server en una SPA stateless con Sanctum).
+ * devuelve una URL de autorizacion con un state de un solo uso, vinculado al
+ * navegador que inició la conexión mediante una cookie HttpOnly temporal.
  */
 class AccountController extends Controller
 {
     /** Duracion del state OAuth (minutos). */
     private const STATE_TTL_MINUTES = 15;
+
+    private const STATE_COOKIE = 'colegio_google_link_state';
 
     /* ------------------------------------------------------------------ */
     /* Perfil */
@@ -148,9 +156,39 @@ class AccountController extends Controller
             ->where('id', '!=', $user->currentAccessToken()?->id ?? 0)
             ->delete();
 
+        if (! tenancy()->initialized) {
+            $this->endPlatformImpersonations($user);
+        }
+
         $this->audit($user, 'PASSWORD_UPDATE', 'account', (string) $user->id);
 
         return response()->json(['message' => 'Contraseña actualizada.']);
+    }
+
+    private function endPlatformImpersonations(User $user): void
+    {
+        $sessions = Impersonation::where('superadmin_id', $user->id)
+            ->whereNull('ended_at')->get(['id', 'tenant_id', 'token_id']);
+        if ($sessions->isEmpty()) {
+            return;
+        }
+
+        // La fila central se cierra primero: EnsureMfaReady rechaza el token sombra
+        // incluso si una BD escolar no está disponible para la revocación física.
+        Impersonation::whereKey($sessions->modelKeys())->update(['ended_at' => now()]);
+        foreach ($sessions as $session) {
+            try {
+                $school = Tenant::find($session->tenant_id);
+                $school?->run(function () use ($session): void {
+                    $shadow = User::where('email', User::PLATFORM_SUPERADMIN_EMAIL)->first();
+                    $shadow?->tokens()->where('name', 'impersonation')
+                        ->whereKey($session->token_id)->delete();
+                });
+            } catch (Throwable $error) {
+                Log::warning('No se pudo revocar físicamente un token sombra cerrado',
+                    ['tenant' => $session->tenant_id, 'error' => $error->getMessage()]);
+            }
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -197,7 +235,9 @@ class AccountController extends Controller
         $user = $request->user();
         abort_unless(AccountPresenter::capabilities($user)['google_link'], 403);
 
-        $state = $this->buildOAuthState($user);
+        $nonce = Str::random(40);
+        $state = $this->buildOAuthState($user, $nonce);
+        Cache::put($this->oauthStateCacheKey($nonce), true, now()->addMinutes(self::STATE_TTL_MINUTES));
 
         $authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?'.http_build_query([
             'client_id' => $clientId,
@@ -209,7 +249,10 @@ class AccountController extends Controller
             'state' => $state,
         ]);
 
-        return response()->json(['url' => $authUrl]);
+        return response()->json(['url' => $authUrl])->cookie(
+            self::STATE_COOKIE, $nonce, self::STATE_TTL_MINUTES, '/', null,
+            app()->environment('production') || $request->isSecure(), true, false, 'lax',
+        );
     }
 
     public function googleCallback(Request $request): RedirectResponse
@@ -222,7 +265,9 @@ class AccountController extends Controller
 
         $payload = $this->readOAuthState((string) $request->query('state'));
 
-        if ($payload === null) {
+        if ($payload === null || ! hash_equals($payload['nonce'], (string) $request->cookie(self::STATE_COOKIE))
+            || $payload['tenant'] !== (string) (tenant()?->getTenantKey() ?? 'platform')
+            || ! $this->consumeOAuthState($payload['nonce'])) {
             return redirect()->away($frontUrl.'/account/settings?google=error');
         }
 
@@ -289,24 +334,27 @@ class AccountController extends Controller
     /* Helpers */
     /* ------------------------------------------------------------------ */
 
-    /** Estado OAuth sellado: id del usuario + expiracion (sin sesion server-side). */
-    private function buildOAuthState(User $user): string
+    /** El state queda ligado al navegador y al contexto del colegio. */
+    private function buildOAuthState(User $user, string $nonce): string
     {
         $value = json_encode([
             'uid' => (string) $user->id,
             'exp' => now()->addMinutes(self::STATE_TTL_MINUTES)->timestamp,
+            'tenant' => (string) (tenant()?->getTenantKey() ?? 'platform'),
+            'nonce' => $nonce,
         ]);
 
         return Crypt::encryptString((string) $value);
     }
 
-    /** @return array{uid: string, exp: int}|null */
+    /** @return array{uid: string, exp: int, tenant: string, nonce: string}|null */
     private function readOAuthState(string $state): ?array
     {
         try {
             $payload = json_decode(Crypt::decryptString($state), true);
 
-            if (! is_array($payload) || empty($payload['uid']) || empty($payload['exp'])) {
+            if (! is_array($payload) || empty($payload['uid']) || empty($payload['exp'])
+                || empty($payload['nonce']) || empty($payload['tenant'])) {
                 return null;
             }
 
@@ -317,9 +365,31 @@ class AccountController extends Controller
             return [
                 'uid' => (string) $payload['uid'],
                 'exp' => (int) $payload['exp'],
+                'tenant' => (string) $payload['tenant'],
+                'nonce' => (string) $payload['nonce'],
             ];
         } catch (DecryptException) {
             return null;
+        }
+    }
+
+    private function oauthStateCacheKey(string $nonce): string
+    {
+        return 'google-link-state:'.hash('sha256', $nonce);
+    }
+
+    private function consumeOAuthState(string $nonce): bool
+    {
+        $key = $this->oauthStateCacheKey($nonce);
+        $lock = Cache::lock($key.':lock', 5);
+        if (! $lock->get()) {
+            return false;
+        }
+
+        try {
+            return (bool) Cache::pull($key);
+        } finally {
+            $lock->release();
         }
     }
 
