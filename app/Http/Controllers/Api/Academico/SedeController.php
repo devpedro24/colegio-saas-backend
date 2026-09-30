@@ -39,13 +39,17 @@ class SedeController extends Controller
     public function index(Request $request): JsonResponse
     {
         if (! Schema::hasTable('sedes')) {
-            return response()->json(['data' => [], 'meta' => ['current_page' => 1, 'last_page' => 1, 'per_page' => 5, 'total' => 0]]);
+            return response()->json(['data' => [], 'meta' => ['current_page' => 1, 'last_page' => 1,
+                'per_page' => $this->resolvePerPage($request), 'total' => 0, 'from' => null, 'to' => null]]);
         }
 
         $result = Sede::query()
+            ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
+            ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
             ->orderByRaw('tenant_id IS NULL DESC')
             ->orderBy('nombre')
-            ->paginate($this->resolvePerPage($request))
+            ->orderBy('id')
+            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request))
             ->through(fn (Sede $sede) => $this->enrich($this->snapshot($sede)));
 
         return $this->paginatedResponse($result);

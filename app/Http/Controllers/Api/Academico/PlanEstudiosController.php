@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\Academico;
 
 use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\Area;
 use App\Models\Academico\Materia;
 use App\Models\Academico\Nivel;
@@ -18,11 +19,17 @@ use Illuminate\Validation\Rule;
 /** Áreas y materias persistentes del plan de estudios. */
 class PlanEstudiosController extends Controller
 {
+    use PaginatesRequests;
+
     public function areas(Request $request): JsonResponse
     {
-        return response()->json(['data' => Area::query()->withCount('materias')
+        $areas = Area::query()->withCount('materias')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
-            ->orderBy('nombre')->get()]);
+            ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
+            ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
+            ->orderBy('nombre')->orderBy('id')->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+
+        return $this->paginatedResponse($areas);
     }
 
     public function storeArea(Request $request): JsonResponse
@@ -83,9 +90,11 @@ class PlanEstudiosController extends Controller
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('area_id'), fn ($q) => $q->where('area_id', $request->integer('area_id')))
             ->when($request->filled('nivel_id'), fn ($q) => $q->where('nivel_id', $request->integer('nivel_id')))
-            ->orderBy('nombre')->get();
+            ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
+            ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
+            ->orderBy('nombre')->orderBy('id')->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
 
-        return response()->json(['data' => $materias]);
+        return $this->paginatedResponse($materias);
     }
 
     public function storeMateria(Request $request): JsonResponse

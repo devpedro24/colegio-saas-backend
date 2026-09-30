@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\Jornada;
@@ -21,6 +22,8 @@ use Illuminate\Validation\ValidationException;
  */
 class BloqueHorarioController extends Controller
 {
+    use PaginatesRequests;
+
     /** Lista los bloques, filtrables por `jornada_id`. */
     public function index(Request $request): JsonResponse
     {
@@ -28,13 +31,15 @@ class BloqueHorarioController extends Controller
             ->with('jornada.sede:id,nombre')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('jornada_id'), fn ($q) => $q->where('jornada_id', (int) $request->query('jornada_id')))
+            ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
+            ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
             ->orderBy('jornada_id')
             ->orderBy('hora_inicio')
             ->orderBy('hora_fin')
             ->orderBy('id')
-            ->get();
+            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
 
-        return response()->json(['data' => $bloques]);
+        return $this->paginatedResponse($bloques);
     }
 
     /** Detalle de un bloque. */

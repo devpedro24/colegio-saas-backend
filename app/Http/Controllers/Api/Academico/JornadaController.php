@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\Jornada;
 use App\Services\AcademicYearSelection;
@@ -19,6 +20,8 @@ use Illuminate\Validation\Rule;
  */
 class JornadaController extends Controller
 {
+    use PaginatesRequests;
+
     /** Lista las jornadas, filtrables por `sede_id`. */
     public function index(Request $request): JsonResponse
     {
@@ -26,11 +29,14 @@ class JornadaController extends Controller
             ->with('sede:id,nombre')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('sede_id'), fn ($q) => $q->where('sede_id', (int) $request->query('sede_id')))
+            ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
+            ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
             ->orderBy('sede_id')
             ->orderBy('nombre')
-            ->get();
+            ->orderBy('id')
+            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
 
-        return response()->json(['data' => $jornadas]);
+        return $this->paginatedResponse($jornadas);
     }
 
     /** Detalle de una jornada (incluye bloques horarios). */

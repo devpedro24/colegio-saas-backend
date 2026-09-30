@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\Nivel;
 use App\Models\Academico\AnoLectivo;
@@ -19,18 +20,22 @@ use Illuminate\Validation\Rule;
  */
 class NivelController extends Controller
 {
+    use PaginatesRequests;
+
     /** Lista los niveles en el orden en que fueron creados. */
     public function index(?Request $request = null): JsonResponse
     {
         $request ??= request();
         $niveles = Nivel::query()
             ->when($request->filled('ano_lectivo_id'), fn ($query) => $query->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
+            ->when($request->filled('search'), fn ($query) => $query->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
+            ->when($request->filled('estado'), fn ($query) => $query->where('estado', $request->query('estado')))
             ->withCount('grados')
             ->orderBy('created_at')
             ->orderBy('id')
-            ->get();
+            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
 
-        return response()->json(['data' => $niveles]);
+        return $this->paginatedResponse($niveles);
     }
 
     /** Detalle de un nivel. */

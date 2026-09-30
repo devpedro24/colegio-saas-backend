@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\Grado;
 use App\Models\Academico\Nivel;
@@ -19,6 +20,8 @@ use Illuminate\Validation\Rule;
  */
 class GradoController extends Controller
 {
+    use PaginatesRequests;
+
     /** Lista los grados, filtrables por `nivel_id`. */
     public function index(Request $request): JsonResponse
     {
@@ -26,15 +29,15 @@ class GradoController extends Controller
             ->with('nivel:id,nombre,nivel_educativo')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('nivel_id'), fn ($q) => $q->where('nivel_id', (int) $request->query('nivel_id')))
+            ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
+            ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
+            // Conserva el orden histórico de niveles según su primer grado.
+            ->orderByRaw('(SELECT MIN(first_grade.id) FROM grados AS first_grade WHERE first_grade.nivel_id = grados.nivel_id AND first_grade.deleted_at IS NULL)')
             ->orderBy('created_at')
             ->orderBy('id')
-            ->get()
-            // El primer grado creado determina la posición de su nivel.
-            ->groupBy('nivel_id')
-            ->flatten(1)
-            ->values();
+            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
 
-        return response()->json(['data' => $grados]);
+        return $this->paginatedResponse($grados);
     }
 
     /** Detalle de un grado. */

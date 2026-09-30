@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\Grupo;
 use App\Models\Academico\Grado;
@@ -21,6 +22,8 @@ use Illuminate\Validation\Rule;
  */
 class GrupoController extends Controller
 {
+    use PaginatesRequests;
+
     /** Lista los grupos, filtrables por `ano_lectivo_id` y/o `grado_id`. */
     public function index(Request $request): JsonResponse
     {
@@ -29,12 +32,16 @@ class GrupoController extends Controller
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', (int) $request->query('ano_lectivo_id')))
             ->when($request->filled('grado_id'), fn ($q) => $q->where('grado_id', (int) $request->query('grado_id')))
             ->when($request->filled('jornada_id'), fn ($q) => $q->where('jornada_id', (int) $request->query('jornada_id')))
+            ->when($request->filled('sede_id'), fn ($q) => $q->where('sede_id', $request->integer('sede_id')))
+            ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
+            ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
             ->orderByDesc('ano_lectivo_id')
             ->orderBy('grado_id')
             ->orderBy('nombre')
-            ->get();
+            ->orderBy('id')
+            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
 
-        return response()->json(['data' => $grupos]);
+        return $this->paginatedResponse($grupos);
     }
 
     /** Detalle de un grupo. */
