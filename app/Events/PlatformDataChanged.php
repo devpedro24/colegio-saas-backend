@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace App\Events;
 
 use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
@@ -15,7 +13,7 @@ use Illuminate\Queue\SerializesModels;
  * canal privado `platform` para que los paneles del superadmin se actualicen en
  * vivo entre sesiones.
  */
-class PlatformDataChanged implements ShouldBroadcast
+class PlatformDataChanged
 {
     use Dispatchable;
     use InteractsWithSockets;
@@ -27,20 +25,4 @@ class PlatformDataChanged implements ShouldBroadcast
      */
     public function __construct(public string $resource, public string $action = 'updated') {}
 
-    /** @return array<int, PrivateChannel> */
-    public function broadcastOn(): array
-    {
-        return [new PrivateChannel('platform')];
-    }
-
-    public function broadcastAs(): string
-    {
-        return 'changed';
-    }
-
-    /** @return array<string, string> */
-    public function broadcastWith(): array
-    {
-        return ['resource' => $this->resource, 'action' => $this->action];
-    }
 }

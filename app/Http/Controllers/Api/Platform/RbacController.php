@@ -174,6 +174,7 @@ class RbacController extends Controller
                 ->where('permission_key', $data['permission_key'])
                 ->delete();
 
+            PlatformDataChanged::dispatch('rbac', 'updated');
             return response()->json(['role_key' => $data['role_key'], 'permission_key' => $data['permission_key'], 'type' => 'denied']);
         }
 

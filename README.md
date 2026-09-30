@@ -7,7 +7,27 @@ PostgreSQL exclusiva** (`RN-AI-001`) y acceso por subdominio `<slug>.<dominio>`.
 - **Stack:** Laravel 12 · PHP 8.2 · PostgreSQL 16 · [`stancl/tenancy`](https://tenancyforlaravel.com) v3 (database-per-tenant).
 - La **fuente de verdad del negocio** vive en `../documentacion-girgit/` (reglas `RN-XX-NNN`).
 
-## Requisitos
+## Actualización en tiempo real
+
+Reverb comunica todos los cambios de la API mediante `application.changed` en
+canales privados `tenant.<uuid>` y `platform`. El mensaje contiene únicamente las
+secciones modificadas; el navegador consulta los datos con sus permisos actuales.
+
+- `RealtimeServiceProvider` observa los modelos de la aplicación y los eventos de dominio.
+- `SynchronizeRealtimeChanges` agrupa los avisos por petición y cubre escrituras masivas y relaciones. Las transacciones se notifican después del commit.
+- Los cambios del catálogo de roles o planes sincronizan los permisos de los colegios mediante la cola, conservando las elecciones configurables del rector.
+- Las lecturas y su auditoría no emiten avisos, para evitar ciclos de recarga.
+- Para nuevos módulos, añadir su tema a `RealtimeChanges::resourceForPath` y al mapa `src/lib/realtime.ts` del frontend. Los temas desconocidos refrescan todo su contexto.
+
+Mantener activos `php artisan reverb:start`, `php artisan queue:listen` y
+`php artisan schedule:work`, además del servidor HTTP. `../start-all.bat` los inicia.
+No se necesita una migración para esta integración.
+
+Pruebas: `php artisan test --filter=Realtime` y, con Reverb activo, ejecutar
+`npm run test:ui:realtime` desde el frontend. La prueba del navegador usa datos
+simulados y un canal privado aislado; no modifica colegios reales.
+
+## Requisitos del entorno
 
 - PHP >= 8.2 con extensiones `pdo_pgsql` y `pgsql`
 - Composer 2.x

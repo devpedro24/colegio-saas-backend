@@ -5,12 +5,10 @@ declare(strict_types=1);
 namespace App\Events;
 
 use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class SedeCreada implements ShouldBroadcastNow
+class SedeCreada
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
@@ -19,13 +17,4 @@ class SedeCreada implements ShouldBroadcastNow
         public readonly string $colegioId,
     ) {}
 
-    public function broadcastOn(): array
-    {
-        return [new PrivateChannel("tenant.{$this->colegioId}")];
-    }
-
-    public function broadcastAs(): string
-    {
-        return 'sede.creada';
-    }
 }

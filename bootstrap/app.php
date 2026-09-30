@@ -18,6 +18,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
+        $middleware->append(\App\Http\Middleware\SynchronizeRealtimeChanges::class);
         $middleware->append(AuditRequests::class);
         // Solo el superadministrador de plataforma (rutas centrales del panel).
         $middleware->alias([

@@ -125,6 +125,7 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
         // en /api/api/... y el frontend (que llama a /api/anos-lectivos) daria 404.
         Route::middleware([InitializeTenancyByRequestData::class, 'auth:sanctum'])
             ->group(function () {
+                Route::post('/tenant-broadcasting/auth', fn (Request $request) => Broadcast::auth($request));
                 require base_path('routes/tenant_academico.php');
             });
     });

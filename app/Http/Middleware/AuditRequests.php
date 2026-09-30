@@ -17,7 +17,7 @@ class AuditRequests
     public function handle(Request $request, Closure $next): Response
     {
         $response = $next($request);
-        if (! $request->is('api/*') || $request->is('api/tenant-status', 'api/broadcasting/auth')) {
+        if (! $request->is('api/*') || $request->is('api/tenant-status', 'api/broadcasting/auth', 'api/tenant-broadcasting/auth')) {
             return $response;
         }
         $actor = $request->user();

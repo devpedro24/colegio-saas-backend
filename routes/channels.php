@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Broadcast;
 
 // Canal de plataforma: solo el superadministrador.
 Broadcast::channel('platform', function ($user) {
-    return $user && $user->role === 'superadmin';
+    return $user && ! tenant() && $user->role === 'superadmin';
 }, ['guards' => ['sanctum']]);
 
 // Canal por colegio: cualquier usuario autenticado del tenant actual.

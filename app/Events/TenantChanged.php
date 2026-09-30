@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace App\Events;
 
 use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PrivateChannel;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
@@ -15,7 +13,7 @@ use Illuminate\Queue\SerializesModels;
  * su RBAC). Se emite al canal privado `tenant.<id>` para que la sesion del rector
  * reaccione en vivo (recargar la matriz o ser expulsado si lo inhabilitaron).
  */
-class TenantChanged implements ShouldBroadcastNow
+class TenantChanged
 {
     use Dispatchable;
     use InteractsWithSockets;
@@ -27,20 +25,4 @@ class TenantChanged implements ShouldBroadcastNow
      */
     public function __construct(public string $tenantId, public string $reason) {}
 
-    /** @return array<int, PrivateChannel> */
-    public function broadcastOn(): array
-    {
-        return [new PrivateChannel('tenant.'.$this->tenantId)];
-    }
-
-    public function broadcastAs(): string
-    {
-        return 'changed';
-    }
-
-    /** @return array<string, string> */
-    public function broadcastWith(): array
-    {
-        return ['reason' => $this->reason];
-    }
 }

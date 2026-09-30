@@ -96,5 +96,8 @@ class RbacSeeder extends Seeder
         }
 
         app(PermissionRegistrar::class)->forgetCachedPermissions();
+        if (tenant()) {
+            app(\App\Support\Realtime\RealtimeChanges::class)->record((string) tenant()->getKey(), 'rbac');
+        }
     }
 }

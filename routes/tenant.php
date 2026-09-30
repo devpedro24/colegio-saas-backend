@@ -89,10 +89,10 @@ Route::middleware([
         Route::post('/onboarding/logo', [OnboardingController::class, 'uploadLogo']);
         Route::post('/account/password', [AccountController::class, 'changePassword']);
 
-        Route::middleware(EnsureOnboardingComplete::class)->group(function () {
-
-        // Autorizacion de canales privados (WebSockets) del colegio (tenant actual).
+        // Onboarding also receives changes from other sessions.
         Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request));
+
+        Route::middleware(EnsureOnboardingComplete::class)->group(function () {
 
         // MFA TOTP (segundo factor) del usuario del colegio.
         Route::post('/mfa/setup', [MfaController::class, 'setup']);
