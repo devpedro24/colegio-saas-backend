@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\Platform\PlanController;
 use App\Http\Controllers\Api\Platform\RbacController;
 use App\Http\Controllers\Api\Platform\StorageController;
 use App\Http\Middleware\EnsureMfaReady;
+use App\Support\Account\AccountPresenter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -36,6 +37,7 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
         // Descarga de archivos del colegio con URL FIRMADA de corta vida
         // (RN-AC-004): la firma incluye el tenant dueno para impedir cruces.
         Route::get('/storage/{file}/download', [StorageController::class, 'download'])
+            ->where('file', '[A-Za-z0-9_-]{24}')
             ->middleware('signed')
             ->name('storage.file');
 
@@ -46,7 +48,7 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
         Route::middleware(['auth:sanctum', EnsureMfaReady::class])->group(function () {
             Route::get('/me', [PlatformAuthController::class, 'me']);
             Route::post('/logout', [PlatformAuthController::class, 'logout']);
-            Route::get('/user', fn (Request $request) => $request->user());
+            Route::get('/user', fn (Request $request) => response()->json(AccountPresenter::user($request->user())));
 
             // Autorizacion de canales privados (WebSockets) para el superadmin.
             Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request));
@@ -72,37 +74,38 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
                 Route::get('/platform/auditoria/colegios', [AuditController::class, 'colegios']);
                 Route::get('/colegios', [ColegioController::class, 'index']);
                 Route::post('/colegios', [ColegioController::class, 'store']);
-                Route::get('/colegios/{id}', [ColegioController::class, 'show']);
-                Route::put('/colegios/{id}', [ColegioController::class, 'update']);
-                Route::patch('/colegios/{id}/status', [ColegioController::class, 'updateStatus']);
-                Route::patch('/colegios/{id}/plan', [ColegioController::class, 'updatePlan']);
-                Route::post('/colegios/{id}/reset-password', [ColegioController::class, 'resetRectorPassword']);
-                Route::get('/colegios/{id}/rector-password', [ColegioController::class, 'rectorPassword']);
+                Route::get('/colegios/{slug}', [ColegioController::class, 'show'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::put('/colegios/{slug}', [ColegioController::class, 'update'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::patch('/colegios/{slug}/status', [ColegioController::class, 'updateStatus'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::patch('/colegios/{slug}/plan', [ColegioController::class, 'updatePlan'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::post('/colegios/{slug}/reset-password', [ColegioController::class, 'resetRectorPassword'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::get('/colegios/{slug}/rector-password', [ColegioController::class, 'rectorPassword'])->where('slug', '[a-z][a-z0-9-]*');
 
                 // Sedes de un colegio gestionadas por el superadmin (viven en la BD del tenant).
-                Route::get('/colegios/{id}/sedes', [ColegioSedeController::class, 'index']);
-                Route::post('/colegios/{id}/sedes', [ColegioSedeController::class, 'store']);
-                Route::put('/colegios/{id}/sedes/{sedeId}', [ColegioSedeController::class, 'update']);
-                Route::delete('/colegios/{id}/sedes/{sedeId}', [ColegioSedeController::class, 'destroy']);
+                Route::get('/colegios/{slug}/sedes', [ColegioSedeController::class, 'index'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::post('/colegios/{slug}/sedes', [ColegioSedeController::class, 'store'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::put('/colegios/{slug}/sedes/{sedeToken}', [ColegioSedeController::class, 'update'])->where(['slug' => '[a-z][a-z0-9-]*', 'sedeToken' => '[A-Za-z0-9_-]{24}']);
+                Route::delete('/colegios/{slug}/sedes/{sedeToken}', [ColegioSedeController::class, 'destroy'])->where(['slug' => '[a-z][a-z0-9-]*', 'sedeToken' => '[A-Za-z0-9_-]{24}']);
 
                 // Suplantacion / cambio de contexto: entrar y salir de un colegio.
                 Route::post('/platform/impersonar', [ImpersonationController::class, 'impersonar']);
                 Route::post('/platform/impersonar/salir', [ImpersonationController::class, 'salir']);
+                Route::get('/platform/impersonar/estado', [ImpersonationController::class, 'estado']);
 
                 // Planes / membresias (con su catalogo cerrado de features).
                 Route::get('/plans', [PlanController::class, 'index']);
                 Route::post('/plans', [PlanController::class, 'store']);
-                Route::get('/plans/{id}', [PlanController::class, 'show']);
-                Route::put('/plans/{id}', [PlanController::class, 'update']);
+                Route::get('/plans/{key}', [PlanController::class, 'show'])->where('key', '[a-z][a-z0-9-]*');
+                Route::put('/plans/{key}', [PlanController::class, 'update'])->where('key', '[a-z][a-z0-9-]*');
 
                 // Catalogo RBAC editable (roles, permisos y matriz global).
                 Route::get('/rbac/catalog', [RbacController::class, 'catalog']);
                 Route::post('/rbac/permissions', [RbacController::class, 'storePermission']);
-                Route::put('/rbac/permissions/{id}', [RbacController::class, 'updatePermission']);
-                Route::delete('/rbac/permissions/{id}', [RbacController::class, 'destroyPermission']);
+                Route::put('/rbac/permissions/{key}', [RbacController::class, 'updatePermission'])->where('key', '[a-z][a-z0-9._-]*');
+                Route::delete('/rbac/permissions/{key}', [RbacController::class, 'destroyPermission'])->where('key', '[a-z][a-z0-9._-]*');
                 Route::post('/rbac/roles', [RbacController::class, 'storeRole']);
-                Route::put('/rbac/roles/{id}', [RbacController::class, 'updateRole']);
-                Route::delete('/rbac/roles/{id}', [RbacController::class, 'destroyRole']);
+                Route::put('/rbac/roles/{key}', [RbacController::class, 'updateRole'])->where('key', '[a-z][a-z0-9_]*');
+                Route::delete('/rbac/roles/{key}', [RbacController::class, 'destroyRole'])->where('key', '[a-z][a-z0-9_]*');
                 Route::put('/rbac/matrix', [RbacController::class, 'setMatrixCell']);
             });
         });
@@ -110,13 +113,11 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
         /*
          | Acceso a las rutas del COLEGIO desde el panel central (SIN subdominio).
          |
-         | El superadmin suplantando llega a los MISMOS controladores academicos
-         | del colegio usando: Authorization: Bearer <token de impersonacion> +
-         | header 'X-Tenant: <colegio.id>'. El orden importa:
-         |   1. InitializeTenancyByRequestData resuelve el tenant por el header
-         |      'X-Tenant' (= tenant key/uuid) y cambia la conexion a la BD del
-         |      colegio ANTES de autenticar.
-         |   2. auth:sanctum busca el token en la BD del colegio (usuario sombra).
+         | El superadmin suplantando llega a los MISMOS controladores académicos
+         | mediante la sesión de suplantación en cookie HttpOnly. El orden importa:
+         |   1. InitializeTenancyByRequestData resuelve el colegio a partir de
+         |      la sesión y cambia la conexión antes de autenticar.
+         |   2. auth:sanctum identifica al usuario sombra en la BD del colegio.
          |
          | Reutiliza routes/tenant_academico.php (las MISMAS rutas del subdominio).
          */

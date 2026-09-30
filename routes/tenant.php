@@ -45,7 +45,6 @@ Route::middleware([
             'contexto' => 'tenant',
             'colegio' => $tenant->name,
             'slug' => $tenant->slug,
-            'tenant_id' => $tenant->id,
             'plan' => $tenant->plan,
             'estado' => $tenant->status,
         ]);
@@ -87,7 +86,7 @@ Route::middleware([
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/onboarding/status', [OnboardingController::class, 'status']);
         Route::put('/onboarding/institution', [OnboardingController::class, 'institution']);
-        Route::post('/onboarding/logo', [OnboardingController::class, 'uploadLogo']);
+        Route::post('/onboarding/logo', [OnboardingController::class, 'uploadLogo'])->middleware('throttle:school-uploads');
         Route::post('/account/password', [AccountController::class, 'changePassword']);
 
         // Onboarding also receives changes from other sessions.

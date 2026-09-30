@@ -8,6 +8,7 @@ use App\Http\Middleware\SynchronizeRealtimeChanges;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Support\Realtime\TenantChannelName;
 use App\Support\Realtime\RealtimeChanges;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
@@ -123,7 +124,7 @@ class RealtimeSyncTest extends TestCase
     {
         $event = new ApplicationChanged('school-a', ['academic', 'schedule']);
         $this->assertSame(['resources' => ['academic', 'schedule']], $event->broadcastWith());
-        $this->assertSame('private-tenant.school-a', $event->broadcastOn()[0]->name);
+        $this->assertSame('private-tenant.'.TenantChannelName::tokenForId('school-a'), $event->broadcastOn()[0]->name);
         $this->assertSame('private-platform', (new ApplicationChanged(null, ['schools']))->broadcastOn()[0]->name);
     }
 
@@ -136,8 +137,10 @@ class RealtimeSyncTest extends TestCase
         foreach (Broadcast::getChannels() as $name => $callback) {
             $broadcaster->channel($name, $callback, ['guards' => ['sanctum']]);
         }
-        $user = new User(['role' => 'rector']);
-        foreach (['private-tenant.realtime-a' => true, 'private-tenant.realtime-b' => false, 'private-platform' => false] as $channel => $allowed) {
+        $user = new User(['role' => 'rector', 'status' => User::STATUS_ACTIVE]);
+        foreach (['private-tenant.'.TenantChannelName::tokenForId('realtime-a') => true,
+            'private-tenant.'.TenantChannelName::tokenForId('realtime-b') => false,
+            'private-platform' => false] as $channel => $allowed) {
             $request = Request::create('/api/broadcasting/auth', 'POST', ['socket_id' => '123.456', 'channel_name' => $channel]);
             $request->setUserResolver(fn () => $user);
             try {
@@ -150,7 +153,7 @@ class RealtimeSyncTest extends TestCase
         }
         tenancy()->end();
         $request = Request::create('/api/broadcasting/auth', 'POST', ['socket_id' => '123.456', 'channel_name' => 'private-platform']);
-        $request->setUserResolver(fn () => new User(['role' => 'superadmin']));
+        $request->setUserResolver(fn () => new User(['role' => 'superadmin', 'status' => User::STATUS_ACTIVE]));
         $this->assertNotEmpty($broadcaster->auth($request));
     }
 }

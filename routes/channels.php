@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Broadcast;
+use App\Models\User;
+use App\Support\Realtime\TenantChannelName;
 
 /*
 |--------------------------------------------------------------------------
@@ -19,10 +21,11 @@ use Illuminate\Support\Facades\Broadcast;
 
 // Canal de plataforma: solo el superadministrador.
 Broadcast::channel('platform', function ($user) {
-    return $user && ! tenant() && $user->role === 'superadmin';
+    return $user && $user->status === User::STATUS_ACTIVE && ! tenant() && $user->role === 'superadmin';
 }, ['guards' => ['sanctum']]);
 
 // Canal por colegio: cualquier usuario autenticado del tenant actual.
-Broadcast::channel('tenant.{tenantId}', function ($user, string $tenantId) {
-    return $user && tenant() && (string) tenant()->getKey() === $tenantId;
+Broadcast::channel('tenant.{channelToken}', function ($user, string $channelToken) {
+    return $user && $user->status === User::STATUS_ACTIVE && tenant()
+        && hash_equals(TenantChannelName::tokenForId((string) tenant()->getKey()), $channelToken);
 }, ['guards' => ['sanctum']]);

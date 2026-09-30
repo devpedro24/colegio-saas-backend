@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Support\Storage\ClamAvScanner;
 use App\Support\Storage\FileScanner;
 use App\Support\Storage\NullScanner;
+use App\Support\Storage\RejectingScanner;
 use App\Tenancy\TenantDatabaseName;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -22,12 +23,12 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        // Pipeline de antivirus como ADAPTADOR (D-STORAGE): hoy un stub
-        // aprobador; al enchufar ClamAV se cambia este binding (config/storage.php).
+        // En producción nunca se permite subir archivos sin escaneo real.
         $this->app->bind(FileScanner::class, function () {
             return match (config('storage.scanner')) {
                 'clamav' => app(ClamAvScanner::class),
-                default => new NullScanner,
+                'null' => $this->app->environment('production') ? new RejectingScanner : new NullScanner,
+                default => new RejectingScanner,
             };
         });
     }
@@ -55,6 +56,14 @@ class AppServiceProvider extends ServiceProvider
         });
         RateLimiter::for('mfa', fn (Request $request) => Limit::perMinute(5)
             ->by($request->getHost().'|'.$request->user()?->id.'|'.$request->path()));
+        RateLimiter::for('school-uploads', function (Request $request): array {
+            $principal = (string) (tenant()?->getTenantKey() ?? 'central').'|'.$request->user()?->id;
+
+            return [
+                Limit::perMinute(5)->by('upload-minute|'.$principal),
+                Limit::perDay(100)->by('upload-day|'.$principal),
+            ];
+        });
         // Nombre de BD del colegio: tenant_<nombre>_<id corto> (RN-AI-001).
         DatabaseConfig::generateDatabaseNamesUsing(
             fn ($tenant) => TenantDatabaseName::for($tenant)

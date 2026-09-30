@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\AuditRequests;
 use App\Http\Middleware\EnsurePlatformUser;
+use App\Http\Middleware\ResolveBrowserSession;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -18,6 +19,10 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
+        // API clients without an Accept header must receive JSON 401, not a
+        // redirect to Laravel's nonexistent web login route.
+        $middleware->redirectGuestsTo(fn (Request $request) => $request->is('api/*') ? null : '/auth');
+        $middleware->prepend(ResolveBrowserSession::class);
         $middleware->append(\App\Http\Middleware\SynchronizeRealtimeChanges::class);
         $middleware->append(AuditRequests::class);
         // Solo el superadministrador de plataforma (rutas centrales del panel).
