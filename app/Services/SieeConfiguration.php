@@ -24,6 +24,6 @@ final class SieeConfiguration
         $method = MetodoAprobacion::where('ano_lectivo_id', $year->id)->find($config['metodo_id']);
         abort_unless($scale && $method && $scale->tipo === 'numerica', 422, 'Selecciona una escala numérica y un método de aprobación del año en la configuración SIEE.');
 
-        return [...$config, 'valor_min' => $scale->valor_min, 'valor_max' => $scale->valor_max, 'decimales' => $scale->decimales, 'nota_minima' => $method->nota_minima, 'version' => $year->siee_version];
+        return [...$config, 'valor_min' => $scale->valor_min, 'valor_max' => $scale->valor_max, 'decimales' => $scale->decimales, 'nota_minima' => $method->nota_minima];
     }
 }

@@ -86,7 +86,7 @@ final class GradebookService
     public function calculate(array $node, array $config): array
     {
         try {
-            return ['estado' => 'calculado', ...app(GradeCalculationService::class)->result($node, $config), 'siee_version' => $config['version']];
+            return ['estado' => 'calculado', ...app(GradeCalculationService::class)->result($node, $config)];
         } catch (ValidationException $error) {
             return ['estado' => 'pendiente', 'motivo' => collect($error->errors())->flatten()->first(), 'trace' => $node];
         }

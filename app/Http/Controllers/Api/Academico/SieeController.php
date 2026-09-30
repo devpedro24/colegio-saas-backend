@@ -28,7 +28,6 @@ class SieeController extends Controller
         return response()->json(['data' => [
             'editable' => ! $year->estaCerrado() && ! $year->periodos()->where('estado', 'cerrado')->exists(),
             'configuracion' => array_replace(SieeConfiguration::DEFAULTS, $year->siee ?? []),
-            'version' => $year->siee_version,
             'escalas' => EscalaValorativa::where('ano_lectivo_id', $id)->get(),
             'metodos' => MetodoAprobacion::where('ano_lectivo_id', $id)->get(),
             'curriculo' => DB::table('materias_curriculares')->where('ano_lectivo_id', $id)->get(),
@@ -63,7 +62,7 @@ class SieeController extends Controller
             $method = MetodoAprobacion::findOrFail($data['metodo_id']);
             abort_unless($scale->tipo === 'numerica' && $scale->valor_min < $scale->valor_max && $method->nota_minima >= $scale->valor_min && $method->nota_minima <= $scale->valor_max, 422, 'La nota aprobatoria debe pertenecer a la escala numérica.');
             $previous = $year->siee;
-            $year->update(['siee' => $data, 'siee_version' => $year->siee_version + 1]);
+            $year->update(['siee' => $data]);
             AuditLogger::tenant($request->user(), 'UPDATE', 'siee', (string) $id, $previous, $data);
         });
 

@@ -51,7 +51,6 @@ final class DuplicarAnoLectivoService
                 ...$yearData,
                 'estado' => AnoLectivo::ESTADO_PLANIFICADO,
                 'siee' => null,
-                'siee_version' => 1,
             ]);
             $maps = [];
             $copy = function (string $key, string $model, array $foreign = []) use ($source, $target, $options, &$maps): void {

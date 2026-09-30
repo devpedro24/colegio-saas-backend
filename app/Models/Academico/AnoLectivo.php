@@ -60,7 +60,6 @@ class AnoLectivo extends Model
      */
     protected $fillable = [
         'siee',
-        'siee_version',
         'nombre',
         'tipo_calendario',
         'fecha_inicio',
@@ -77,7 +76,6 @@ class AnoLectivo extends Model
     {
         return [
             'siee' => 'array',
-            'siee_version' => 'integer',
             'fecha_inicio' => 'date',
             'fecha_fin' => 'date',
             'num_periodos' => 'integer',
