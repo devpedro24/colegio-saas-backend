@@ -1,0 +1,16 @@
+[Unit]
+Description=Colegio queue %i
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/srv/colegio/backend
+ExecStart=/usr/bin/php artisan queue:work redis --queue=%i --sleep=1 --tries=3 --backoff=5 --timeout=60 --memory=256 --max-time=3600
+Restart=always
+RestartSec=5
+TimeoutStopSec=90
+MemoryMax=512M
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

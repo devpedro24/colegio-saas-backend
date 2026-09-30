@@ -1,0 +1,59 @@
+# Load inside nginx http {}. Replace domains, certificate paths and release paths.
+# No API proxy cache: responses remain tenant/session scoped.
+log_format colegio_safe '$request_method $uri $status $request_time $upstream_response_time';
+map $http_upgrade $colegio_connection { default upgrade; '' close; }
+
+server {
+    listen 80;
+    server_name colegio.example *.colegio.example;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name colegio.example *.colegio.example;
+    ssl_certificate /etc/letsencrypt/live/colegio.example/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/colegio.example/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    root /srv/colegio/frontend/dist;
+    index index.html;
+    client_max_body_size 30m;
+    access_log /var/log/nginx/colegio-access.log colegio_safe;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    gzip on;
+    gzip_vary on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types text/css application/javascript image/svg+xml;
+
+    location ^~ /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control 'public, max-age=31536000, immutable';
+        add_header X-Content-Type-Options nosniff always;
+    }
+    location = /index.html { add_header Cache-Control 'no-cache'; }
+    location / { try_files $uri $uri/ /index.html; }
+
+    location ~ ^/(api(?:/|$)|up$) {
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME /srv/colegio/backend/public/index.php;
+        fastcgi_param SCRIPT_NAME /index.php;
+        fastcgi_param DOCUMENT_ROOT /srv/colegio/backend/public;
+        fastcgi_param HTTPS on;
+        fastcgi_param HTTP_HOST $http_host;
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_read_timeout 60s;
+        fastcgi_hide_header X-Powered-By;
+    }
+    location ^~ /app/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $colegio_connection;
+        proxy_read_timeout 90s;
+    }
+    location ^~ /apps/ { deny all; }
+    location ~ /\. { deny all; }
+    location ~ \.php$ { return 404; }
+}

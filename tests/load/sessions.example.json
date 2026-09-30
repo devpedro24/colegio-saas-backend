@@ -1,0 +1,11 @@
+[
+  {
+    "origin": "https://colegio.staging.example",
+    "cookie": "REEMPLAZAR_POR_SESION_TEMPORAL_DE_STAGING_NO_SUBIR_A_GIT",
+    "paths": [
+      "/api/anos-lectivos?opaque=1",
+      "/api/plan-estudios/areas?opaque=1&ano_lectivo_token=REEMPLAZAR_SELECTOR&per_page=20",
+      "/api/horarios?opaque=1&vista=horarios&ano_lectivo_token=REEMPLAZAR_SELECTOR&grupo_token=REEMPLAZAR_GRUPO"
+    ]
+  }
+]
