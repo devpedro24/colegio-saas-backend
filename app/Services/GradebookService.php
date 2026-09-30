@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Support\Audit\AuditLogger;
 use Brick\Math\BigDecimal;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 
 final class GradebookService
@@ -82,6 +83,13 @@ final class GradebookService
     {
         $components = ComponenteEvaluacion::with('actividades')->where('asignacion_id', $assignment->id)->where('periodo_id', $period->id)->get();
         $grades = Calificacion::where('matricula_id', $enrollment->id)->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get()->keyBy('actividad_id');
+
+        return $this->resultFromLoaded($components, $grades, $config);
+    }
+
+    /** Pure calculation over already authorized, scoped data. No per-student queries. */
+    public function resultFromLoaded(Collection $components, Collection $grades, array $config): array
+    {
         $inputs = $components->map(fn ($component) => [
             'reference' => 'componente:'.$component->id, 'label' => $component->nombre, 'weight' => $component->peso,
             'node' => ['mode' => $component->modo, 'inputs' => $component->actividades->map(fn ($activity) => [
@@ -107,10 +115,17 @@ final class GradebookService
         $year = AnoLectivo::findOrFail($enrollment->ano_lectivo_id);
         $config = app(SieeConfiguration::class)->resolve($year);
         $periods = Periodo::where('ano_lectivo_id', $year->id)->orderBy('orden')->get();
-        $subjects = AsignacionDocente::with('materia.area')->where('grupo_id', $enrollment->grupo_id)->get();
+        $subjects = AsignacionDocente::with('materia.area')->where('grupo_id', $enrollment->grupo_id)
+            ->where('ano_lectivo_id', $year->id)->get();
         $curriculum = DB::table('materias_curriculares')->where('ano_lectivo_id', $year->id)->where('grado_id', $enrollment->grupo->grado_id)->get()->keyBy('materia_id');
-        $rows = $subjects->map(function ($assignment) use ($periods, $enrollment, $config, $curriculum, $year) {
-            $results = $periods->map(fn ($period) => ['periodo_id' => $period->id, ...$this->subjectResult($assignment, $enrollment, $period, $config)])->all();
+        $components = ComponenteEvaluacion::with('actividades')->whereIn('asignacion_id', $subjects->modelKeys())
+            ->whereIn('periodo_id', $periods->modelKeys())->get();
+        $grades = Calificacion::where('matricula_id', $enrollment->id)
+            ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->modelKeys()))->get()->keyBy('actividad_id');
+        $componentsByPeriod = $components->groupBy(fn ($c) => $c->asignacion_id.':'.$c->periodo_id);
+        $rows = $subjects->map(function ($assignment) use ($periods, $config, $curriculum, $year, $componentsByPeriod, $grades) {
+            $results = $periods->map(fn ($period) => ['periodo_id' => $period->id,
+                ...$this->resultFromLoaded($componentsByPeriod->get($assignment->id.':'.$period->id, collect()), $grades, $config)])->all();
             $annual = $this->annual($results, $periods, $year, $config);
             $entry = $curriculum->get($assignment->materia_id);
 
@@ -120,11 +135,13 @@ final class GradebookService
         });
         // El currículo es obligatorio aunque falte asignar docente. No promediar
         // silenciosamente solo las materias que tienen asignación o calificaciones.
-        foreach ($curriculum->except($subjects->pluck('materia_id')->all()) as $entry) {
+        $missingSubjects = $curriculum->except($subjects->pluck('materia_id')->all());
+        $subjectNames = DB::table('materias')->whereIn('id', $missingSubjects->keys())->pluck('nombre', 'id');
+        foreach ($missingSubjects as $entry) {
             $pending = ['estado' => 'pendiente', 'motivo' => 'La asignatura aún no tiene docente asignado.'];
             $rows->push([
                 'materia_id' => $entry->materia_id,
-                'nombre' => DB::table('materias')->where('id', $entry->materia_id)->value('nombre'),
+                'nombre' => $subjectNames->get($entry->materia_id),
                 'area_id' => $entry->area_id, 'peso_area' => $entry->peso_area,
                 'periodos' => $periods->map(fn ($period) => ['periodo_id' => $period->id, ...$pending])->all(),
                 'anual' => $pending,
@@ -132,6 +149,7 @@ final class GradebookService
         }
         $areas = [];
         if ($config['usar_areas']) {
+            $areaNames = DB::table('areas')->whereIn('id', $rows->pluck('area_id')->filter()->unique())->pluck('nombre', 'id');
             foreach ($rows->whereNotNull('area_id')->groupBy('area_id') as $areaId => $members) {
                 $areaResults = $periods->map(function ($period) use ($members, $config) {
                     $inputs = $members->map(function ($member) use ($period) {
@@ -142,7 +160,7 @@ final class GradebookService
 
                     return ['periodo_id' => $period->id, ...$this->calculate(['mode' => $config['modo_area'], 'inputs' => $inputs], $config)];
                 })->all();
-                $areas[] = ['area_id' => $areaId, 'nombre' => DB::table('areas')->where('id', $areaId)->value('nombre'), 'periodos' => $areaResults, 'anual' => $this->annual($areaResults, $periods, $year, $config)];
+                $areas[] = ['area_id' => $areaId, 'nombre' => $areaNames->get($areaId), 'periodos' => $areaResults, 'anual' => $this->annual($areaResults, $periods, $year, $config)];
             }
         }
 

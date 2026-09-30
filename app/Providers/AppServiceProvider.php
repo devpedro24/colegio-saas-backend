@@ -23,6 +23,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        $this->app->scoped(\App\Support\AcademicTokenIndex::class);
+        $this->app->scoped(\App\Support\RequestPerformance::class);
         // En producción nunca se permite subir archivos sin escaneo real.
         $this->app->bind(FileScanner::class, function () {
             return match (config('storage.scanner')) {
@@ -38,6 +40,17 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        if (config('performance.enabled')) {
+            \Illuminate\Support\Facades\DB::listen(function (\Illuminate\Database\Events\QueryExecuted $query): void {
+                app(\App\Support\RequestPerformance::class)->record($query->time);
+            });
+        }
+        \Illuminate\Support\Facades\Event::listen('eloquent.created: *', function (string $event, array $payload): void {
+            $model = $payload[0] ?? null;
+            if ($model instanceof \Illuminate\Database\Eloquent\Model) {
+                app(\App\Support\AcademicTokenIndex::class)->created($model);
+            }
+        });
         ResetPassword::createUrlUsing(function (User $user, string $token): string {
             $base = rtrim(config('frontend.url'), '/');
             if (tenancy()->initialized) {

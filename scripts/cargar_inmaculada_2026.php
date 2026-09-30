@@ -371,6 +371,9 @@ $result = $tenant->run(function (): array {
             }
         }
 
+        // This importer uses raw inserts rather than Eloquent model events.
+        app(\App\Support\AcademicTokenIndex::class)->rebuild();
+
         return [
             'ano_lectivo' => $yearId,
             'estado_ano' => $yearInProgress ? 'en_curso' : 'planificado',

@@ -23,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // redirect to Laravel's nonexistent web login route.
         $middleware->redirectGuestsTo(fn (Request $request) => $request->is('api/*') ? null : '/auth');
         $middleware->prepend(ResolveBrowserSession::class);
+        $middleware->prepend(\App\Http\Middleware\MeasureRequestPerformance::class);
         $middleware->append(\App\Http\Middleware\SynchronizeRealtimeChanges::class);
         $middleware->append(AuditRequests::class);
         // Solo el superadministrador de plataforma (rutas centrales del panel).

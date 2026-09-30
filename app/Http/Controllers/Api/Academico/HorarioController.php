@@ -205,13 +205,8 @@ class HorarioController extends Controller
             ->orderBy($sort === 'nombre' ? $name : $sort)->orderBy('id')->limit(50)->get();
         if ($resource && $tokenParam && is_string($request->query($tokenParam))) {
             $token = $request->query($tokenParam);
-            if (preg_match('/^[A-Za-z0-9_-]{24}$/', $token)) {
-                foreach ((clone $base)->select('id')->cursor() as $candidate) {
-                    if (hash_equals(OpaqueUrlToken::for($resource, $candidate->id), $token)) {
-                        $selectedIds[] = $candidate->id;
-                        break;
-                    }
-                }
+            if ($candidate = OpaqueUrlToken::find($resource, $token, clone $base)) {
+                $selectedIds[] = $candidate->id;
             }
         }
         foreach (array_unique(array_filter($selectedIds)) as $id) {

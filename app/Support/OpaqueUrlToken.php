@@ -23,13 +23,25 @@ final class OpaqueUrlToken
             return null;
         }
 
-        foreach ($query->cursor() as $model) {
-            if (hash_equals(self::for($resource, $model->getKey()), $token)) {
-                return $model;
-            }
-        }
+        $id = $query->getModel()->getConnection()->table(AcademicTokenIndex::TABLE)
+            ->where('resource', $resource)->where('token', $token)->value('record_id');
 
-        return null;
+        return $id !== null && hash_equals(self::for($resource, $id), $token)
+            ? $query->whereKey($id)->first() : null;
+    }
+
+    /** Resolve a bounded batch, then reapply the caller's original scope. */
+    public static function ids(string $resource, array $tokens, Builder $query): array
+    {
+        if (! tenancy()->initialized || $tokens === []) {
+            return [];
+        }
+        $rows = $query->getModel()->getConnection()->table(AcademicTokenIndex::TABLE)
+            ->where('resource', $resource)->whereIn('token', $tokens)->pluck('record_id', 'token');
+        $allowed = $query->whereKey($rows->values()->all())->pluck($query->getModel()->getQualifiedKeyName())->flip();
+
+        return $rows->filter(fn ($id, $token) => isset($allowed[$id])
+            && hash_equals(self::for($resource, $id), $token))->all();
     }
 
     public static function for(string $resource, int|string $id): string

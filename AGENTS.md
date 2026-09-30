@@ -5,6 +5,6 @@
 - Las sesiones de navegador usan cookies HttpOnly, host-only, SameSite y Secure bajo HTTPS, más CSRF y comprobación de origen. No emitir nuevos bearer tokens a JavaScript ni guardar credenciales, tokens, IDs internos o datos personales en `localStorage` o `sessionStorage`.
 - Las respuestas públicas se construyen con presentadores explícitos; no devolver modelos Eloquent completos. Añadir pruebas que comprueben ausencia de IDs internos, rechazo de rutas numéricas, acceso entre colegios y permisos.
 - Los archivos subidos deben pasar por MIME, tamaño, cuota y escáner. En producción, si el escáner falla o no está configurado, la carga se rechaza.
-- El contrato académico público exige selectores opacos por defecto; una cabecera de compatibilidad numérica existe solo en `testing` para pruebas históricas. No introducir rutas ni cuerpos nuevos con IDs internos. La búsqueda de algunos tokens aún es lineal y debe pasar a índice antes de catálogos grandes.
+- El contrato académico público exige selectores opacos por defecto; una cabecera de compatibilidad numérica existe solo en `testing` para pruebas históricas. No introducir rutas ni cuerpos nuevos con IDs internos. Resolver selectores con `OpaqueUrlToken` y el índice `academic_public_tokens`; conservar siempre el scope autorizado. Los importadores SQL deben reconstruir el índice; las altas Eloquent lo actualizan automáticamente.
 
 Estado, justificación y pendientes: [docs/SEGURIDAD_API.md](docs/SEGURIDAD_API.md).

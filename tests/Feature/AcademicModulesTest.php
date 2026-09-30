@@ -1974,6 +1974,36 @@ class AcademicModulesTest extends TestCase
         return [$period, $enrollment, $activity];
     }
 
+    public function test_gradebook_reads_grades_once_per_page_and_preserves_calculated_results(): void
+    {
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        app(GradebookService::class)->saveGrades($this->teacher, $this->assignment, $period->id, [[
+            'actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+            'valor' => '4.5', 'version' => 0, 'motivo' => 'Evaluación inicial',
+        ]]);
+        for ($i = 0; $i < 10; $i++) {
+            $student = User::create(['name' => 'Estudiante '.$i, 'email' => 'batch'.$i.'@test.test',
+                'password' => 'Student123456', 'role' => 'estudiante', 'status' => 'active']);
+            Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+                'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        }
+        $expected = app(GradebookService::class)->subjectResult($this->assignment, $enrollment, $period,
+            app(SieeConfiguration::class)->resolve($this->year->fresh()));
+        $request = Request::create('/evaluacion/planillas', 'GET');
+        $request->setUserResolver(fn () => $this->teacher);
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        $result = app(EvaluacionController::class)->planilla($request, $this->assignment->id, $period->id)->getData(true)['data'];
+        $queries = collect(DB::getQueryLog());
+        DB::disableQueryLog();
+        $this->assertCount(11, $result['resultados']);
+        $this->assertSame($expected['exact_value'], $result['resultados'][0]['exact_value']);
+        $this->assertSame('pendiente', $result['resultados'][1]['estado']);
+        foreach (['calificaciones', 'componentes_evaluacion', 'actividades_evaluacion'] as $table) {
+            $this->assertSame(1, $queries->filter(fn ($q) => str_contains($q['query'], 'from "'.$table.'"'))->count(), $table);
+        }
+    }
+
     public function test_evaluation_opaque_contract_covers_catalog_sheet_writes_and_report(): void
     {
         $this->withoutMiddleware(EnsureOnboardingComplete::class);

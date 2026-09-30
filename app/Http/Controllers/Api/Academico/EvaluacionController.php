@@ -142,16 +142,7 @@ class EvaluacionController extends Controller
 
     private function selectedByToken(\Illuminate\Database\Eloquent\Builder $query, string $resource, mixed $token): ?\Illuminate\Database\Eloquent\Model
     {
-        if (! is_string($token) || ! preg_match('/^[A-Za-z0-9_-]{24}$/', $token)) {
-            return null;
-        }
-        foreach ((clone $query)->select('id')->cursor() as $candidate) {
-            if (hash_equals(OpaqueUrlToken::for($resource, $candidate->id), $token)) {
-                return (clone $query)->find($candidate->id);
-            }
-        }
-
-        return null;
+        return OpaqueUrlToken::find($resource, $token, clone $query);
     }
 
     public function matricular(Request $request): JsonResponse
@@ -191,6 +182,12 @@ class EvaluacionController extends Controller
                 $student->where('name', 'like', '%'.trim((string) $request->query('search')).'%')))
             ->orderBy('id'), $request);
         $enrollments = $enrollmentPage->getCollection();
+        $grades = Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))
+            ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get();
+        $gradesByEnrollment = $grades->groupBy('matricula_id');
+        $results = $enrollments->mapWithKeys(fn (Matricula $enrollment) => [$enrollment->id =>
+            $this->book->resultFromLoaded($components,
+                $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $config)]);
 
         if ($request->boolean('opaque')) {
             return response()->json(['data' => [
@@ -199,12 +196,10 @@ class EvaluacionController extends Controller
                 'componentes' => $components->map(PublicEval::component(...)),
                 'matriculas' => $enrollments->map(PublicEval::enrollment(...)),
                 'pagination' => ['matriculas' => $this->paginationMeta($enrollmentPage)],
-                'calificaciones' => Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))
-                    ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))
-                    ->get()->map(PublicEval::grade(...)),
+                'calificaciones' => $grades->map(PublicEval::grade(...)),
                 'resultados' => $enrollments->map(fn (Matricula $enrollment) => [
                     'matricula_token' => PublicEval::token('matricula', $enrollment->id),
-                    ...PublicEval::result($this->book->subjectResult($assignment, $enrollment, $period, $config)),
+                    ...PublicEval::result($results->get($enrollment->id)),
                 ]),
             ]]);
         }
@@ -223,7 +218,7 @@ class EvaluacionController extends Controller
                 ...$enrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $enrollment->id),
             ]),
             'pagination' => ['matriculas' => $this->paginationMeta($enrollmentPage)],
-            'calificaciones' => Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get()
+            'calificaciones' => $grades
                 ->map(fn (Calificacion $grade) => [...$grade->toArray(),
                     'matricula_token' => OpaqueUrlToken::for('matricula', $grade->matricula_id),
                     'actividad_token' => OpaqueUrlToken::for('actividad-evaluacion', $grade->actividad_id),
@@ -231,7 +226,7 @@ class EvaluacionController extends Controller
             'resultados' => $enrollments->map(fn (Matricula $enrollment) => [
                 'matricula_id' => $enrollment->id,
                 'matricula_token' => OpaqueUrlToken::for('matricula', $enrollment->id),
-                ...$this->book->subjectResult($assignment, $enrollment, $period, $config),
+                ...$results->get($enrollment->id),
             ]),
         ]]);
     }

@@ -92,21 +92,8 @@ final class ResolveAcademicInputIdentifiers
                 || count($tokens) !== count(array_unique($tokens))) {
                 throw ValidationException::withMessages(['grupo_tokens' => 'Selecciona grupos válidos y sin duplicados.']);
             }
-            $remaining = array_fill_keys($tokens, true);
-            $matches = [];
-            if ($remaining !== []) {
-                foreach (Grupo::query()->cursor() as $group) {
-                    $token = OpaqueUrlToken::for('grupo', $group->id);
-                    if (isset($remaining[$token])) {
-                        $matches[$token] = $group->id;
-                        unset($remaining[$token]);
-                        if ($remaining === []) {
-                            break;
-                        }
-                    }
-                }
-            }
-            if ($remaining !== []) {
+            $matches = OpaqueUrlToken::ids('grupo', $tokens, Grupo::query());
+            if (count($matches) !== count($tokens)) {
                 throw ValidationException::withMessages(['grupo_tokens' => 'Un grupo no pertenece a este colegio.']);
             }
             $ids = array_map(fn ($token) => $matches[$token], $tokens);
@@ -129,20 +116,8 @@ final class ResolveAcademicInputIdentifiers
                     }
                     $remaining[$note[$field]] = true;
                 }
-                $matches = [];
-                if ($remaining !== []) {
-                    foreach ($modelClass::query()->cursor() as $model) {
-                        $token = OpaqueUrlToken::for($resource, $model->getKey());
-                        if (isset($remaining[$token])) {
-                            $matches[$token] = $model->getKey();
-                            unset($remaining[$token]);
-                            if ($remaining === []) {
-                                break;
-                            }
-                        }
-                    }
-                }
-                if ($remaining !== []) {
+                $matches = OpaqueUrlToken::ids($resource, array_keys($remaining), $modelClass::query());
+                if (count($matches) !== count($remaining)) {
                     throw ValidationException::withMessages(['notas' => 'Una nota referencia un recurso ajeno o inexistente.']);
                 }
                 foreach ($notes as &$note) {
