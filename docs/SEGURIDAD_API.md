@@ -18,7 +18,7 @@ El token **no es secreto ni reemplaza permisos**. El cifrado de un ID en el nave
 
 ## Pendiente para cerrar el contrato en toda la plataforma
 
-1. Sustituir la búsqueda lineal de algunos tokens académicos por una columna pública indexada o un mecanismo equivalente antes de operar catálogos grandes. Probar tiempo de respuesta y paginación.
+1. Mantener el índice académico `academic_public_tokens` al incorporar recursos o importadores nuevos. La búsqueda lineal fue reemplazada el 30 de septiembre de 2026, sin cambiar los tokens existentes ni omitir scopes y permisos. Después de una importación SQL o rotación planificada de `APP_KEY`, ejecutar `academico:indexar-selectores`. Ver [rendimiento y capacidad](RENDIMIENTO_Y_CAPACIDAD.md).
 2. Retirar el soporte Bearer heredado después de migrar los clientes externos y sus pruebas a sesiones por cookie. El navegador ya no recibe ni guarda Bearer nuevos.
 3. Verificar el escaneo con un daemon ClamAV real en el entorno de despliegue y configurar HTTPS, secretos, rotación de claves, copias y restauración. Sin daemon, la producción rechaza cargas.
 4. Revisar acceso por objeto en cada módulo nuevo y ampliar pruebas entre colegios/roles. La presencia de un token opaco no reemplaza este control.

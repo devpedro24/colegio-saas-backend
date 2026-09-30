@@ -19,3 +19,9 @@ En el entorno local se ejecutaron 206 pruebas backend (1443 aserciones), además
 ## Migraciones de este corte
 
 Aplicar, tras respaldo y prueba en staging, `php artisan migrate --force` y `php artisan tenants:migrate --force`. Las migraciones nuevas registran permisos académicos y de archivos, un selector público indexado para archivos y conservación de la precisión introducida para el peso curricular. Sincronizar RBAC según el procedimiento de despliegue del README.
+
+## Rendimiento del 30 de septiembre
+
+Se sustituyó la resolución lineal académica por un índice persistente por tenant, se redujeron consultas repetidas de planillas y boletines, se versionó el logo público y se incorporó onboarding al bootstrap de sesión. Las notificaciones de cambios usan cola y excluyen el socket emisor. Se añadieron métricas agregadas de solicitudes lentas, una prueba k6 para staging y plantillas de operación del VPS. Las dos migraciones de rendimiento se aplicaron a los cinco colegios locales sin sustituir datos.
+
+Ver [rendimiento y capacidad](RENDIMIENTO_Y_CAPACIDAD.md) para mediciones, objetivos, comandos, dependencias operativas y límites. La carga de 1.000 usuarios y las plantillas Linux aún requieren validación en el VPS; esta entrega no certifica esa capacidad.
