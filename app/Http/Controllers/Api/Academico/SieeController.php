@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Area;
 use App\Models\Academico\EscalaValorativa;
@@ -21,20 +22,59 @@ use Illuminate\Validation\Rule;
 
 class SieeController extends Controller
 {
+    use PaginatesRequests;
+
     public function show(int $id): JsonResponse
     {
         $year = AnoLectivo::findOrFail($id);
+        $curriculo = $this->curriculoQuery($id, request())->paginate($this->resolvePerPage(request()), ['*'], 'page', $this->resolvePage(request()));
+        $grados = Grado::where('ano_lectivo_id', $id)->where('estado', 'activo')->orderBy('nombre')->orderBy('id')
+            ->paginate(50, ['id', 'nombre'], 'grados_page', 1);
+        $materias = Materia::where('ano_lectivo_id', $id)->where('estado', 'activo')->orderBy('nombre')->orderBy('id')
+            ->paginate(50, ['id', 'nombre'], 'materias_page', 1);
+        $areas = Area::where('ano_lectivo_id', $id)->where('estado', 'activo')->orderBy('nombre')->orderBy('id')
+            ->paginate(50, ['id', 'nombre'], 'areas_page', 1);
 
         return response()->json(['data' => [
             'editable' => ! $year->estaCerrado() && ! $year->periodos()->where('estado', 'cerrado')->exists(),
             'configuracion' => array_replace(SieeConfiguration::DEFAULTS, $year->siee ?? []),
             'escalas' => EscalaValorativa::where('ano_lectivo_id', $id)->get(),
             'metodos' => MetodoAprobacion::where('ano_lectivo_id', $id)->get(),
-            'curriculo' => DB::table('materias_curriculares')->where('ano_lectivo_id', $id)->get(),
-            'grados' => Grado::where('ano_lectivo_id', $id)->where('estado', 'activo')->get(['id', 'nombre']),
-            'materias' => Materia::where('ano_lectivo_id', $id)->where('estado', 'activo')->get(['id', 'nombre']),
-            'areas' => Area::where('ano_lectivo_id', $id)->where('estado', 'activo')->get(['id', 'nombre']),
+            'curriculo' => $curriculo->items(),
+            'pagination' => ['curriculo' => $this->paginationMeta($curriculo),
+                'grados' => $this->paginationMeta($grados), 'materias' => $this->paginationMeta($materias),
+                'areas' => $this->paginationMeta($areas)],
+            'grados' => $grados->items(),
+            'materias' => $materias->items(),
+            'areas' => $areas->items(),
         ]]);
+    }
+
+    public function curriculoIndex(Request $request, int $id): JsonResponse
+    {
+        AnoLectivo::findOrFail($id);
+
+        return $this->paginatedResponse($this->curriculoQuery($id, $request)
+            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request)));
+    }
+
+    private function curriculoQuery(int $yearId, Request $request): \Illuminate\Database\Query\Builder
+    {
+        return DB::table('materias_curriculares as mc')
+            ->leftJoin('materias as m', 'm.id', '=', 'mc.materia_id')
+            ->leftJoin('grados as g', 'g.id', '=', 'mc.grado_id')
+            ->leftJoin('areas as a', 'a.id', '=', 'mc.area_id')
+            ->where('mc.ano_lectivo_id', $yearId)
+            ->when($request->query('grado_id') !== null, fn ($q) => $q->where('mc.grado_id', (int) $request->query('grado_id')))
+            ->when($request->query('materia_id') !== null, fn ($q) => $q->where('mc.materia_id', (int) $request->query('materia_id')))
+            ->when($request->query('area_id') !== null, fn ($q) => $q->where('mc.area_id', (int) $request->query('area_id')))
+            ->when($request->query('search') !== null && $request->query('search') !== '', function ($q) use ($request) {
+                $term = '%'.trim((string) $request->query('search')).'%';
+                $q->where(fn ($where) => $where->where('m.nombre', 'like', $term)
+                    ->orWhere('g.nombre', 'like', $term)->orWhere('a.nombre', 'like', $term));
+            })
+            ->select('mc.*', 'g.nombre as grado_nombre', 'm.nombre as materia_nombre', 'a.nombre as area_nombre')
+            ->orderBy('mc.grado_id')->orderBy('mc.materia_id')->orderBy('mc.id');
     }
 
     public function update(Request $request, int $id): JsonResponse

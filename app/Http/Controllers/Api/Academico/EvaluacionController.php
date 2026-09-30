@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\ActividadEvaluacion;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\AsignacionDocente;
@@ -12,6 +13,7 @@ use App\Models\Academico\Calificacion;
 use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\Grupo;
 use App\Models\Academico\Matricula;
+use App\Models\Academico\Materia;
 use App\Models\Academico\Periodo;
 use App\Models\User;
 use App\Services\GradebookService;
@@ -25,6 +27,8 @@ use Illuminate\Validation\Rule;
 
 class EvaluacionController extends Controller
 {
+    use PaginatesRequests;
+
     public function __construct(private GradebookService $book) {}
 
     public function catalogo(Request $request): JsonResponse
@@ -33,25 +37,100 @@ class EvaluacionController extends Controller
         $manage = $this->book->manages($user);
         $teacher = $user->hasRole('docente');
         abort_unless($manage || $teacher || $user->hasRole('estudiante'), 403);
-        $assignments = AsignacionDocente::with(['materia:id,nombre', 'grupo.grado'])
-            ->when(! $manage, fn ($q) => $q->where('docente_id', $teacher ? $user->id : -1))->get();
-        $enrollments = Matricula::with(['estudiante:id,name', 'grupo.grado'])->when(! $manage, function ($q) use ($teacher, $user, $assignments) {
-            return $teacher ? $q->whereIn('grupo_id', $assignments->pluck('grupo_id')) : $q->where('estudiante_id', $user->id);
-        })->get();
+        $yearId = $request->filled('ano_lectivo_id') ? $request->integer('ano_lectivo_id') : null;
+        $groupId = $request->filled('grupo_id') ? $request->integer('grupo_id') : null;
+        $term = trim((string) $request->query('search', ''));
+        $assignmentQuery = AsignacionDocente::with(['materia:id,nombre', 'grupo.grado'])
+            ->when(! $manage, fn ($q) => $q->where('docente_id', $teacher ? $user->id : -1))
+            ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
+            ->when($request->filled('materia_id'), fn ($q) => $q->where('materia_id', $request->integer('materia_id')))
+            ->when($request->filled('docente_id'), fn ($q) => $q->where('docente_id', $request->integer('docente_id')))
+            ->when($term !== '', fn ($q) => $q->where(fn ($match) => $match
+                ->whereHas('materia', fn ($subject) => $subject->where('nombre', 'like', '%'.$term.'%'))
+                ->orWhereHas('grupo', fn ($group) => $group->where('nombre', 'like', '%'.$term.'%'))
+                ->orWhereHas('docente', fn ($teacherQuery) => $teacherQuery->where('name', 'like', '%'.$term.'%'))));
+        $enrollmentQuery = Matricula::with(['estudiante:id,name', 'grupo.grado'])
+            ->when(! $manage, fn ($q) => $teacher
+                ? $q->whereIn('grupo_id', AsignacionDocente::where('docente_id', $user->id)->select('grupo_id'))
+                : $q->where('estudiante_id', $user->id))
+            ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
+            ->when($request->filled('estudiante_id'), fn ($q) => $q->where('estudiante_id', $request->integer('estudiante_id')))
+            ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
+            ->when($term !== '', fn ($q) => $q->where(fn ($match) => $match
+                ->whereHas('estudiante', fn ($studentQuery) => $studentQuery->where('name', 'like', '%'.$term.'%'))
+                ->orWhereHas('grupo', fn ($group) => $group->where('nombre', 'like', '%'.$term.'%'))));
+        $selectedAssignment = $this->selectedByToken($assignmentQuery, 'asignacion-docente', $request->query('asignacion_token'));
+        $selectedEnrollment = $this->selectedByToken($enrollmentQuery, 'matricula', $request->query('matricula_token'));
+        $assignments = $assignmentQuery->orderByDesc('id')->paginate(
+            $this->resolvePerPage($request, 'asignaciones_per_page'), ['*'], 'asignaciones_page',
+            $this->resolvePage($request, 'asignaciones_page'));
+        $enrollments = $enrollmentQuery->orderByDesc('id')->paginate(
+            $this->resolvePerPage($request, 'matriculas_per_page'), ['*'], 'matriculas_page',
+            $this->resolvePage($request, 'matriculas_page'));
+        $availableStudents = $manage ? User::role('estudiante')->where('status', 'active')
+            ->when($yearId, fn ($q) => $q->whereNotIn('id', Matricula::where('ano_lectivo_id', $yearId)
+                ->where('estado', 'activa')->select('estudiante_id')))
+            ->when($request->filled('student_search'), fn ($q) => $q->where('name', 'like', '%'.trim((string) $request->query('student_search')).'%'))
+            ->orderBy('name')->limit(50)->get(['id', 'name']) : collect();
+        $groupOptions = ($manage || $teacher) ? $this->boundedCatalog(Grupo::with('grado')->where('estado', 'activo')
+            ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->when(! $manage, fn ($q) => $q->whereIn('id', AsignacionDocente::where('docente_id', $user->id)->select('grupo_id'))),
+            $request, 'group_search', [$groupId, $request->integer('selected_grupo_id')]) : collect();
+        $subjectOptions = ($manage || $teacher) ? $this->boundedCatalog(Materia::where('estado', 'activo')
+            ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->when(! $manage, fn ($q) => $q->whereIn('id', AsignacionDocente::where('docente_id', $user->id)->select('materia_id'))),
+            $request, 'materia_search', [$request->integer('materia_id'), $request->integer('selected_materia_id')]) : collect();
 
         return response()->json(['data' => [
             'can_manage' => $manage, 'can_configure' => $user->can('academico.configurar'),
             'can_view_reports' => $manage || $user->hasRole('estudiante'),
             'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado']),
-            'periodos' => Periodo::orderBy('orden')->get()
+            'periodos' => Periodo::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->orderBy('orden')->get()
                 ->map(fn (Periodo $period) => [...$period->toArray(), 'url_token' => OpaqueUrlToken::for('periodo', $period->id)]),
-            'asignaciones' => $assignments
+            'asignaciones' => $assignments->getCollection()
                 ->map(fn (AsignacionDocente $assignment) => [...$assignment->toArray(), 'url_token' => OpaqueUrlToken::for('asignacion-docente', $assignment->id)]),
-            'matriculas' => $enrollments
+            'matriculas' => $enrollments->getCollection()
                 ->map(fn (Matricula $enrollment) => [...$enrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $enrollment->id)]),
-            'grupos' => $manage ? Grupo::with('grado')->where('estado', 'activo')->get() : [],
-            'estudiantes' => $manage ? User::role('estudiante')->where('status', 'active')->get(['id', 'name']) : [],
+            'pagination' => ['asignaciones' => $this->paginationMeta($assignments), 'matriculas' => $this->paginationMeta($enrollments)],
+            'selected_asignacion' => $selectedAssignment ? [...$selectedAssignment->toArray(), 'url_token' => OpaqueUrlToken::for('asignacion-docente', $selectedAssignment->id)] : null,
+            'selected_matricula' => $selectedEnrollment ? [...$selectedEnrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $selectedEnrollment->id)] : null,
+            'grupos' => $groupOptions,
+            'materias' => $subjectOptions,
+            'estudiantes' => $availableStudents,
+            'estudiantes_disponibles' => $availableStudents,
         ]]);
+    }
+
+    private function boundedCatalog(\Illuminate\Database\Eloquent\Builder $query, Request $request,
+        string $searchParam, array $selectedIds): \Illuminate\Database\Eloquent\Collection
+    {
+        $base = clone $query;
+        $term = trim((string) $request->query($searchParam, ''));
+        $items = $query->when($term !== '', fn ($q) => $q->where('nombre', 'like', '%'.$term.'%'))
+            ->orderBy('nombre')->orderBy('id')->limit(50)->get();
+        foreach (array_unique(array_filter($selectedIds)) as $id) {
+            if (! $items->contains('id', $id) && ($selected = (clone $base)->find($id))) {
+                $items->push($selected);
+            }
+        }
+
+        return $items;
+    }
+
+    private function selectedByToken(\Illuminate\Database\Eloquent\Builder $query, string $resource, mixed $token): ?\Illuminate\Database\Eloquent\Model
+    {
+        if (! is_string($token) || ! preg_match('/^[A-Za-z0-9_-]{24}$/', $token)) {
+            return null;
+        }
+        foreach ((clone $query)->select('id')->cursor() as $candidate) {
+            if (hash_equals(OpaqueUrlToken::for($resource, $candidate->id), $token)) {
+                return (clone $query)->find($candidate->id);
+            }
+        }
+
+        return null;
     }
 
     public function matricular(Request $request): JsonResponse
@@ -84,11 +163,17 @@ class EvaluacionController extends Controller
         $year = AnoLectivo::findOrFail($assignment->ano_lectivo_id);
         $config = app(SieeConfiguration::class)->resolve($year);
         $components = ComponenteEvaluacion::with('actividades')->where('asignacion_id', $asignacion)->where('periodo_id', $periodo)->get();
-        $enrollments = Matricula::with('estudiante:id,name')->where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')->get();
+        $enrollmentPage = Matricula::with('estudiante:id,name')
+            ->where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')
+            ->when($request->filled('search'), fn ($q) => $q->whereHas('estudiante', fn ($student) =>
+                $student->where('name', 'like', '%'.trim((string) $request->query('search')).'%')))
+            ->orderBy('id')->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+        $enrollments = $enrollmentPage->getCollection();
 
         return response()->json(['data' => [
             'editable' => $year->estado === 'en_curso' && $period->estado === 'abierto', 'configuracion' => $config,
             'componentes' => $components, 'matriculas' => $enrollments,
+            'pagination' => ['matriculas' => $this->paginationMeta($enrollmentPage)],
             'calificaciones' => Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get(),
             'resultados' => $enrollments->map(fn ($enrollment) => ['matricula_id' => $enrollment->id, ...$this->book->subjectResult($assignment, $enrollment, $period, $config)]),
         ]]);
