@@ -59,7 +59,9 @@ final class TenantOnboarding
             'required' => $passwordRequired || $institutionRequired,
             'password_required' => $passwordRequired,
             'institution_required' => $institutionRequired,
-            'institution' => $institution ?? [
+            'institution' => $institution?->only([
+                'nombre', 'nit', 'resolucion_men', 'direccion', 'telefono', 'correo',
+            ]) ?? [
                 'nombre' => tenant()?->legal_name ?: tenant()?->name,
                 'nit' => tenant()?->nit,
                 'resolucion_men' => null,

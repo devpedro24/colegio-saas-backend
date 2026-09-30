@@ -35,6 +35,23 @@ class Tenant extends BaseTenant implements TenantWithDatabase
     use HasDatabase;
     use HasDomains;
 
+    /** Restore the previous database context even when a tenant callback fails. */
+    public function run(callable $callback)
+    {
+        $previous = tenant();
+        tenancy()->initialize($this);
+
+        try {
+            return $callback($this);
+        } finally {
+            if ($previous) {
+                tenancy()->initialize($previous);
+            } else {
+                tenancy()->end();
+            }
+        }
+    }
+
     /**
      * Maquina de estados del tenant (RN-T-001..004).
      * El tenant nace en PROVISIONING, pasa a CONFIGURING mientras el rector

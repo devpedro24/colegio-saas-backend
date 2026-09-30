@@ -52,6 +52,16 @@ final class StorageService
             ->first();
 
         if ($existing !== null) {
+            // A previous upload may predate the current scanner policy. A
+            // checksum match must not bypass today's malware check.
+            try {
+                $this->scanner->scan($existing->disk, $existing->path);
+            } catch (Throwable $e) {
+                throw $e instanceof StorageException
+                    ? $e
+                    : new StorageException('El análisis de seguridad de archivos no se completó.');
+            }
+
             return $existing;
         }
 
@@ -79,9 +89,11 @@ final class StorageService
         // 2. Antivirus (stub aprobador por defecto; ClamAV al enchufar).
         try {
             $this->scanner->scan(config('storage.disk'), $fullPath);
-        } catch (StorageException $e) {
+        } catch (Throwable $e) {
             Storage::disk(config('storage.disk'))->delete($fullPath);
-            throw $e;
+            throw $e instanceof StorageException
+                ? $e
+                : new StorageException('El análisis de seguridad de archivos no se completó.');
         }
 
         // 3. Metadato central.
@@ -104,10 +116,12 @@ final class StorageService
     {
         $ttl = $minutes ?? (int) config('storage.signed_url_minutes', 15);
 
+        $school = Tenant::findOrFail($file->tenant_id);
+
         return URL::temporarySignedRoute(
             'storage.file',
             now()->addMinutes($ttl),
-            ['file' => $file->id, 'tenant' => $file->tenant_id],
+            ['file' => StoredFilePublicToken::for($file), 'school' => $school->slug],
         );
     }
 

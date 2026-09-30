@@ -13,9 +13,11 @@ use App\Models\User;
 use App\Rbac\PermissionMatrix;
 use App\Support\PasswordPolicy;
 use App\Support\Audit\AuditLogger;
+use App\Support\OpaqueUrlToken;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
@@ -36,13 +38,10 @@ class UserController extends Controller
     public function index(Request $request): JsonResponse
     {
         $principales = User::query()
-            ->with('roles:id,name')
             ->whereNull('deleted_at')
             ->where('id', '!=', $request->user()->id)
-            ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
-            ->orderBy('name')
-            ->paginate($this->resolvePerPage($request))
-            ->through(fn (User $u) => $this->serialize($u));
+            ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL);
+        $principalCount = (clone $principales)->count();
 
         // La tabla `sedes` solo existe en la BD del colegio principal: dentro
         // de un tenant hijo no hay sub-sedes que consolidar.
@@ -50,7 +49,8 @@ class UserController extends Controller
             ? Sede::query()->whereNotNull('tenant_id')->orderBy('nombre')->get()
             : collect();
 
-        $deSedes = collect();
+        $childSources = [];
+        $total = $principalCount;
         foreach ($sedes as $sede) {
             $hijo = Tenant::find($sede->tenant_id);
 
@@ -58,27 +58,54 @@ class UserController extends Controller
                 continue;
             }
 
-            $usuarioSede = $this->runIn($hijo, function () use ($sede) {
-                return User::query()
-                    ->with('roles:id,name')
+            $count = $this->runIn($hijo, fn () => User::query()
                     ->whereNull('deleted_at')
                     ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
-                    ->orderBy('name')
-                    ->get()
-                    ->map(fn (User $u) => $this->serialize($u, $sede))
-                    ->values()
-                    ->toBase();
-            });
-
-            $deSedes = $deSedes->merge($usuarioSede);
+                    ->count());
+            $childSources[] = [$sede, $hijo, $count, OpaqueUrlToken::for('sede', $sede->id)];
+            $total += $count;
         }
 
-        // Conserva la logica de merge: los usuarios de sede se adjuntan al final.
-        $principales->setCollection(
-            collect($principales->items())->merge($deSedes)->values(),
-        );
+        // Se conserva el orden histórico (principal y luego cada sede), pero
+        // cada BD sólo devuelve la porción que cabe en la página solicitada.
+        $smallList = $total <= 20;
+        $perPage = $smallList ? 20 : $this->resolvePerPage($request);
+        $page = $smallList ? 1 : $this->resolvePage($request);
+        $offset = ($page - 1) * $perPage;
+        $remaining = $perPage;
+        $items = [];
+        if ($offset >= $principalCount) {
+            $offset -= $principalCount;
+        } else {
+            $rows = (clone $principales)->with('roles:id,name')->orderBy('name')
+                ->offset($offset)->limit($remaining)->get();
+            foreach ($rows as $user) {
+                $items[] = $this->serialize($user);
+            }
+            $remaining -= $rows->count();
+            $offset = 0;
+        }
 
-        return $this->paginatedResponse($principales);
+        foreach ($childSources as [$sede, $hijo, $count, $sedeToken]) {
+            if ($remaining === 0) {
+                break;
+            }
+            if ($offset >= $count) {
+                $offset -= $count;
+                continue;
+            }
+            $rows = $this->runIn($hijo, function () use ($sede, $sedeToken, $offset, $remaining) {
+                return User::query()->with('roles:id,name')->whereNull('deleted_at')
+                    ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
+                    ->orderBy('name')->offset($offset)->limit($remaining)->get()
+                    ->map(fn (User $user) => $this->serialize($user, $sede, $sedeToken))->all();
+            });
+            array_push($items, ...$rows);
+            $remaining -= count($rows);
+            $offset = 0;
+        }
+
+        return $this->paginatedResponse(new LengthAwarePaginator($items, $total, $perPage, $page));
     }
 
     /** Crea un usuario en el colegio o en la sede indicada. */
@@ -86,7 +113,7 @@ class UserController extends Controller
     {
         $data = $this->validar($request, crear: true);
 
-        $sede = $this->sedeDestino($data['sede_id'] ?? null);
+        $sede = $this->sedeDestino($this->sedeSelector($data));
         if (is_array($sede)) {
             return response()->json(['message' => $sede['message']], 422);
         }
@@ -140,11 +167,11 @@ class UserController extends Controller
     }
 
     /** Edita datos, rol o estado de un usuario en su BD (cole'gio o sede). */
-    public function update(Request $request, int $id): JsonResponse
+    public function update(Request $request, string $id): JsonResponse
     {
         $data = $this->validar($request, crear: false);
 
-        $sede = $this->sedeDestino($data['sede_id'] ?? null);
+        $sede = $this->sedeDestino($this->sedeSelector($data));
         if (is_array($sede)) {
             return response()->json(['message' => $sede['message']], 422);
         }
@@ -154,7 +181,7 @@ class UserController extends Controller
         }
 
         // BD del colegio (contexto actual).
-        $usuario = User::findOrFail($id);
+        $usuario = $this->userForSelector($id);
 
         if ($usuario->id === $request->user()->id && array_key_exists('role', $data)) {
             return response()->json(['message' => 'No puedes cambiar tu propio rol.'], 422);
@@ -168,10 +195,14 @@ class UserController extends Controller
             } catch (\InvalidArgumentException) {
                 return response()->json(['message' => 'Transición de estado no permitida.'], 422);
             }
+            if ($usuario->status !== User::STATUS_ACTIVE) {
+                $usuario->tokens()->delete();
+            }
         }
 
         if (isset($data['password'])) {
             $usuario->update(['password' => $data['password'], 'must_change_password' => false]);
+            $usuario->tokens()->delete();
         }
 
         if (array_key_exists('name', $data)) {
@@ -183,7 +214,7 @@ class UserController extends Controller
             $usuario->syncRoles([$data['role']]);
         }
 
-        $this->syncCoordinadorEmail($data['sede_id'] ?? null, $data['role'] ?? $usuario->role, $usuario->email, $usuario->name);
+        $this->syncCoordinadorEmail($sede?->id, $data['role'] ?? $usuario->role, $usuario->email, $usuario->name);
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'usuario', (string) $usuario->id, $prev, $this->serialize($usuario));
 
@@ -195,9 +226,9 @@ class UserController extends Controller
     }
 
     /** Elimina (borrado logico) un usuario en su BD. */
-    public function destroy(Request $request, int $id): JsonResponse
+    public function destroy(Request $request, string $id): JsonResponse
     {
-        $sede = $this->sedeDestino($request->input('sede_id'));
+        $sede = $this->sedeDestino($this->sedeSelector($request->all()));
         if (is_array($sede)) {
             return response()->json(['message' => $sede['message']], 422);
         }
@@ -212,13 +243,14 @@ class UserController extends Controller
             return response()->json(['data' => null]);
         }
 
-        $usuario = User::findOrFail($id);
+        $usuario = $this->userForSelector($id);
 
         if ($usuario->id === $request->user()->id) {
             return response()->json(['message' => 'No puedes eliminar tu propia cuenta.'], 422);
         }
 
         $prev = $this->serialize($usuario);
+        $usuario->tokens()->delete();
         $usuario->delete();
 
         AuditLogger::tenant($request->user(), 'DELETE', 'usuario', (string) $usuario->id, $prev, null);
@@ -235,44 +267,49 @@ class UserController extends Controller
      * (`?sede_id=X`) usando runIn, y ejecuta el callback dentro del contexto
      * correcto. Devuelve el usuario + la contrasena generada.
      *
-     * @return array{user: User, password: string}
+     * @return array{user: User, password: ?string, data: array<string, mixed>}
      */
-    private function resolveAndUpdate(Request $request, $id, bool $readOnly = false): array
+    private function resolveAndUpdate(Request $request, string $id, bool $readOnly = false): array
     {
-        $sedeId = $request->query('sede_id');
+        $sede = $this->sedeDestino($this->sedeSelector($request->query()));
+        if (is_array($sede)) {
+            abort(422, $sede['message']);
+        }
         $password = $readOnly ? '' : PasswordPolicy::temporary(12);
 
-        if ($sedeId !== null) {
-            $sede = $this->sedeDestino((int) $sedeId);
-            if ($sede instanceof Sede) {
-                $hijo = Tenant::find($sede->tenant_id);
-                if ($hijo !== null) {
-                    $user = $hijo->run(function () use ($id, $password, $readOnly) {
-                        $u = User::findOrFail((int) $id);
-                        if (! $readOnly) {
-                            $u->update([
-                                'password' => Hash::make($password),
-                                'temporary_password' => $password,
-                                'must_change_password' => true,
-                            ]);
-                        }
-                        return $u->fresh();
-                    });
-                    return ['user' => $user, 'password' => $password ?: null];
+        if ($sede !== null) {
+            $hijo = Tenant::findOrFail($sede->tenant_id);
+            $sedeToken = OpaqueUrlToken::for('sede', $sede->id);
+            $result = $this->runIn($hijo, function () use ($id, $password, $readOnly, $sede, $sedeToken) {
+                $u = $this->userForSelector($id);
+                if (! $readOnly) {
+                    $u->update([
+                        'password' => Hash::make($password),
+                        'temporary_password' => $password,
+                        'must_change_password' => true,
+                    ]);
+                    $u->tokens()->delete();
                 }
-            }
+
+                $fresh = $u->fresh();
+
+                return ['user' => $fresh, 'data' => $this->serialize($fresh, $sede, $sedeToken)];
+            });
+
+            return [...$result, 'password' => $password ?: null];
         }
 
-        $user = User::findOrFail((int) $id);
+        $user = $this->userForSelector($id);
         if (! $readOnly) {
             $user->update([
                 'password' => Hash::make($password),
                 'temporary_password' => $password,
                 'must_change_password' => true,
             ]);
+            $user->tokens()->delete();
         }
 
-        return ['user' => $user, 'password' => $password ?: null];
+        return ['user' => $user, 'data' => $this->serialize($user), 'password' => $password ?: null];
     }
 
     /** GET /usuarios/{id}/temporal-password — estado de la clave temporal. */
@@ -306,10 +343,10 @@ class UserController extends Controller
     /** POST /usuarios/{id}/reset-password — regenera la clave temporal. */
     public function resetPassword(Request $request, $id): JsonResponse
     {
-        ['user' => $user, 'password' => $password] = $this->resolveAndUpdate($request, $id);
+        ['data' => $data, 'password' => $password] = $this->resolveAndUpdate($request, $id);
 
         return response()->json([
-            'data' => $this->serialize($user),
+            'data' => $data,
             'password' => $password,
         ]);
     }
@@ -323,7 +360,12 @@ class UserController extends Controller
             'name' => [Rule::when($crear, 'required'), 'string', 'max:120'],
             'email' => [Rule::when($crear, 'required'), 'email', 'max:255'],
             'role' => [Rule::when($crear, 'required'), Rule::in(PermissionMatrix::roleKeys())],
-            'sede_id' => ['nullable', 'integer', 'exists:sedes,id'],
+            'sede_id' => ['nullable', function (string $attribute, mixed $value, Closure $fail): void {
+                if ((! is_string($value) && ! is_int($value)) || strlen((string) $value) > 128) {
+                    $fail('La sede indicada no es válida.');
+                }
+            }],
+            'sede_url_token' => ['nullable', 'string', 'size:24', 'regex:/\A[A-Za-z0-9_-]+\z/'],
             'status' => ['nullable', Rule::in([User::STATUS_ACTIVE, User::STATUS_INACTIVE, User::STATUS_SUSPENDED])],
             'password' => ['nullable', PasswordPolicy::rule()],
         ]);
@@ -335,7 +377,7 @@ class UserController extends Controller
      *
      * @return \App\Models\Academico\Sede|array{message:string}|null
      */
-    private function sedeDestino(?int $sedeId)
+    private function sedeDestino(?string $sedeId)
     {
         if ($sedeId === null) {
             return null;
@@ -347,7 +389,7 @@ class UserController extends Controller
             return ['message' => 'Esta sede no admite sub-sedes.'];
         }
 
-        $sede = Sede::find($sedeId);
+        $sede = Sede::fromPublicId($sedeId);
 
         if ($sede === null || $sede->tenant_id === null) {
             return ['message' => 'La sede indicada no es un tenant hijo.'];
@@ -359,6 +401,35 @@ class UserController extends Controller
         }
 
         return $sede;
+    }
+
+    /** @param array<string, mixed> $data */
+    private function sedeSelector(array $data): ?string
+    {
+        $value = $data['sede_url_token'] ?? $data['sede_id'] ?? null;
+        if ($value === null || $value === '') {
+            return null;
+        }
+        abort_unless(is_string($value) || is_int($value), 422, 'La sede indicada no es válida.');
+        $selector = (string) $value;
+        abort_if(strlen($selector) > 128, 422, 'La sede indicada no es válida.');
+        abort_if(ctype_digit($selector) && ! app()->environment('testing'), 422, 'La sede indicada no es válida.');
+
+        return $selector;
+    }
+
+    private function userForSelector(string $selector): User
+    {
+        if (ctype_digit($selector)) {
+            abort_unless(app()->environment('testing'), 404, 'Usuario no encontrado.');
+
+            return User::findOrFail((int) $selector);
+        }
+
+        $user = OpaqueUrlToken::find('usuario', $selector, User::query());
+        abort_unless($user instanceof User, 404, 'Usuario no encontrado.');
+
+        return $user;
     }
 
     /**
@@ -394,8 +465,9 @@ class UserController extends Controller
     private function crearEn(Sede $sede, array $data): array
     {
         $hijo = Tenant::find($sede->tenant_id);
+        $sedeToken = OpaqueUrlToken::for('sede', $sede->id);
 
-        return $this->runIn($hijo, function () use ($data, $sede) {
+        return $this->runIn($hijo, function () use ($data, $sede, $sedeToken) {
             if (User::where('email', $data['email'])->exists()) {
                 return ['error' => 'Ya existe un usuario con ese correo.'];
             }
@@ -414,7 +486,7 @@ class UserController extends Controller
 
             return [
                 'id' => (string) $user->id,
-                'data' => $this->serialize($user, $sede),
+                'data' => $this->serialize($user, $sede, $sedeToken),
                 'password' => $password,
             ];
         });
@@ -423,13 +495,14 @@ class UserController extends Controller
     /**
      * @param  array<string, mixed>  $data
      */
-    private function actualizarEn(Sede $sede, User $actor, int $id, array $data): JsonResponse
+    private function actualizarEn(Sede $sede, User $actor, string $id, array $data): JsonResponse
     {
         $hijo = Tenant::find($sede->tenant_id);
+        $sedeToken = OpaqueUrlToken::for('sede', $sede->id);
 
-        $resultado = $this->runIn($hijo, function () use ($actor, $id, $data, $sede) {
-            $usuario = User::findOrFail($id);
-            $prev = $this->serialize($usuario, $sede);
+        $resultado = $this->runIn($hijo, function () use ($actor, $id, $data, $sede, $sedeToken) {
+            $usuario = $this->userForSelector($id);
+            $prev = $this->serialize($usuario, $sede, $sedeToken);
 
             if (isset($data['status'])) {
                 try {
@@ -437,10 +510,14 @@ class UserController extends Controller
                 } catch (\InvalidArgumentException) {
                     return ['error' => 'Transición de estado no permitida.'];
                 }
+                if ($usuario->status !== User::STATUS_ACTIVE) {
+                    $usuario->tokens()->delete();
+                }
             }
 
             if (isset($data['password'])) {
                 $usuario->update(['password' => $data['password'], 'must_change_password' => false]);
+                $usuario->tokens()->delete();
             }
 
             if (array_key_exists('name', $data)) {
@@ -452,7 +529,8 @@ class UserController extends Controller
                 $usuario->syncRoles([$data['role']]);
             }
 
-            return ['prev' => $prev, 'data' => $this->serialize($usuario, $sede)];
+            return ['internal_id' => (string) $usuario->id, 'prev' => $prev,
+                'data' => $this->serialize($usuario, $sede, $sedeToken)];
         });
 
         if (isset($resultado['error'])) {
@@ -460,7 +538,7 @@ class UserController extends Controller
         }
 
         // El log de auditoria del COLEGIO registra la accion sobre la sede.
-        AuditLogger::tenant($actor, 'UPDATE', 'usuario', (string) $id, $resultado['prev'], $resultado['data']);
+        AuditLogger::tenant($actor, 'UPDATE', 'usuario', $resultado['internal_id'], $resultado['prev'], $resultado['data']);
 
         return response()->json(['data' => $resultado['data']]);
     }
@@ -468,13 +546,14 @@ class UserController extends Controller
     /**
      * @return array{error?:string}
      */
-    private function eliminarEn(Sede $sede, User $actor, int $id): array
+    private function eliminarEn(Sede $sede, User $actor, string $id): array
     {
         $hijo = Tenant::find($sede->tenant_id);
 
         return $this->runIn($hijo, function () use ($actor, $id) {
-            $usuario = User::findOrFail($id);
+            $usuario = $this->userForSelector($id);
             $prev = $this->serialize($usuario);
+            $usuario->tokens()->delete();
             $usuario->delete();
 
             AuditLogger::tenant($actor, 'DELETE', 'usuario', (string) $usuario->id, $prev, null);
@@ -486,10 +565,13 @@ class UserController extends Controller
     /**
      * @return array<string, mixed>
      */
-    private function serialize(User $user, ?Sede $sede = null): array
+    private function serialize(User $user, ?Sede $sede = null, ?string $sedeToken = null): array
     {
+        $userToken = OpaqueUrlToken::for('usuario', $user->id);
+
         return [
-            'id' => (string) $user->id,
+            'id' => $userToken,
+            'url_token' => $userToken,
             'name' => $user->name,
             'email' => $user->email,
             'phone' => $user->phone,
@@ -498,10 +580,11 @@ class UserController extends Controller
             'status' => $user->status,
             'must_change_password' => $user->must_change_password,
             'created_at' => $user->created_at?->toISOString(),
-            'sede_id' => $sede?->id,
+            'sede_id' => $sedeToken,
+            'sede_url_token' => $sedeToken,
             'sede_nombre' => $sede?->nombre,
-            'tenant_id' => $sede?->tenant_id,
-            'temporary_password' => $user->must_change_password ? $user->temporary_password : null,
+            // Legacy key kept until the UI switches to sede_url_token.
+            'tenant_id' => $sedeToken,
         ];
     }
 

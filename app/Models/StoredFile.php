@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  *
  * @property int         $id
  * @property string      $tenant_id
+ * @property string      $public_token
  * @property string      $disk
  * @property string      $path
  * @property string      $mime
@@ -31,6 +32,15 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class StoredFile extends CentralModel
 {
     use SoftDeletes;
+
+    protected static function booted(): void
+    {
+        static::creating(function (self $file): void {
+            if (! $file->public_token) {
+                $file->public_token = rtrim(strtr(base64_encode(random_bytes(18)), '+/', '-_'), '=');
+            }
+        });
+    }
 
     protected $table = 'stored_files';
 

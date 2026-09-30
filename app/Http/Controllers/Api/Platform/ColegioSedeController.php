@@ -12,6 +12,7 @@ use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Services\SedeProvisioner;
 use App\Support\Audit\AuditLogger;
+use App\Support\OpaqueUrlToken;
 use App\Support\Sedes\SedeLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -39,9 +40,9 @@ class ColegioSedeController extends Controller
     public function __construct(private readonly SedeProvisioner $provisioner) {}
 
     /** Lista las sedes del colegio (principal primero). */
-    public function index(Request $request, string $id): JsonResponse
+    public function index(Request $request, string $slug): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         // Se serializa DENTRO de $tenant->run(): al terminar, Stancl desconecta
         // la conexion del tenant y un modelo colgado no puede acceder a fechas.
@@ -60,9 +61,9 @@ class ColegioSedeController extends Controller
     }
 
     /** Crea una sede en el colegio (con tenant hijo si se indica slug). */
-    public function store(Request $request, string $id): JsonResponse
+    public function store(Request $request, string $slug): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         $data = $request->validate([
             'nombre' => ['required', 'string', 'max:120'],
@@ -147,9 +148,9 @@ class ColegioSedeController extends Controller
     }
 
     /** Edita una sede del colegio. */
-    public function update(Request $request, string $id, int $sedeId): JsonResponse
+    public function update(Request $request, string $slug, string $sedeToken): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         $data = $request->validate([
             'nombre' => ['required', 'string', 'max:120'],
@@ -160,17 +161,17 @@ class ColegioSedeController extends Controller
         $error = null;
         $prev = null;
         $sede = null;
-        $tenant->run(function () use ($data, $sedeId, &$prev, &$sede, &$error) {
-            $sede = Sede::withTrashed()->find($sedeId);
+        $tenant->run(function () use ($data, $sedeToken, &$prev, &$sede, &$error) {
+            $sede = OpaqueUrlToken::find('sede', $sedeToken, Sede::withTrashed());
 
             if (! $sede || $sede->trashed()) {
-                $error = 'La sede no existe.';
+                $error = 'not_found';
 
                 return;
             }
 
             if (Sede::where('nombre', $data['nombre'])->where('id', '!=', $sede->id)->exists()) {
-                $error = 'Ya existe una sede con ese nombre.';
+                $error = 'duplicate';
 
                 return;
             }
@@ -189,8 +190,11 @@ class ColegioSedeController extends Controller
             }
         });
 
-        if ($error !== null) {
-            return response()->json(['message' => $error], 422);
+        if ($error === 'not_found') {
+            abort(404);
+        }
+        if ($error === 'duplicate') {
+            return response()->json(['message' => 'Ya existe una sede con ese nombre.'], 422);
         }
 
         $current = $this->enrich($tenant->run(fn () => $this->snapshot($sede)));
@@ -210,18 +214,18 @@ class ColegioSedeController extends Controller
     }
 
     /** Elimina (soft-delete) una sede del colegio y baja su tenant hijo. */
-    public function destroy(Request $request, string $id, int $sedeId): JsonResponse
+    public function destroy(Request $request, string $slug, string $sedeToken): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         $error = null;
         $prev = null;
         $tenantIdHijo = null;
-        $tenant->run(function () use ($sedeId, &$prev, &$tenantIdHijo, &$error) {
-            $sede = Sede::withTrashed()->find($sedeId);
+        $tenant->run(function () use ($sedeToken, &$prev, &$tenantIdHijo, &$error) {
+            $sede = OpaqueUrlToken::find('sede', $sedeToken, Sede::withTrashed());
 
             if (! $sede || $sede->trashed()) {
-                $error = 'La sede no existe.';
+                $error = 'not_found';
 
                 return;
             }
@@ -237,8 +241,8 @@ class ColegioSedeController extends Controller
             }
         });
 
-        if ($error !== null) {
-            return response()->json(['message' => $error], 422);
+        if ($error === 'not_found') {
+            abort(404);
         }
 
         // Cuarentena del tenant hijo: estado in_retention + subdominio eliminado.
@@ -270,8 +274,7 @@ class ColegioSedeController extends Controller
         }
 
         return [
-            'id' => $sede->id,
-            'hashed_id' => $sede->hashed_id,
+            'url_token' => $sede->hashed_id,
             'nombre' => $sede->nombre,
             'direccion' => $sede->direccion,
             'telefono' => $sede->telefono,
@@ -307,6 +310,13 @@ class ColegioSedeController extends Controller
             }
         }
 
+        unset($sede['tenant_id']);
+
         return $sede;
+    }
+
+    private function findColegio(string $slug): Tenant
+    {
+        return Tenant::where('slug', $slug)->where('tipo', '!=', Tenant::TIPO_SEDE)->firstOrFail();
     }
 }

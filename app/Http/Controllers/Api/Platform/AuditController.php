@@ -9,6 +9,7 @@ use App\Models\AuditLog;
 use App\Models\PlatformAuditLog;
 use App\Models\Tenant;
 use App\Support\Audit\AuditLogger;
+use App\Support\Audit\AuditPublicPresenter;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,12 +18,14 @@ class AuditController extends Controller
 {
     public function colegios(): JsonResponse
     {
-        return response()->json(['data' => Tenant::query()->orderBy('name')->get(['id', 'name', 'tipo', 'parent_id'])]);
+        return response()->json(['data' => Tenant::query()->orderBy('name')->get(['slug', 'name', 'tipo'])]);
     }
 
     public function index(Request $request): JsonResponse
     {
         $filters = $request->validate([
+            'colegio_slug' => ['nullable', 'string', 'exists:tenants,slug'],
+            // Legacy callers can still filter by ID during the browser migration.
             'tenant_id' => ['nullable', 'string', 'exists:tenants,id'],
             'actor' => ['nullable', 'string', 'max:255'],
             'rol' => ['nullable', 'string', 'max:100'],
@@ -33,8 +36,8 @@ class AuditController extends Controller
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
-        $read = function (bool $tenant) use ($filters): array {
-            $query = $tenant ? AuditLog::query() : PlatformAuditLog::query();
+        $read = function (?Tenant $school) use ($filters): array {
+            $query = $school ? AuditLog::query() : PlatformAuditLog::query();
             foreach (['accion', 'recurso', 'rol' => 'actor_rol'] as $key => $column) {
                 $key = is_int($key) ? $column : $key;
                 if (! empty($filters[$key])) {
@@ -51,12 +54,20 @@ class AuditController extends Controller
                 $query->where('created_at', '<', Carbon::parse($filters['hasta'])->addDay()->toDateString());
             }
 
-            return $query->orderByDesc('id')->paginate($filters['per_page'] ?? 25)->toArray();
+            $result = $query->orderByDesc('id')->paginate($filters['per_page'] ?? 25)->toArray();
+            $scope = $school ? (string) $school->id : 'platform';
+            $result['data'] = array_map(
+                fn (array $entry) => AuditPublicPresenter::entry($entry, $scope),
+                $result['data'],
+            );
+
+            return $result;
         };
-        $result = ! empty($filters['tenant_id'])
-            ? Tenant::findOrFail($filters['tenant_id'])->run(fn () => $read(true))
-            : $read(false);
-        AuditLogger::platform($request->user(), 'READ', 'auditoria', null, null, $filters, null, $filters['tenant_id'] ?? null);
+        $school = ! empty($filters['colegio_slug'])
+            ? Tenant::where('slug', $filters['colegio_slug'])->firstOrFail()
+            : (! empty($filters['tenant_id']) ? Tenant::findOrFail($filters['tenant_id']) : null);
+        $result = $school ? $school->run(fn () => $read($school)) : $read(null);
+        AuditLogger::platform($request->user(), 'READ', 'auditoria', null, null, $filters, null, $school?->id);
 
         return response()->json($result);
     }

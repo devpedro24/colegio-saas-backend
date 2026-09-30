@@ -87,17 +87,17 @@ class ColegioController extends Controller
     }
 
     /** Detalle de un colegio. */
-    public function show(string $id): JsonResponse
+    public function show(string $slug): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         return response()->json(['colegio' => $this->present($tenant)]);
     }
 
     /** Edita los datos del colegio (nombre, razon social, NIT, plan). */
-    public function update(Request $request, string $id): JsonResponse
+    public function update(Request $request, string $slug): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
@@ -205,9 +205,9 @@ class ColegioController extends Controller
     }
 
     /** Cambia el estado del colegio (activar / suspender). */
-    public function updateStatus(Request $request, string $id): JsonResponse
+    public function updateStatus(Request $request, string $slug): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         $data = $request->validate([
             'status' => ['required', 'in:active,suspended'],
@@ -235,9 +235,9 @@ class ColegioController extends Controller
     }
 
     /** Cambia el plan del colegio y re-sincroniza su RBAC (aplica el gating). */
-    public function updatePlan(Request $request, string $id): JsonResponse
+    public function updatePlan(Request $request, string $slug): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         $data = $request->validate([
             'plan' => ['required', 'string', 'exists:plans,key'],
@@ -276,9 +276,9 @@ class ColegioController extends Controller
      * - 'none'    : no hay clave guardada (colegios anteriores a la columna) o
      *               cayo en una situacion no recuperable; se regenara una nueva.
      */
-    public function rectorPassword(string $id): JsonResponse
+    public function rectorPassword(string $slug): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
 
         $rectorEmail = null;
         $mustChange = false;
@@ -320,9 +320,9 @@ class ColegioController extends Controller
      * (Las contrasenas se guardan cifradas: no se puede recuperar la anterior,
      * por eso se genera una nueva.)
      */
-    public function resetRectorPassword(string $id): JsonResponse
+    public function resetRectorPassword(string $slug): JsonResponse
     {
-        $tenant = Tenant::findOrFail($id);
+        $tenant = $this->findColegio($slug);
         $password = PasswordPolicy::temporary();
         $rectorEmail = null;
 
@@ -358,7 +358,6 @@ class ColegioController extends Controller
     private function present(Tenant $tenant): array
     {
         return [
-            'id' => $tenant->id,
             'name' => $tenant->name,
             'slug' => $tenant->slug,
             'legal_name' => $tenant->legal_name,
@@ -368,5 +367,10 @@ class ColegioController extends Controller
             'subdomain' => $tenant->slug.'.localhost',
             'created_at' => $tenant->created_at?->toIso8601String(),
         ];
+    }
+
+    private function findColegio(string $slug): Tenant
+    {
+        return Tenant::where('slug', $slug)->where('tipo', '!=', Tenant::TIPO_SEDE)->firstOrFail();
     }
 }

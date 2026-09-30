@@ -59,8 +59,10 @@ return [
     // Vida de las URLs firmadas de descarga (minutos) (RN-AC-004).
     'signed_url_minutes' => (int) env('STORAGE_SIGNED_URL_MINUTES', 15),
 
-    // Antivirus: interface a implementar; stub aprobador mientras no se enchufe
-    // ClamAV (D-STORAGE, D-ANTIVIRUS).
+    // En producción, null o un valor desconocido bloquea la carga de archivos.
     'scanner' => env('STORAGE_SCANNER', 'null'),
+    'clamav_host' => env('CLAMAV_HOST', '127.0.0.1'),
+    'clamav_port' => (int) env('CLAMAV_PORT', 3310),
+    'clamav_timeout_seconds' => (int) env('CLAMAV_TIMEOUT_SECONDS', 10),
 
 ];

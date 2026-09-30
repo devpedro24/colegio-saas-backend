@@ -67,4 +67,25 @@ class TenantProvisioningTest extends TestCase
             $this->assertNull(tenant());
         }
     }
+
+    public function test_tenant_context_is_restored_after_callback_failure(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        ['tenant' => $tenant] = app(TenantProvisioner::class)->provision([
+            'name' => 'Colegio contexto', 'slug' => 'contexto-'.uniqid(),
+            'rector_email' => 'rector@contexto.test',
+        ]);
+
+        try {
+            $tenant->run(function (): never {
+                throw new \RuntimeException('fallo de prueba');
+            });
+            $this->fail('La excepción de prueba debía propagarse.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('fallo de prueba', $exception->getMessage());
+        }
+
+        $this->assertFalse(tenancy()->initialized);
+        $this->assertNull(tenant());
+    }
 }

@@ -6,8 +6,10 @@ namespace App\Http\Controllers\Api\Platform;
 
 use App\Http\Controllers\Controller;
 use App\Models\StoredFile;
+use App\Models\Tenant;
 use App\Support\Storage\StorageException;
 use App\Support\Storage\StorageService;
+use App\Support\Storage\StoredFilePublicToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -34,7 +36,7 @@ class StorageController extends Controller
     {
         $data = $request->validate([
             'file' => ['required', 'file'],
-            'folder' => ['nullable', 'string', 'max:120', 'regex:/^[a-z0-9-_\/]+$/'],
+            'folder' => ['nullable', 'string', 'max:120', 'regex:/\A[a-z0-9_-]+(?:\/[a-z0-9_-]+)*\z/'],
         ]);
 
         try {
@@ -49,7 +51,7 @@ class StorageController extends Controller
 
         return response()->json([
             'archivo' => [
-                'id' => $stored->id,
+                'url_token' => StoredFilePublicToken::for($stored),
                 'mime' => $stored->mime,
                 'size' => $stored->size,
                 'nombre_original' => $stored->original_name,
@@ -60,9 +62,10 @@ class StorageController extends Controller
 
     public function download(Request $request, string $file): JsonResponse|BinaryFileResponse
     {
-        $stored = StoredFile::find($file);
+        $school = Tenant::where('slug', (string) $request->query('school', ''))->first();
+        $stored = $school ? StoredFilePublicToken::findForTenant((string) $school->id, $file) : null;
 
-        if ($stored === null || (string) $request->query('tenant', '') !== (string) $stored->tenant_id) {
+        if ($stored === null) {
             abort(404, 'Archivo no encontrado.');
         }
 
@@ -74,7 +77,8 @@ class StorageController extends Controller
 
         return response()->file($disk->path($stored->path), [
             'Content-Type' => $stored->mime,
-            'Content-Disposition' => 'inline; filename="'.basename($stored->path).'"',
+            'Content-Disposition' => 'attachment; filename="'.basename($stored->path).'"',
+            'X-Content-Type-Options' => 'nosniff',
         ]);
     }
 }

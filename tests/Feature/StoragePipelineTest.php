@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\StoredFile;
 use App\Models\Tenant;
 use App\Support\Storage\NullScanner;
+use App\Support\Storage\RejectingScanner;
 use App\Support\Storage\StorageException;
 use App\Support\Storage\StorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -35,6 +36,7 @@ class StoragePipelineTest extends TestCase
             'plan' => $plan,
             'status' => Tenant::STATUS_ACTIVE,
         ]);
+        $tenant->saveQuietly();
 
         return $tenant;
     }
@@ -57,7 +59,15 @@ class StoragePipelineTest extends TestCase
         // exists() also accepts directories: verify the actual file and its bytes.
         $this->assertSame([$stored->path], Storage::disk('tenant')->allFiles());
         $this->assertSame(file_get_contents($file->getRealPath()), Storage::disk('tenant')->get($stored->path));
-        $this->assertStringContainsString('signature=', $service->signedUrl($stored));
+        $url = $service->signedUrl($stored);
+        $this->assertStringContainsString('signature=', $url);
+        $this->assertStringContainsString('/storage/'.\App\Support\Storage\StoredFilePublicToken::for($stored).'/download', $url);
+        $this->assertStringContainsString('school='.$tenant->slug, $url);
+        $this->assertStringNotContainsString('tenant='.$tenant->id, $url);
+        $this->assertStringNotContainsString('/storage/'.$stored->id.'/download', $url);
+        $this->get($url)->assertOk()
+            ->assertHeader('X-Content-Type-Options', 'nosniff');
+        $this->get(str_replace('school='.$tenant->slug, 'school=otro-colegio', $url))->assertForbidden();
     }
 
     public function test_rechaza_un_mime_fuera_de_whitelist(): void
@@ -74,6 +84,24 @@ class StoragePipelineTest extends TestCase
         $service->store($file, 'general', null, $tenant);
     }
 
+    public function test_rechaza_y_elimina_el_archivo_si_no_hay_escaneo_disponible(): void
+    {
+        Storage::fake('tenant');
+        $tenant = $this->fakeTenant();
+        $service = new StorageService(new RejectingScanner);
+
+        try {
+            $service->store(UploadedFile::fake()->create('documento.pdf', 1, 'application/pdf'),
+                'general', null, $tenant);
+            $this->fail('La carga sin escáner debió fallar.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('analizador de seguridad', $exception->getMessage());
+        }
+
+        $this->assertSame([], Storage::disk('tenant')->allFiles());
+        $this->assertSame(0, StoredFile::query()->count());
+    }
+
     public function test_deduplica_por_checksum_mismo_colegio(): void
     {
         Storage::fake('tenant');
@@ -88,6 +116,17 @@ class StoragePipelineTest extends TestCase
 
         $this->assertSame($stored1->id, $stored2->id);
         $this->assertSame(1, StoredFile::query()->count());
+    }
+
+    public function test_un_archivo_duplicado_no_omite_la_nueva_politica_de_escaneo(): void
+    {
+        Storage::fake('tenant');
+        $tenant = $this->fakeTenant();
+        $upload = UploadedFile::fake()->create('documento.pdf', 1, 'application/pdf');
+        (new StorageService(new NullScanner))->store($upload, 'docs', null, $tenant);
+
+        $this->expectException(StorageException::class);
+        (new StorageService(new RejectingScanner))->store($upload, 'docs', null, $tenant);
     }
 
     public function test_bloquea_el_upload_al_superar_la_cuota_del_plan(): void

@@ -55,17 +55,17 @@ class PlanController extends Controller
     }
 
     /** Detalle de un plan. */
-    public function show(int $id): JsonResponse
+    public function show(string $key): JsonResponse
     {
-        $plan = Plan::findOrFail($id);
+        $plan = Plan::where('key', $key)->firstOrFail();
 
         return response()->json(['plan' => $this->present($plan)]);
     }
 
     /** Actualiza un plan (nombre, descripcion, estado, precios, limites, features). */
-    public function update(Request $request, int $id): JsonResponse
+    public function update(Request $request, string $key): JsonResponse
     {
-        $plan = Plan::findOrFail($id);
+        $plan = Plan::where('key', $key)->firstOrFail();
 
         $data = $this->validatePlan($request, $plan->id);
         $plan->update($data);
@@ -134,7 +134,6 @@ class PlanController extends Controller
     private function present(Plan $plan): array
     {
         return [
-            'id' => $plan->id,
             'key' => $plan->key,
             'name' => $plan->name,
             'description' => $plan->description,

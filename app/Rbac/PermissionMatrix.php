@@ -75,6 +75,14 @@ class PermissionMatrix
             // Sede→Jornada→Nivel→Grado→Grupo + bloques horarios + espacios físicos.
             ['key' => 'academico.estructura.gestionar', 'module' => 'academico', 'action' => 'estructura.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
             ['key' => 'academico.plan_estudios.gestionar', 'module' => 'academico', 'action' => 'plan_estudios.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
+            ['key' => 'academico.matriculas.gestionar', 'module' => 'academico', 'action' => 'matriculas.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'eventos.gestionar', 'module' => 'academico', 'action' => 'eventos.gestionar_todos', 'cells' => ['rector' => 'crud', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'eventos.configurar', 'module' => 'academico', 'action' => 'eventos.configurar', 'cells' => ['rector' => 'editar']],
+            ['key' => 'eventos.publicar_institucional', 'module' => 'academico', 'action' => 'eventos.publicar_institucional', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'eventos.publicar_asignados', 'module' => 'academico', 'action' => 'eventos.publicar_asignados', 'cells' => ['rector' => 'editar', 'docente' => 'editar']],
+            // La carga genérica crea un archivo descargable sin asociarlo a un módulo.
+            // Se reserva al rector hasta que exista una política de propiedad por recurso.
+            ['key' => 'archivos.subir', 'module' => 'Archivos', 'action' => 'Subir archivos institucionales', 'cells' => ['rector' => 'editar']],
 
             // ---- Usuarios y Roles ----
             ['key' => 'usuarios.gestionar', 'module' => 'Usuarios y Roles', 'action' => 'Crear / editar / desactivar usuarios', 'cells' => ['rector' => 'crud']],

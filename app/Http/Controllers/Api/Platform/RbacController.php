@@ -71,9 +71,9 @@ class RbacController extends Controller
         return response()->json(['permission' => $this->presentPermission($permission)], 201);
     }
 
-    public function updatePermission(Request $request, int $id): JsonResponse
+    public function updatePermission(Request $request, string $key): JsonResponse
     {
-        $permission = RbacPermission::findOrFail($id);
+        $permission = RbacPermission::where('key', $key)->firstOrFail();
 
         // La `key` es inmutable (la referencian la matriz y spatie en los tenants).
         $data = $request->validate([
@@ -90,9 +90,9 @@ class RbacController extends Controller
         return response()->json(['permission' => $this->presentPermission($permission)]);
     }
 
-    public function destroyPermission(int $id): JsonResponse
+    public function destroyPermission(string $key): JsonResponse
     {
-        $permission = RbacPermission::findOrFail($id);
+        $permission = RbacPermission::where('key', $key)->firstOrFail();
 
         if ($permission->is_system) {
             return response()->json(['message' => 'No se puede eliminar un permiso del sistema.'], 422);
@@ -125,9 +125,9 @@ class RbacController extends Controller
         return response()->json(['role' => $this->presentRole($role)], 201);
     }
 
-    public function updateRole(Request $request, int $id): JsonResponse
+    public function updateRole(Request $request, string $key): JsonResponse
     {
-        $role = RbacRole::findOrFail($id);
+        $role = RbacRole::where('key', $key)->firstOrFail();
 
         $data = $request->validate([
             'label' => ['required', 'string', 'max:120'],
@@ -140,9 +140,9 @@ class RbacController extends Controller
         return response()->json(['role' => $this->presentRole($role)]);
     }
 
-    public function destroyRole(int $id): JsonResponse
+    public function destroyRole(string $key): JsonResponse
     {
-        $role = RbacRole::findOrFail($id);
+        $role = RbacRole::where('key', $key)->firstOrFail();
 
         if ($role->is_system) {
             return response()->json(['message' => 'No se puede eliminar un rol del sistema.'], 422);
@@ -207,7 +207,6 @@ class RbacController extends Controller
     private function presentPermission(RbacPermission $permission): array
     {
         return [
-            'id' => $permission->id,
             'key' => $permission->key,
             'module' => $permission->module,
             'action' => $permission->action,
@@ -224,7 +223,6 @@ class RbacController extends Controller
     private function presentRole(RbacRole $role): array
     {
         return [
-            'id' => $role->id,
             'key' => $role->key,
             'label' => $role->label,
             'is_system' => $role->is_system,
