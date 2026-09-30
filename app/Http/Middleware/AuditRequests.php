@@ -30,7 +30,13 @@ class AuditRequests
                 'status' => $response->getStatusCode(),
             ]);
         }
-        $response->headers->set('Cache-Control', 'no-store, private');
+        // Only the public, content-versioned school logo may be browser-cached.
+        // JSON, credentials and private attachments keep their no-store policy.
+        if (! ($request->is('api/branding/logo')
+            && $response instanceof \Symfony\Component\HttpFoundation\BinaryFileResponse
+            && $response->getStatusCode() < 400)) {
+            $response->headers->set('Cache-Control', 'no-store, private');
+        }
         $response->headers->set('X-Content-Type-Options', 'nosniff');
 
         return $response;

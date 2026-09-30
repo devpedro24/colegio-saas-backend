@@ -107,6 +107,6 @@ class AuthController extends Controller
      */
     private function userPayload(User $user): array
     {
-        return AccountPresenter::user($user);
+        return [...AccountPresenter::user($user), 'onboarding' => \App\Services\TenantOnboarding::status($user)];
     }
 }

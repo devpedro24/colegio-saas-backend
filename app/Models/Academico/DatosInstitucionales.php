@@ -38,6 +38,7 @@ class DatosInstitucionales extends Model
         'telefono',
         'correo',
         'logo_principal',
+        'logo_version',
         'logo_documentos',
         'isotipo',
         'colores',

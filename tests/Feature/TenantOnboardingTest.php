@@ -74,10 +74,22 @@ class TenantOnboardingTest extends TestCase
             Storage::disk('tenant')->get($tenant->getKey().'/branding/logo.png')
         ), 0, 2));
         $this->get($api.'/branding/logo')->assertOk()->assertHeader('Content-Type', 'image/png');
+        $status = $this->getJson($api.'/onboarding/status')->assertOk();
+        $versionedUrl = 'http://'.$tenant->slug.'.localhost'.$status->json('logo_url');
+        $image = $this->get($versionedUrl)->assertOk();
+        $this->assertStringContainsString('immutable', $image->headers->get('Cache-Control'));
+        $this->assertStringNotContainsString('no-store', $image->headers->get('Cache-Control'));
+        $this->withHeader('If-None-Match', $image->headers->get('ETag'))->get($versionedUrl)->assertStatus(304);
+        $this->flushHeaders()->withHeaders(['Accept' => 'application/json'])->withToken($token);
+        $this->getJson($api.'/me')->assertOk()->assertJsonPath('user.onboarding.required', false)
+            ->assertHeader('Cache-Control', 'no-store, private');
         $this->post($api.'/onboarding/logo', [
             'logo' => UploadedFile::fake()->image('escudo-ancho.png', 900, 300),
             'aspect' => 'square', 'offset_x' => -1,
         ])->assertOk();
+        $newLogoUrl = $this->getJson($api.'/onboarding/status')->json('logo_url');
+        $this->assertNotSame($status->json('logo_url'), $newLogoUrl);
+        $this->get($versionedUrl)->assertNotFound();
         $this->assertSame([300, 300], array_slice(getimagesizefromstring(
             Storage::disk('tenant')->get($tenant->getKey().'/branding/logo.png')
         ), 0, 2));

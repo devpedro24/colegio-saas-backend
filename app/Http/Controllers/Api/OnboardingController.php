@@ -92,6 +92,7 @@ class OnboardingController extends Controller
         Storage::disk('tenant')->put(TenantOnboarding::logoPath(), $processed);
         DatosInstitucionales::query()->firstOrNew([])->fill([
             'logo_principal' => TenantOnboarding::logoPath(),
+            'logo_version' => hash('sha256', $processed),
         ])->save();
         if (TenantOnboarding::institutionalComplete()) {
             ConfigurationGate::maybeActivate($request->user());
@@ -101,15 +102,24 @@ class OnboardingController extends Controller
         return response()->json(TenantOnboarding::status($request->user()));
     }
 
-    public function logo(): BinaryFileResponse
+    public function logo(Request $request): BinaryFileResponse
     {
         $path = TenantOnboarding::logoPath();
         abort_unless(Storage::disk('tenant')->exists($path), 404);
 
-        return response()->file(Storage::disk('tenant')->path($path), [
+        $institution = DatosInstitucionales::query()->first();
+        $version = substr($institution?->logo_version
+            ?: hash_file('sha256', Storage::disk('tenant')->path($path)), 0, 12);
+        abort_if($request->has('v') && $request->query('v') !== $version, 404);
+
+        $response = response()->file(Storage::disk('tenant')->path($path), [
             'Content-Type' => 'image/png',
-            'Cache-Control' => 'public, max-age=300',
+            'Cache-Control' => $request->has('v') ? 'public, max-age=31536000, immutable' : 'public, no-cache',
             'X-Content-Type-Options' => 'nosniff',
         ]);
+        $response->setEtag($version);
+        $response->isNotModified($request);
+
+        return $response;
     }
 }

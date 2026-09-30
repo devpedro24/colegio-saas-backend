@@ -16,20 +16,26 @@ final class TenantOnboarding
         return (string) tenant()->getKey().'/branding/logo.png';
     }
 
-    public static function logoUrl(): ?string
+    public static function logoUrl(?DatosInstitucionales $institution = null): ?string
     {
         if (! Storage::disk('tenant')->exists(self::logoPath())) {
             return null;
         }
 
-        $version = substr(hash_file('sha256', Storage::disk('tenant')->path(self::logoPath())), 0, 12);
+        $institution ??= DatosInstitucionales::query()->first();
+        $version = substr($institution?->logo_version
+            ?: hash_file('sha256', Storage::disk('tenant')->path(self::logoPath())), 0, 12);
 
         return '/api/branding/logo?v='.$version;
     }
 
     public static function institutionalComplete(): bool
     {
-        $datos = DatosInstitucionales::query()->first();
+        return self::complete(DatosInstitucionales::query()->first());
+    }
+
+    private static function complete(?DatosInstitucionales $datos): bool
+    {
         if ($datos === null || ! Storage::disk('tenant')->exists(self::logoPath())) {
             return false;
         }
@@ -51,9 +57,10 @@ final class TenantOnboarding
 
     public static function status(User $user): array
     {
-        $institutionRequired = self::institutionRequired($user);
-        $passwordRequired = (bool) $user->must_change_password;
         $institution = DatosInstitucionales::query()->first();
+        $institutionRequired = ! self::complete($institution)
+            && (tenant()?->status === Tenant::STATUS_CONFIGURING || $user->hasRole('rector'));
+        $passwordRequired = (bool) $user->must_change_password;
 
         return [
             'required' => $passwordRequired || $institutionRequired,
@@ -69,7 +76,7 @@ final class TenantOnboarding
                 'telefono' => null,
                 'correo' => null,
             ],
-            'logo_url' => self::logoUrl(),
+            'logo_url' => self::logoUrl($institution),
         ];
     }
 }
