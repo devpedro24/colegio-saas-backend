@@ -7,6 +7,8 @@ PostgreSQL exclusiva** (`RN-AI-001`) y acceso por subdominio `<slug>.<dominio>`.
 - **Stack:** Laravel 12 · PHP 8.2 · PostgreSQL 16 · [`stancl/tenancy`](https://tenancyforlaravel.com) v3 (database-per-tenant).
 - La **fuente de verdad del negocio** vive en `../documentacion-girgit/` (reglas `RN-XX-NNN`).
 
+Entregas y límites del corte actual: [docs/ENTREGAS_2026-09.md](docs/ENTREGAS_2026-09.md) y [docs/SEGURIDAD_API.md](docs/SEGURIDAD_API.md).
+
 ## Actualización en tiempo real
 
 Reverb comunica todos los cambios de la API mediante `application.changed` en
