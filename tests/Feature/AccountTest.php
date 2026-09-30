@@ -30,6 +30,8 @@ class AccountTest extends TestCase
             'password' => Hash::make(self::PASSWORD),
             'status' => User::STATUS_ACTIVE,
             'must_change_password' => false,
+            'two_factor_confirmed_at' => now(),
+            'two_factor_secret' => 'JBSWY3DPEHPK3PXP',
         ], $attributes));
     }
 

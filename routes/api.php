@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\Platform\MfaController as PlatformMfaController;
 use App\Http\Controllers\Api\Platform\PlanController;
 use App\Http\Controllers\Api\Platform\RbacController;
 use App\Http\Controllers\Api\Platform\StorageController;
+use App\Http\Middleware\EnsureMfaReady;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -42,7 +43,7 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
         // consentimiento). No puede ir bajo auth:sanctum.
         Route::get('/account/google/callback', [AccountController::class, 'googleCallback']);
 
-        Route::middleware('auth:sanctum')->group(function () {
+        Route::middleware(['auth:sanctum', EnsureMfaReady::class])->group(function () {
             Route::get('/me', [PlatformAuthController::class, 'me']);
             Route::post('/logout', [PlatformAuthController::class, 'logout']);
             Route::get('/user', fn (Request $request) => $request->user());
@@ -51,9 +52,9 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
             Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request));
 
             // MFA TOTP (segundo factor) del superadministrador de plataforma.
-            Route::post('/mfa/setup', [PlatformMfaController::class, 'setup']);
-            Route::post('/mfa/confirm', [PlatformMfaController::class, 'confirm']);
-            Route::post('/mfa/disable', [PlatformMfaController::class, 'disable']);
+            Route::post('/mfa/setup', [PlatformMfaController::class, 'setup'])->middleware('throttle:mfa');
+            Route::post('/mfa/confirm', [PlatformMfaController::class, 'confirm'])->middleware('throttle:mfa');
+            Route::post('/mfa/disable', [PlatformMfaController::class, 'disable'])->middleware('throttle:mfa');
 
             // Ajustes de cuenta del usuario autenticado (perfil, email, clave,
             // desactivacion y vinculacion de Google).
@@ -123,7 +124,7 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
         // (bootstrap/app.php -> withRouting(api: ...)), por lo que aqui NO se
         // vuelve a aplicar prefix('api'); de lo contrario las rutas quedarian
         // en /api/api/... y el frontend (que llama a /api/anos-lectivos) daria 404.
-        Route::middleware([InitializeTenancyByRequestData::class, 'auth:sanctum'])
+        Route::middleware([InitializeTenancyByRequestData::class, 'auth:sanctum', EnsureMfaReady::class])
             ->group(function () {
                 Route::post('/tenant-broadcasting/auth', fn (Request $request) => Broadcast::auth($request));
                 require base_path('routes/tenant_academico.php');

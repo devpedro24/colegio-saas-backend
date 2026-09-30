@@ -53,6 +53,8 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('account-security', function (Request $request) {
             return Limit::perMinute(5)->by($request->getHost().'|'.$request->ip());
         });
+        RateLimiter::for('mfa', fn (Request $request) => Limit::perMinute(5)
+            ->by($request->getHost().'|'.$request->user()?->id.'|'.$request->path()));
         // Nombre de BD del colegio: tenant_<nombre>_<id corto> (RN-AI-001).
         DatabaseConfig::generateDatabaseNamesUsing(
             fn ($tenant) => TenantDatabaseName::for($tenant)

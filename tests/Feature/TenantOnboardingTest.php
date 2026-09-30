@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Models\User;
 use App\Models\Tenant;
+use App\Models\User;
 use App\Services\TenantProvisioner;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
@@ -33,6 +34,9 @@ class TenantOnboardingTest extends TestCase
             'rector_email' => 'rector@inicio.test',
         ]);
         Storage::fake('tenant');
+        // Estos escenarios parten de una cuenta que ya confirmó su segundo factor.
+        $tenant->run(fn () => User::query()->update(['two_factor_confirmed_at' => now(),
+            'two_factor_secret' => Crypt::encryptString('JBSWY3DPEHPK3PXP')]));
         $token = $tenant->run(fn () => User::where('email', 'rector@inicio.test')->firstOrFail()
             ->createToken('web')->plainTextToken);
 
@@ -89,6 +93,9 @@ class TenantOnboardingTest extends TestCase
         ]);
         $tenant->update(['status' => Tenant::STATUS_ACTIVE]);
         Storage::fake('tenant');
+        // Estos escenarios parten de una cuenta que ya confirmó su segundo factor.
+        $tenant->run(fn () => User::query()->update(['two_factor_confirmed_at' => now(),
+            'two_factor_secret' => Crypt::encryptString('JBSWY3DPEHPK3PXP')]));
         $token = $tenant->run(fn () => User::where('email', 'rector@previo.test')->firstOrFail()
             ->createToken('web')->plainTextToken);
         $api = 'http://'.$tenant->slug.'.localhost/api';

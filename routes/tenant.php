@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\MfaController;
+use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\UserController;
-use App\Http\Middleware\EnsureTenantActive;
+use App\Http\Middleware\EnsureMfaReady;
 use App\Http\Middleware\EnsureOnboardingComplete;
+use App\Http\Middleware\EnsureTenantActive;
 use App\Http\Middleware\InitializeTenancyByDomainOrSubdomain;
 use App\Models\Tenant;
 use Illuminate\Http\Request;
@@ -81,7 +82,7 @@ Route::middleware([
     Route::get('/tenant-status', fn () => response()->json(['ok' => true]));
     Route::get('/branding/logo', [OnboardingController::class, 'logo']);
 
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:sanctum', EnsureMfaReady::class])->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/onboarding/status', [OnboardingController::class, 'status']);
@@ -92,47 +93,47 @@ Route::middleware([
         // Onboarding also receives changes from other sessions.
         Route::post('/broadcasting/auth', fn (Request $request) => Broadcast::auth($request));
 
+        // MFA TOTP (segundo factor) del usuario del colegio.
+        Route::post('/mfa/setup', [MfaController::class, 'setup'])->middleware('throttle:mfa');
+        Route::post('/mfa/confirm', [MfaController::class, 'confirm'])->middleware('throttle:mfa');
+        Route::post('/mfa/disable', [MfaController::class, 'disable'])->middleware('throttle:mfa');
+
         Route::middleware(EnsureOnboardingComplete::class)->group(function () {
 
-        // MFA TOTP (segundo factor) del usuario del colegio.
-        Route::post('/mfa/setup', [MfaController::class, 'setup']);
-        Route::post('/mfa/confirm', [MfaController::class, 'confirm']);
-        Route::post('/mfa/disable', [MfaController::class, 'disable']);
+            // Ajustes de cuenta del usuario autenticado (perfil, email, clave,
+            // desactivacion y vinculacion de Google).
+            Route::get('/account', [AccountController::class, 'index']);
+            Route::put('/account/profile', [AccountController::class, 'updateProfile']);
+            Route::post('/account/email', [AccountController::class, 'changeEmail']);
+            Route::post('/account/deactivate', [AccountController::class, 'deactivate']);
+            Route::post('/account/google/connect', [AccountController::class, 'googleConnect']);
+            Route::delete('/account/google', [AccountController::class, 'googleUnlink']);
 
-        // Ajustes de cuenta del usuario autenticado (perfil, email, clave,
-        // desactivacion y vinculacion de Google).
-        Route::get('/account', [AccountController::class, 'index']);
-        Route::put('/account/profile', [AccountController::class, 'updateProfile']);
-        Route::post('/account/email', [AccountController::class, 'changeEmail']);
-        Route::post('/account/deactivate', [AccountController::class, 'deactivate']);
-        Route::post('/account/google/connect', [AccountController::class, 'googleConnect']);
-        Route::delete('/account/google', [AccountController::class, 'googleUnlink']);
+            // RBAC: solo quien tenga el permiso 'usuarios.ajustar_permisos' (el rector).
+            Route::middleware('can:usuarios.ajustar_permisos')->group(function () {
+                Route::get('/rbac/roles', [RoleController::class, 'index']);
+                Route::put('/rbac/roles/{role}/permissions/{permission}', [RoleController::class, 'togglePermission']);
+            });
 
-        // RBAC: solo quien tenga el permiso 'usuarios.ajustar_permisos' (el rector).
-        Route::middleware('can:usuarios.ajustar_permisos')->group(function () {
-            Route::get('/rbac/roles', [RoleController::class, 'index']);
-            Route::put('/rbac/roles/{role}/permissions/{permission}', [RoleController::class, 'togglePermission']);
-        });
+            // Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion
+            // puede apuntar a una sede (tenant hijo) y se escribe en su propia BD.
+            Route::middleware('can:usuarios.gestionar')->prefix('usuarios')->group(function () {
+                Route::get('/', [UserController::class, 'index']);
+                Route::post('/', [UserController::class, 'store']);
+                Route::put('/{id}', [UserController::class, 'update']);
+                Route::delete('/{id}', [UserController::class, 'destroy']);
+                Route::get('/{id}/temporal-password', [UserController::class, 'temporalPassword']);
+                Route::post('/{id}/reset-password', [UserController::class, 'resetPassword']);
+            });
 
-        // Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion
-        // puede apuntar a una sede (tenant hijo) y se escribe en su propia BD.
-        Route::middleware('can:usuarios.gestionar')->prefix('usuarios')->group(function () {
-            Route::get('/', [UserController::class, 'index']);
-            Route::post('/', [UserController::class, 'store']);
-            Route::put('/{id}', [UserController::class, 'update']);
-            Route::delete('/{id}', [UserController::class, 'destroy']);
-            Route::get('/{id}/temporal-password', [UserController::class, 'temporalPassword']);
-            Route::post('/{id}/reset-password', [UserController::class, 'resetPassword']);
-        });
-
-        /*
-         | Académico — Bloque A (Fase 1): años lectivos, periodos y configuración
-         | del colegio. Se definen en routes/tenant_academico.php (compartidas con
-         | el grupo central header-resuelto de la suplantación, en routes/api.php)
-         | para que ambos caminos apunten a los MISMOS controladores del colegio.
-         | Aquí ya estamos bajo `api` + `auth:sanctum` + tenancy por subdominio.
-         */
-        require base_path('routes/tenant_academico.php');
+            /*
+             | Académico — Bloque A (Fase 1): años lectivos, periodos y configuración
+             | del colegio. Se definen en routes/tenant_academico.php (compartidas con
+             | el grupo central header-resuelto de la suplantación, en routes/api.php)
+             | para que ambos caminos apunten a los MISMOS controladores del colegio.
+             | Aquí ya estamos bajo `api` + `auth:sanctum` + tenancy por subdominio.
+             */
+            require base_path('routes/tenant_academico.php');
         });
     });
 });

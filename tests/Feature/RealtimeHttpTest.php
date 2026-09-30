@@ -3,11 +3,16 @@
 namespace Tests\Feature;
 
 use App\Events\ApplicationChanged;
+use App\Events\PlatformDataChanged;
+use App\Jobs\SynchronizeTenantPermissions;
+use App\Models\Tenant;
 use App\Models\User;
 use App\Services\TenantProvisioner;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Broadcast;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Event;
 use Tests\TestCase;
 
@@ -17,7 +22,9 @@ class RealtimeHttpTest extends TestCase
 
     protected function tearDown(): void
     {
-        if (tenancy()->initialized) tenancy()->end();
+        if (tenancy()->initialized) {
+            tenancy()->end();
+        }
         parent::tearDown();
     }
 
@@ -27,6 +34,9 @@ class RealtimeHttpTest extends TestCase
         ['tenant' => $tenant] = app(TenantProvisioner::class)->provision([
             'name' => 'Realtime test', 'slug' => 'realtime-'.uniqid(), 'rector_email' => 'rector@realtime.test',
         ]);
+        // Estos escenarios parten de una cuenta que ya confirmó su segundo factor.
+        $tenant->run(fn () => User::query()->update(['two_factor_confirmed_at' => now(),
+            'two_factor_secret' => Crypt::encryptString('JBSWY3DPEHPK3PXP')]));
         $token = $tenant->run(fn () => User::where('email', 'rector@realtime.test')->firstOrFail()->createToken('web')->plainTextToken);
         Event::fake([ApplicationChanged::class]);
         $broadcaster = Broadcast::connection('reverb');
@@ -51,14 +61,14 @@ class RealtimeHttpTest extends TestCase
 
     public function test_catalog_changes_queue_permission_updates_for_existing_schools(): void
     {
-        \Illuminate\Support\Facades\Bus::fake([\App\Jobs\SynchronizeTenantPermissions::class]);
+        Bus::fake([SynchronizeTenantPermissions::class]);
         Event::fake([ApplicationChanged::class]);
-        \App\Models\Tenant::withoutEvents(fn () => \App\Models\Tenant::create([
+        Tenant::withoutEvents(fn () => Tenant::create([
             'id' => 'realtime-school', 'name' => 'Realtime', 'slug' => 'realtime', 'plan' => 'esencial',
             'tipo' => 'colegio', 'status' => 'active',
         ]));
-        \App\Events\PlatformDataChanged::dispatch('rbac', 'updated');
-        \Illuminate\Support\Facades\Bus::assertDispatched(\App\Jobs\SynchronizeTenantPermissions::class,
+        PlatformDataChanged::dispatch('rbac', 'updated');
+        Bus::assertDispatched(SynchronizeTenantPermissions::class,
             fn ($job) => $job->tenantId === 'realtime-school');
     }
 }

@@ -7,8 +7,9 @@ namespace App\Http\Controllers\Api\Platform;
 use App\Http\Controllers\Controller;
 use App\Models\Impersonation;
 use App\Models\User;
+use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
-use App\Support\Mfa\TotpService;
+use App\Support\Mfa\MfaVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -23,12 +24,12 @@ use Illuminate\Validation\ValidationException;
  */
 class AuthController extends Controller
 {
-    public function login(Request $request, TotpService $totp): JsonResponse
+    public function login(Request $request, MfaVerifier $verifier): JsonResponse
     {
         $data = $request->validate([
             'email' => ['required', 'email'],
             'password' => ['required', 'string'],
-            'code' => ['nullable', 'string'],
+            'code' => ['nullable', 'string', 'max:32'],
         ]);
 
         $user = User::where('email', $data['email'])->first();
@@ -58,7 +59,7 @@ class AuthController extends Controller
                 ], 422);
             }
 
-            if (! $totp->verify((string) $user->getTwoFactorSecret(), $code)) {
+            if (! $verifier->verify($user, $code)) {
                 return response()->json([
                     'mfa_required' => true,
                     'message' => 'Codigo invalido.',
@@ -66,7 +67,7 @@ class AuthController extends Controller
             }
         }
 
-        $token = $user->createToken('platform')->plainTextToken;
+        $token = $user->createToken('platform', ['*'], now()->addHours(8))->plainTextToken;
 
         AuditLogger::platform($user, 'LOGIN', 'auth', (string) $user->id);
 
@@ -96,17 +97,6 @@ class AuthController extends Controller
      */
     private function userPayload(User $user): array
     {
-        return [
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-            'phone' => $user->phone,
-            'google_email' => $user->google_email,
-            'must_change_password' => (bool) $user->must_change_password,
-            'mfa_enabled' => $user->hasTwoFactorEnabled(),
-            'roles' => [$user->role ?? 'superadmin'],
-            'permissions' => [],
-            'is_platform' => true,
-        ];
+        return AccountPresenter::user($user);
     }
 }

@@ -6,15 +6,16 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
-use App\Support\PasswordPolicy;
+use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
+use App\Support\PasswordPolicy;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -33,7 +34,7 @@ class AccountController extends Controller
     private const STATE_TTL_MINUTES = 15;
 
     /* ------------------------------------------------------------------ */
-    /* Perfil                                                              */
+    /* Perfil */
     /* ------------------------------------------------------------------ */
 
     public function index(Request $request): JsonResponse
@@ -46,10 +47,13 @@ class AccountController extends Controller
         $data = $request->validate([
             'name' => ['required', 'string', 'max:160'],
             'phone' => ['nullable', 'string', 'max:32'],
-            'communications' => ['nullable', 'array'],
+            'roles' => ['prohibited'], 'permissions' => ['prohibited'],
+            'role' => ['prohibited'], 'tenant_id' => ['prohibited'], 'plan' => ['prohibited'],
         ]);
 
         $user = $request->user();
+        abort_if(! AccountPresenter::capabilities($user)['edit_name'] && trim($data['name']) !== $user->name,
+            403, 'El colegio administra tu nombre académico.');
         $user->update([
             'name' => trim($data['name']),
             'phone' => trim((string) ($data['phone'] ?? '')),
@@ -64,7 +68,7 @@ class AccountController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /* Email y contrasena                                                  */
+    /* Email y contrasena */
     /* ------------------------------------------------------------------ */
 
     public function changeEmail(Request $request): JsonResponse
@@ -81,6 +85,8 @@ class AccountController extends Controller
                 'password' => ['La contraseña es incorrecta.'],
             ]);
         }
+
+        abort_unless(AccountPresenter::capabilities($user)['edit_email'], 403, 'Solicita el cambio de correo al colegio.');
 
         $newEmail = mb_strtolower(trim($data['email']));
 
@@ -148,7 +154,7 @@ class AccountController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /* Desactivar cuenta                                                   */
+    /* Desactivar cuenta */
     /* ------------------------------------------------------------------ */
 
     public function deactivate(Request $request): JsonResponse
@@ -175,7 +181,7 @@ class AccountController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /* Google (anclar cuenta)                                              */
+    /* Google (anclar cuenta) */
     /* ------------------------------------------------------------------ */
 
     public function googleConnect(Request $request): JsonResponse
@@ -184,11 +190,12 @@ class AccountController extends Controller
 
         if (! $clientId) {
             return response()->json([
-                'message' => 'La vinculación con Google no está configurada: agrega GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en el .env del backend (OAuth Client de Google Cloud Console).',
+                'message' => 'La vinculación con Google todavía no está disponible.',
             ], 422);
         }
 
         $user = $request->user();
+        abort_unless(AccountPresenter::capabilities($user)['google_link'], 403);
 
         $state = $this->buildOAuthState($user);
 
@@ -279,7 +286,7 @@ class AccountController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /* Helpers                                                             */
+    /* Helpers */
     /* ------------------------------------------------------------------ */
 
     /** Estado OAuth sellado: id del usuario + expiracion (sin sesion server-side). */
@@ -311,7 +318,7 @@ class AccountController extends Controller
                 'uid' => (string) $payload['uid'],
                 'exp' => (int) $payload['exp'],
             ];
-        } catch (\Illuminate\Contracts\Encryption\DecryptException) {
+        } catch (DecryptException) {
             return null;
         }
     }
@@ -324,19 +331,7 @@ class AccountController extends Controller
     /** @return array<string, mixed> */
     private function userPayload(User $user): array
     {
-        return [
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-            'phone' => $user->phone,
-            'google_email' => $user->google_email,
-            'tenant_id' => tenant()?->getKey(),
-            'mfa_enabled' => $user->hasTwoFactorEnabled(),
-            'roles' => tenant() ? $user->getRoleNames()->values() : [$user->role ?? 'superadmin'],
-            'permissions' => tenant() ? $user->getAllPermissions()->pluck('name')->values() : [],
-            'is_platform' => tenant() === null,
-            'is_superadmin' => $user->esSuperadminPlataforma(),
-        ];
+        return AccountPresenter::user($user);
     }
 
     private function audit(User $user, string $action, string $resource, string $resourceId): void

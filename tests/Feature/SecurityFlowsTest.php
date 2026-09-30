@@ -60,6 +60,7 @@ class SecurityFlowsTest extends TestCase
     public function test_only_platform_superadmin_can_query_audit_and_read_is_itself_audited(): void
     {
         $admin = $this->admin();
+        $admin->forceFill(['two_factor_confirmed_at' => now(), 'two_factor_secret' => 'JBSWY3DPEHPK3PXP'])->save();
         $this->withToken($admin->createToken('platform')->plainTextToken)->getJson('/api/platform/auditoria')->assertOk()->assertJsonStructure(['data', 'total']);
         $this->assertDatabaseHas('platform_audit_logs', ['accion' => 'READ', 'recurso' => 'auditoria']);
         $this->getJson('/api/platform/auditoria?hasta=2026-12-31')->assertOk();
