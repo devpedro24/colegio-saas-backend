@@ -12,6 +12,7 @@ use App\Services\ConfigurationGate;
 use App\Services\DuplicarAnoLectivoService;
 use App\Services\GradeCalculationService;
 use App\Support\Audit\AuditLogger;
+use App\Support\OpaqueUrlToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -571,8 +572,9 @@ class AnoLectivoController extends Controller
     {
         $payload = [
             'id' => $ano->id,
-            // Stable, tenant-bound opaque URL selector. Authorization still happens server-side.
-            'url_token' => hash_hmac('sha256', (string) tenancy()->tenant?->getTenantKey().'|ano-lectivo|'.$ano->id, (string) config('app.key')),
+            // Stable tenant-bound URL selector; the legacy value resolves existing bookmarks.
+            'url_token' => OpaqueUrlToken::for('ano-lectivo', $ano->id),
+            'legacy_url_token' => hash_hmac('sha256', (string) tenancy()->tenant?->getTenantKey().'|ano-lectivo|'.$ano->id, (string) config('app.key')),
             'nombre' => $ano->nombre,
             'tipo_calendario' => $ano->tipo_calendario,
             'fecha_inicio' => $ano->fecha_inicio?->toDateString(),

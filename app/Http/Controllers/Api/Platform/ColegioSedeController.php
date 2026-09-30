@@ -127,7 +127,7 @@ class ColegioSedeController extends Controller
             }
         }
 
-        $snapshot = $this->enrich($this->snapshot($sede));
+        $snapshot = $this->enrich($tenant->run(fn () => $this->snapshot($sede)));
 
         AuditLogger::platform(
             $request->user(),
@@ -193,18 +193,20 @@ class ColegioSedeController extends Controller
             return response()->json(['message' => $error], 422);
         }
 
+        $current = $this->enrich($tenant->run(fn () => $this->snapshot($sede)));
+
         AuditLogger::platform(
             $request->user(),
             'UPDATE',
             'colegio.sede',
             (string) $tenant->id,
             $this->enrich($prev),
-            $this->enrich($this->snapshot($sede)),
+            $current,
             null,
             (string) $tenant->id,
         );
 
-        return response()->json(['data' => $this->enrich($this->snapshot($sede))]);
+        return response()->json(['data' => $current]);
     }
 
     /** Elimina (soft-delete) una sede del colegio y baja su tenant hijo. */

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models\Academico;
 
+use App\Support\OpaqueUrlToken;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -71,29 +72,44 @@ class Sede extends Model
         return [];
     }
 
-    /** ID opaco para URLs publicas (evita exponer el auto-increment). */
+    /** ID opaco y estable para URLs públicas. */
     public function getHashedIdAttribute(): string
     {
-        return rtrim(strtr(base64_encode((string) $this->id), '+/', '-_'), '=');
+        if ($this->getKey() === null) {
+            return '';
+        }
+
+        return OpaqueUrlToken::for('sede', $this->id);
     }
 
     /**
-     * Resuelve una sede por ID numerico, hashed_id (base64url) o hashed_id
-     * legacy con padding `=`.
+     * Resuelve el selector vigente y los enlaces anteriores (ID o base64url).
      */
     public function resolveRouteBinding($value, $field = null): ?static
     {
-        if (is_numeric($value)) {
-            return $this->newQuery()->where('id', (int) $value)->first();
+        return static::fromPublicId((string) $value);
+    }
+
+    public static function fromPublicId(string $value): ?static
+    {
+        if (ctype_digit($value)) {
+            return static::query()->find((int) $value);
+        }
+
+        $sede = static::query()->get()->first(
+            fn (self $candidate) => hash_equals($candidate->hashed_id, $value),
+        );
+        if ($sede !== null) {
+            return $sede;
         }
 
         $decoded = base64_decode(
-            strtr((string) $value, '-_', '+/') . str_repeat('=', (4 - strlen((string) $value) % 4) % 4),
+            strtr($value, '-_', '+/').str_repeat('=', (4 - strlen($value) % 4) % 4),
             true,
         );
 
-        if ($decoded !== false && is_numeric($decoded)) {
-            return $this->newQuery()->where('id', (int) $decoded)->first();
+        if ($decoded !== false && ctype_digit($decoded)) {
+            return static::query()->find((int) $decoded);
         }
 
         return null;

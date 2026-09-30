@@ -17,6 +17,7 @@ use App\Models\User;
 use App\Services\GradebookService;
 use App\Services\SieeConfiguration;
 use App\Support\Audit\AuditLogger;
+use App\Support\OpaqueUrlToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -42,7 +43,12 @@ class EvaluacionController extends Controller
             'can_manage' => $manage, 'can_configure' => $user->can('academico.configurar'),
             'can_view_reports' => $manage || $user->hasRole('estudiante'),
             'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado']),
-            'periodos' => Periodo::orderBy('orden')->get(), 'asignaciones' => $assignments, 'matriculas' => $enrollments,
+            'periodos' => Periodo::orderBy('orden')->get()
+                ->map(fn (Periodo $period) => [...$period->toArray(), 'url_token' => OpaqueUrlToken::for('periodo', $period->id)]),
+            'asignaciones' => $assignments
+                ->map(fn (AsignacionDocente $assignment) => [...$assignment->toArray(), 'url_token' => OpaqueUrlToken::for('asignacion-docente', $assignment->id)]),
+            'matriculas' => $enrollments
+                ->map(fn (Matricula $enrollment) => [...$enrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $enrollment->id)]),
             'grupos' => $manage ? Grupo::with('grado')->where('estado', 'activo')->get() : [],
             'estudiantes' => $manage ? User::role('estudiante')->where('status', 'active')->get(['id', 'name']) : [],
         ]]);

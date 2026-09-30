@@ -248,21 +248,7 @@ class SedeController extends Controller
 
     private function findSede($id): Sede
     {
-        if (is_numeric($id)) {
-            return Sede::findOrFail((int) $id);
-        }
-
-        // hashed_id base64url sin padding
-        $decoded = base64_decode(
-            strtr((string) $id, '-_', '+/').str_repeat('=', (4 - strlen((string) $id) % 4) % 4),
-            true,
-        );
-
-        if ($decoded !== false && is_numeric($decoded)) {
-            return Sede::findOrFail((int) $decoded);
-        }
-
-        return Sede::findOrFail($id);
+        return Sede::fromPublicId((string) $id) ?? abort(404);
     }
 
     /**
