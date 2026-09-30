@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\Academico\AnoLectivoController;
+use App\Http\Controllers\Api\Academico\AcademicOptionsController;
 use App\Http\Controllers\Api\Academico\BloqueHorarioController;
 use App\Http\Controllers\Api\Academico\DatosInstitucionalesController;
 use App\Http\Controllers\Api\Academico\EscalaValorativaController;
@@ -20,6 +21,7 @@ use App\Http\Controllers\Api\Academico\PeriodoController;
 use App\Http\Controllers\Api\Academico\PlanEstudiosController;
 use App\Http\Controllers\Api\Academico\SedeController;
 use App\Http\Controllers\Api\Academico\SieeController;
+use App\Http\Controllers\Api\InstitutionContextController;
 use App\Http\Controllers\Api\Platform\StorageController;
 use App\Http\Controllers\Api\UserController;
 use App\Services\ConfigurationGate;
@@ -46,6 +48,8 @@ use Illuminate\Support\Facades\Route;
 | Aqui solo van los controles de autorizacion por permiso (`can:`).
 |
 */
+
+Route::get('/catalogos-academicos', AcademicOptionsController::class);
 
 // Años lectivos y periodos: permiso 'academico.anos.gestionar'.
 Route::middleware('can:academico.anos.gestionar')->group(function () {
@@ -188,6 +192,7 @@ Route::prefix('evaluacion')->controller(EvaluacionController::class)->group(func
 });
 Route::middleware('can:academico.configurar')->group(function () {
     Route::get('/siee/{id}', [SieeController::class, 'show']);
+    Route::get('/siee/{id}/curriculo', [SieeController::class, 'curriculoIndex']);
     Route::put('/siee/{id}', [SieeController::class, 'update']);
     Route::put('/siee/{id}/curriculo', [SieeController::class, 'curriculo']);
 });
@@ -219,3 +224,5 @@ Route::middleware('can:usuarios.gestionar')->prefix('usuarios')->group(function 
     Route::get('/{id}/temporal-password', [UserController::class, 'temporalPassword']);
     Route::post('/{id}/reset-password', [UserController::class, 'resetPassword']);
 });
+
+Route::get('/institution-context', InstitutionContextController::class);

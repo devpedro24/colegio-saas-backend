@@ -1239,6 +1239,59 @@ class AcademicModulesTest extends TestCase
         $this->assertEqualsCanonicalizing([$first->id, $second->id], array_column($otherTabs['sesiones'], 'id'));
     }
 
+    public function test_schedule_summary_counts_follow_group_and_teacher_filters(): void
+    {
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $otherTeacher = User::create(['name' => 'Otra docente', 'email' => 'other.teacher@test.test',
+            'password' => 'TeacherPassword123', 'role' => 'docente', 'status' => 'active']);
+        $otherTeacher->assignRole('docente');
+        $otherGroup = Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $this->year->id,
+            'nombre' => 'B', 'jornada_id' => $this->group->jornada_id,
+            'sede_id' => $this->group->sede_id, 'estado' => 'activo',
+        ]);
+        $otherSubject = Materia::create(['ano_lectivo_id' => $this->year->id,
+            'nombre' => 'Química', 'intensidad_horaria' => 1, 'estado' => 'activo']);
+        $directSubject = Materia::create(['ano_lectivo_id' => $this->year->id,
+            'nombre' => 'Arte', 'intensidad_horaria' => 1, 'estado' => 'activo']);
+        Materia::create(['ano_lectivo_id' => $this->year->id,
+            'nombre' => 'Sin programación', 'intensidad_horaria' => 1, 'estado' => 'activo']);
+        AsignacionDocente::create(['ano_lectivo_id' => $this->year->id, 'grupo_id' => $otherGroup->id,
+            'materia_id' => $otherSubject->id, 'docente_id' => $otherTeacher->id]);
+        AsignacionDocente::create(['ano_lectivo_id' => $this->year->id, 'grupo_id' => $otherGroup->id,
+            'materia_id' => $this->subject->id, 'docente_id' => $this->teacher->id]);
+        $service = new HorarioService;
+        $service->guardar(['grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id, 'dia' => 'lunes', 'bloque_horario_id' => $this->block->id], $this->rector);
+        $service->guardar(['grupo_id' => $otherGroup->id, 'materia_id' => $otherSubject->id,
+            'docente_id' => $otherTeacher->id, 'dia' => 'lunes', 'bloque_horario_id' => $this->block->id], $this->rector);
+        SesionHorario::create(['ano_lectivo_id' => $this->year->id, 'asignacion_id' => null,
+            'grupo_id' => $this->group->id, 'materia_id' => $directSubject->id,
+            'docente_id' => $otherTeacher->id, 'dia' => 'martes', 'bloque_horario_id' => $this->block->id]);
+
+        $summary = function (string $query): array {
+            $request = Request::create('/api/horarios?ano_lectivo_id='.$this->year->id.$query);
+            $request->setUserResolver(fn () => $this->rector);
+
+            return app(HorarioController::class)->index($request)->getData(true)['data'];
+        };
+        $all = $summary('');
+        $this->assertSame([4, 3, 3], [$all['counts']['materias'], $all['pagination']['asignaciones']['total'], $all['counts']['sesiones']]);
+
+        $group = $summary('&grupo_id='.$this->group->id);
+        $this->assertSame([2, 1, 2], [$group['counts']['materias'], $group['pagination']['asignaciones']['total'], $group['counts']['sesiones']]);
+        $this->assertSame(OpaqueUrlToken::for('grupo', $this->group->id),
+            collect($group['grupos'])->firstWhere('id', $this->group->id)['url_token']);
+
+        $teacher = $summary('&docente_id='.$this->teacher->id);
+        $this->assertSame([1, 2, 1], [$teacher['counts']['materias'], $teacher['pagination']['asignaciones']['total'], $teacher['counts']['sesiones']]);
+        $this->assertSame(OpaqueUrlToken::for('docente', $this->teacher->id),
+            collect($teacher['docentes'])->firstWhere('id', $this->teacher->id)['url_token']);
+
+        $direct = $summary('&grupo_id='.$this->group->id.'&docente_id='.$otherTeacher->id);
+        $this->assertSame([1, 0, 1], [$direct['counts']['materias'], $direct['pagination']['asignaciones']['total'], $direct['counts']['sesiones']]);
+    }
+
     public function test_schedule_filter_catalogs_expose_stable_distinct_opaque_url_tokens(): void
     {
         $this->rector->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate(
@@ -1567,5 +1620,134 @@ class AcademicModulesTest extends TestCase
         $this->assertFalse($data['can_manage']);
         $this->assertSame([$this->assignment->id], array_column($data['asignaciones'], 'id'));
         $this->assertSame([$this->group->id], (new EventAccess)->groupIds($enrollment->estudiante));
+    }
+
+    public function test_academic_lists_page_in_sql_and_filter_before_counting(): void
+    {
+        for ($i = 1; $i <= 22; $i++) {
+            Area::create(['ano_lectivo_id' => $this->year->id, 'nombre' => sprintf('Área %02d', $i), 'estado' => 'activo']);
+        }
+        $controller = app(\App\Http\Controllers\Api\Academico\PlanEstudiosController::class);
+        $first = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id))->getData(true);
+        $second = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id.'&page=2'))->getData(true);
+        $filtered = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id.'&search=%C3%81rea%202&per_page=10'))->getData(true);
+        $all = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id.'&per_page=1000'))->getData(true);
+
+        $this->assertCount(5, $first['data']);
+        $this->assertCount(5, $second['data']);
+        $this->assertSame(23, $first['meta']['total']);
+        $this->assertSame(5, $first['meta']['last_page']);
+        $this->assertSame(6, $second['meta']['from']);
+        $this->assertEmpty(array_intersect(array_column($first['data'], 'id'), array_column($second['data'], 'id')));
+        $this->assertSame(3, $filtered['meta']['total']);
+        $this->assertCount(23, $all['data']);
+        $this->assertSame(1000, $all['meta']['per_page']);
+    }
+
+    public function test_assignments_and_evaluation_catalog_have_independent_pagination_and_direct_link_lookup(): void
+    {
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        Role::findOrCreate('estudiante', 'web');
+        for ($i = 1; $i <= 11; $i++) {
+            $subject = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => sprintf('Materia %02d', $i),
+                'intensidad_horaria' => 1, 'estado' => 'activo']);
+            AsignacionDocente::create(['ano_lectivo_id' => $this->year->id, 'grupo_id' => $this->group->id,
+                'materia_id' => $subject->id, 'docente_id' => $this->teacher->id]);
+        }
+        $request = Request::create('/api/horarios?ano_lectivo_id='.$this->year->id.'&page=2&per_page=5');
+        $request->setUserResolver(fn () => $this->rector);
+        $schedule = app(HorarioController::class)->index($request)->getData(true)['data'];
+        $this->assertCount(5, $schedule['asignaciones']);
+        $this->assertSame(12, $schedule['pagination']['asignaciones']['total']);
+        $this->assertSame(2, $schedule['pagination']['asignaciones']['current_page']);
+
+        $token = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
+        $request = Request::create('/api/evaluacion/catalogo?ano_lectivo_id='.$this->year->id.'&asignaciones_page=2&asignaciones_per_page=5&asignacion_token='.$token);
+        $request->setUserResolver(fn () => $this->rector);
+        $catalog = app(EvaluacionController::class)->catalogo($request)->getData(true)['data'];
+        $this->assertCount(5, $catalog['asignaciones']);
+        $this->assertSame(12, $catalog['pagination']['asignaciones']['total']);
+        $this->assertSame(2, $catalog['pagination']['asignaciones']['current_page']);
+        $this->assertSame($this->assignment->id, $catalog['selected_asignacion']['id']);
+        $this->assertSame(1, $catalog['pagination']['matriculas']['current_page']);
+    }
+
+    public function test_teacher_evaluation_filters_include_only_their_assigned_groups_and_subjects(): void
+    {
+        Role::findOrCreate('estudiante', 'web');
+        $otherSubject = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Ajedrez',
+            'intensidad_horaria' => 1, 'estado' => 'activo']);
+        $request = Request::create('/api/evaluacion/catalogo?ano_lectivo_id='.$this->year->id);
+        $request->setUserResolver(fn () => $this->teacher);
+        $catalog = app(EvaluacionController::class)->catalogo($request)->getData(true)['data'];
+
+        $this->assertSame([$this->group->id], array_column($catalog['grupos'], 'id'));
+        $this->assertSame([$this->subject->id], array_column($catalog['materias'], 'id'));
+        $this->assertNotContains($otherSubject->id, array_column($catalog['materias'], 'id'));
+    }
+
+    public function test_large_subject_catalogs_are_bounded_and_remote_options_preserve_selection(): void
+    {
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $last = null;
+        for ($i = 1; $i <= 60; $i++) {
+            $last = Materia::create(['ano_lectivo_id' => $this->year->id,
+                'nombre' => sprintf('Electiva %02d', $i), 'intensidad_horaria' => 1, 'estado' => 'activo']);
+        }
+        $request = Request::create('/api/horarios?ano_lectivo_id='.$this->year->id);
+        $request->setUserResolver(fn () => $this->rector);
+        $schedule = app(HorarioController::class)->index($request)->getData(true)['data'];
+        $this->assertCount(50, $schedule['materias']);
+        $this->assertSame(61, $schedule['counts']['materias']);
+
+        $request = Request::create('/api/catalogos-academicos?tipo=materias&ano_lectivo_id='.$this->year->id.'&selected_id='.$last->id);
+        $request->setUserResolver(fn () => $this->rector);
+        $options = app(\App\Http\Controllers\Api\Academico\AcademicOptionsController::class)($request)->getData(true);
+        $this->assertSame(61, $options['meta']['total']);
+        $this->assertSame(5, $options['meta']['per_page']);
+        $this->assertCount(6, $options['data']);
+        $this->assertContains($last->id, array_column($options['data'], 'id'));
+
+        $request = Request::create('/api/catalogos-academicos?tipo=materias&ano_lectivo_id='.$this->year->id.'&search=Electiva%2060');
+        $request->setUserResolver(fn () => $this->rector);
+        $found = app(\App\Http\Controllers\Api\Academico\AcademicOptionsController::class)($request)->getData(true);
+        $this->assertSame(1, $found['meta']['total']);
+        $this->assertSame($last->id, $found['data'][0]['id']);
+    }
+
+    public function test_curriculum_and_gradebook_page_related_rows_without_losing_totals(): void
+    {
+        for ($i = 1; $i <= 12; $i++) {
+            $subject = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => sprintf('Currículo %02d', $i),
+                'intensidad_horaria' => 1, 'estado' => 'activo']);
+            DB::table('materias_curriculares')->insert(['ano_lectivo_id' => $this->year->id,
+                'grado_id' => $this->group->grado_id, 'materia_id' => $subject->id,
+                'created_at' => now(), 'updated_at' => now()]);
+        }
+        $curriculum = app(SieeController::class)->curriculoIndex(
+            Request::create('/api/siee/'.$this->year->id.'/curriculo?page=2&per_page=5'), $this->year->id)->getData(true);
+        $this->assertCount(5, $curriculum['data']);
+        $this->assertSame(12, $curriculum['meta']['total']);
+        $this->assertSame(2, $curriculum['meta']['current_page']);
+
+        [$period, $firstEnrollment, $activity] = $this->gradeFixture();
+        for ($i = 1; $i <= 11; $i++) {
+            $student = User::create(['name' => sprintf('Estudiante %02d', $i), 'email' => "student{$i}@test.test",
+                'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+            $student->assignRole('estudiante');
+            Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+                'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        }
+        (new GradebookService)->saveGrades($this->rector, $this->assignment, $period->id, [[
+            'matricula_id' => $firstEnrollment->id, 'actividad_id' => $activity->id,
+            'valor' => '4', 'version' => 0,
+        ]]);
+        $request = Request::create('/api/evaluacion/planillas/'.$this->assignment->id.'/'.$period->id.'?page=2');
+        $request->setUserResolver(fn () => $this->rector);
+        $sheet = app(EvaluacionController::class)->planilla($request, $this->assignment->id, $period->id)->getData(true)['data'];
+        $this->assertCount(5, $sheet['matriculas']);
+        $this->assertCount(5, $sheet['resultados']);
+        $this->assertSame(12, $sheet['pagination']['matriculas']['total']);
+        $this->assertSame([], $sheet['calificaciones']);
     }
 }
