@@ -9,6 +9,9 @@ use App\Http\Controllers\Api\Academico\AnoLectivoController;
 use App\Http\Controllers\Api\Academico\BloqueHorarioController;
 use App\Http\Controllers\Api\Academico\GradoController;
 use App\Http\Controllers\Api\Academico\NivelController;
+use App\Http\Controllers\Api\Academico\PeriodoController;
+use App\Http\Controllers\Api\Academico\SedeController;
+use App\Http\Controllers\Api\Academico\SieeController;
 use App\Models\Academico\ActividadEvaluacion;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Area;
@@ -17,6 +20,7 @@ use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\Calificacion;
 use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\EscalaValorativa;
+use App\Models\Academico\EspacioFisico;
 use App\Models\Academico\Evento;
 use App\Models\Academico\Grado;
 use App\Models\Academico\Grupo;
@@ -32,13 +36,16 @@ use App\Models\Plan;
 use App\Models\StoredFile;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Rbac\PermissionMatrix;
 use App\Services\EventAccess;
 use App\Services\GradebookService;
 use App\Services\DuplicarAnoLectivoService;
 use App\Jobs\VerifyTenantMigrations;
 use App\Services\HorarioService;
+use App\Services\PeriodoLifecycleService;
 use App\Services\SieeConfiguration;
 use App\Support\Sedes\SedeLimits;
+use App\Support\OpaqueUrlToken;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -46,8 +53,10 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Carbon;
 use Illuminate\Validation\ValidationException;
 use Spatie\Permission\Models\Role;
+use Spatie\Permission\Models\Permission;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
@@ -55,15 +64,242 @@ class AcademicModulesTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_period_dates_open_the_current_period_and_close_elapsed_periods(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-30 12:00:00', 'America/Bogota'));
+
+        try {
+            foreach ([
+                [1, 'P1', '2026-01-01', '2026-03-31'],
+                [2, 'P2', '2026-04-01', '2026-06-30'],
+                [3, 'P3', '2026-07-01', '2026-12-31'],
+            ] as [$order, $name, $start, $end]) {
+                Periodo::create([
+                    'ano_lectivo_id' => $this->year->id, 'orden' => $order,
+                    'nombre' => $name, 'fecha_inicio' => $start, 'fecha_fin' => $end,
+                    'estado' => Periodo::ESTADO_PLANIFICADO,
+                ]);
+            }
+
+            $controller = app(PeriodoController::class);
+            $atBoundary = $controller->index((string) $this->year->id)->getData(true)['data'];
+            $this->assertSame(['cerrado', 'abierto', 'planificado'], array_column($atBoundary, 'estado'));
+            $this->assertSame([false, true, false], array_column($atBoundary, 'es_actual'));
+            $yearDetail = app(AnoLectivoController::class)->show((string) $this->year->id)->getData(true)['data'];
+            $this->assertSame([false, true, false], array_column($yearDetail['periodos'], 'es_actual'));
+            $this->assertDatabaseHas('audit_logs', [
+                'recurso' => 'periodo', 'recurso_id' => (string) $atBoundary[0]['id'], 'accion' => 'UPDATE',
+            ]);
+
+            Carbon::setTestNow(Carbon::parse('2026-07-01 12:00:00', 'America/Bogota'));
+            $nextDay = $controller->index((string) $this->year->id)->getData(true)['data'];
+            $this->assertSame(['cerrado', 'cerrado', 'abierto'], array_column($nextDay, 'estado'));
+            $this->assertSame([false, false, true], array_column($nextDay, 'es_actual'));
+            $this->assertSame(0, app(PeriodoLifecycleService::class)->synchronize($this->year));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_manual_reopening_after_the_end_date_survives_automatic_synchronization(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-05-10 12:00:00', 'America/Bogota'));
+
+        try {
+            $period = Periodo::create([
+                'ano_lectivo_id' => $this->year->id, 'orden' => 1, 'nombre' => 'P1',
+                'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31',
+                'estado' => Periodo::ESTADO_CERRADO,
+            ]);
+            $request = Request::create('/api/periodos/'.$period->id.'/reabrir', 'POST');
+            $request->setUserResolver(fn () => $this->rector);
+            $controller = app(PeriodoController::class);
+
+            $reopened = $controller->reabrir($request, (string) $period->id)->getData(true)['data'];
+            $this->assertSame(Periodo::ESTADO_ABIERTO, $reopened['estado']);
+            $this->assertTrue($reopened['reapertura_manual']);
+            $this->assertFalse($reopened['es_actual']);
+            $this->assertSame(0, app(PeriodoLifecycleService::class)->synchronize($this->year));
+            $this->assertSame(Periodo::ESTADO_ABIERTO, $period->fresh()->estado);
+            $this->assertTrue($period->fresh()->reapertura_manual);
+
+            $closed = $controller->cerrar($request, (string) $period->id)->getData(true)['data'];
+            $this->assertSame(Periodo::ESTADO_CERRADO, $closed['estado']);
+            $this->assertFalse($closed['reapertura_manual']);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_starting_a_year_immediately_synchronizes_its_periods(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-15 12:00:00', 'America/Bogota'));
+
+        try {
+            $this->year->update(['estado' => AnoLectivo::ESTADO_PLANIFICADO]);
+            foreach ([
+                [1, '2026-01-01', '2026-03-31'],
+                [2, '2026-04-01', '2026-08-31'],
+                [3, '2026-09-01', '2026-12-31'],
+            ] as [$order, $start, $end]) {
+                Periodo::create([
+                    'ano_lectivo_id' => $this->year->id, 'orden' => $order,
+                    'nombre' => 'P'.$order, 'fecha_inicio' => $start,
+                    'fecha_fin' => $end, 'estado' => Periodo::ESTADO_PLANIFICADO,
+                ]);
+            }
+            $request = Request::create('/api/anos-lectivos/'.$this->year->id.'/iniciar', 'POST');
+            $request->setUserResolver(fn () => $this->rector);
+
+            app(AnoLectivoController::class)->iniciar($request, (string) $this->year->id);
+
+            $this->assertSame(AnoLectivo::ESTADO_EN_CURSO, $this->year->fresh()->estado);
+            $this->assertSame(['cerrado', 'abierto', 'planificado'],
+                Periodo::where('ano_lectivo_id', $this->year->id)->orderBy('orden')->pluck('estado')->all());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_coordinator_can_manage_academic_years_but_cannot_transition_years_or_periods(): void
+    {
+        foreach (['academico.anos.transicionar', 'academico.periodos.transicionar'] as $key) {
+            $this->assertContains($key, PermissionMatrix::defaultGrantsFor('rector'));
+            $this->assertNotContains($key, PermissionMatrix::defaultGrantsFor('coord_academico'));
+            $this->assertNotContains($key, PermissionMatrix::defaultGrantsFor('coord_combinado'));
+        }
+        $this->assertContains('academico.anos.gestionar', PermissionMatrix::defaultGrantsFor('coord_academico'));
+
+        Role::findOrCreate('coord_academico', 'web');
+        $coordinator = User::create([
+            'name' => 'Coordinadora', 'email' => 'coordinator@test.test',
+            'password' => 'CoordinatorPassword123', 'role' => 'coord_academico', 'status' => 'active',
+        ]);
+        $coordinator->assignRole('coord_academico');
+        $request = Request::create('/', 'POST');
+        $request->setUserResolver(fn () => $coordinator);
+        $period = Periodo::create([
+            'ano_lectivo_id' => $this->year->id, 'orden' => 1, 'nombre' => 'P1',
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31',
+            'estado' => Periodo::ESTADO_ABIERTO,
+        ]);
+        $periods = app(PeriodoController::class);
+        $years = app(AnoLectivoController::class);
+
+        foreach (['abrir', 'cerrar', 'reabrir'] as $action) {
+            $this->assertForbiddenAcademicTransition(fn () => $periods->{$action}($request, (string) $period->id));
+        }
+        foreach (['iniciar', 'cerrar'] as $action) {
+            $this->assertForbiddenAcademicTransition(fn () => $years->{$action}($request, (string) $this->year->id));
+        }
+        $this->assertSame(Periodo::ESTADO_ABIERTO, $period->fresh()->estado);
+        $this->assertSame(AnoLectivo::ESTADO_EN_CURSO, $this->year->fresh()->estado);
+
+        $request->setUserResolver(fn () => $this->rector);
+        $this->assertSame(Periodo::ESTADO_CERRADO,
+            $periods->cerrar($request, (string) $period->id)->getData(true)['data']['estado']);
+        $this->assertSame(AnoLectivo::ESTADO_CERRADO,
+            $years->cerrar($request, (string) $this->year->id)->getData(true)['data']['estado']);
+    }
+
+    public function test_rector_role_without_transition_permissions_cannot_change_states(): void
+    {
+        $rectorRole = Role::findByName('rector', 'web');
+        foreach (['academico.anos.transicionar', 'academico.periodos.transicionar'] as $permission) {
+            $rectorRole->revokePermissionTo($permission);
+            $this->assertFalse($this->rector->can($permission));
+        }
+        $period = Periodo::create([
+            'ano_lectivo_id' => $this->year->id, 'orden' => 1, 'nombre' => 'P1',
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31',
+            'estado' => Periodo::ESTADO_ABIERTO,
+        ]);
+        $request = Request::create('/', 'POST');
+        $request->setUserResolver(fn () => $this->rector);
+
+        $this->assertForbiddenAcademicTransition(
+            fn () => app(AnoLectivoController::class)->cerrar($request, (string) $this->year->id));
+        $this->assertForbiddenAcademicTransition(
+            fn () => app(PeriodoController::class)->cerrar($request, (string) $period->id));
+        $this->assertSame(AnoLectivo::ESTADO_EN_CURSO, $this->year->fresh()->estado);
+        $this->assertSame(Periodo::ESTADO_ABIERTO, $period->fresh()->estado);
+    }
+
+    private function assertForbiddenAcademicTransition(callable $transition): void
+    {
+        try {
+            $transition();
+            $this->fail('Un usuario sin permiso no debe poder cambiar el estado lectivo.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+    }
+
+    public function test_siee_configuration_does_not_expose_or_store_a_separate_version(): void
+    {
+        $this->assertFalse(Schema::hasColumn('anos_lectivos', 'siee_version'));
+
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $configuration = [...SieeConfiguration::DEFAULTS, 'escala_id' => $scale->id,
+            'metodo_id' => $method->id];
+        $request = Request::create('/', 'PUT', $configuration);
+        $request->setUserResolver(fn () => $this->rector);
+
+        $controller = app(SieeController::class);
+        $response = $controller->update($request, $this->year->id)->getData(true)['data'];
+        $resolved = app(SieeConfiguration::class)->resolve($this->year->fresh());
+        $result = (new GradebookService)->calculate(['mode' => 'SIMPLE_AVERAGE',
+            'inputs' => [['value' => '4']]], $resolved);
+
+        $this->assertArrayNotHasKey('version', $response);
+        $this->assertArrayNotHasKey('version', $resolved);
+        $this->assertArrayNotHasKey('siee_version', $result);
+        $this->assertArrayHasKey('calculation_version', $result);
+        $this->assertDatabaseHas('audit_logs', ['accion' => 'UPDATE', 'recurso' => 'siee',
+            'recurso_id' => (string) $this->year->id]);
+    }
+
     public function test_year_url_selector_is_stable_opaque_and_tenant_bound(): void
     {
         $controller = app(AnoLectivoController::class);
         $first = $controller->index()->getData(true)['data'][0];
         $again = $controller->index()->getData(true)['data'][0];
         $this->assertSame($first['url_token'], $again['url_token']);
-        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $first['url_token']);
+        $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{24}$/', $first['url_token']);
         $this->assertNotSame((string) $this->year->id, $first['url_token']);
-        $this->assertSame(hash_hmac('sha256', $this->school->getTenantKey().'|ano-lectivo|'.$this->year->id, (string) config('app.key')), $first['url_token']);
+        $this->assertSame(OpaqueUrlToken::for('ano-lectivo', $this->year->id), $first['url_token']);
+        $this->assertSame(hash_hmac('sha256', $this->school->getTenantKey().'|ano-lectivo|'.$this->year->id, (string) config('app.key')), $first['legacy_url_token']);
+        $this->assertNotSame($first['legacy_url_token'], $first['url_token']);
+
+        $otherSchool = Tenant::withoutEvents(fn () => Tenant::create([
+            'id' => 'academic-other', 'name' => 'Otro colegio', 'slug' => 'academic-other',
+            'plan' => 'esencial', 'tipo' => 'colegio', 'status' => 'active',
+        ]));
+        tenancy()->initialize($otherSchool);
+        try {
+            $this->assertNotSame($first['url_token'], OpaqueUrlToken::for('ano-lectivo', $this->year->id));
+        } finally {
+            tenancy()->initialize($this->school);
+        }
+    }
+
+    public function test_sede_selector_is_opaque_and_legacy_links_still_resolve(): void
+    {
+        $sede = $this->group->sede;
+        $legacy = rtrim(strtr(base64_encode((string) $sede->id), '+/', '-_'), '=');
+        $token = $sede->hashed_id;
+        $controller = app(SedeController::class);
+
+        $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{24}$/', $token);
+        $this->assertSame(OpaqueUrlToken::for('sede', $sede->id), $token);
+        $this->assertNotSame($legacy, $token);
+        $this->assertSame($sede->id, $controller->show($token)->getData(true)['data']['id']);
+        $this->assertSame($token, $controller->show($legacy)->getData(true)['data']['hashed_id']);
+        $this->assertSame($sede->id, $controller->show((string) $sede->id)->getData(true)['data']['id']);
+        $this->assertSame($sede->id, $sede->resolveRouteBinding($token)->id);
     }
 
     public function test_summary_period_uses_the_siee_annual_result_without_creating_a_real_period(): void
@@ -397,7 +633,10 @@ class AcademicModulesTest extends TestCase
         Artisan::call('migrate', ['--database' => 'academic_test', '--path' => 'database/migrations/tenant', '--force' => true]);
         tenancy()->initialize($this->school);
         Role::findOrCreate('docente', 'web');
-        Role::findOrCreate('rector', 'web');
+        $rectorRole = Role::findOrCreate('rector', 'web');
+        foreach (['academico.anos.transicionar', 'academico.periodos.transicionar'] as $permission) {
+            $rectorRole->givePermissionTo(Permission::findOrCreate($permission, 'web'));
+        }
         $this->teacher = User::create(['name' => 'Docente', 'email' => 'teacher@test.test', 'password' => 'TeacherPassword123', 'role' => 'docente', 'status' => 'active']);
         $this->teacher->assignRole('docente');
         $this->rector = User::create(['name' => 'Rector', 'email' => 'rector@test.test', 'password' => 'RectorPassword123', 'role' => 'rector', 'status' => 'active']);
@@ -934,7 +1173,7 @@ class AcademicModulesTest extends TestCase
             'hora_inicio' => '07:00',
             'hora_fin' => '07:45',
         ], $this->rector);
-        $request = Request::create('/api/horarios');
+        $request = Request::create('/api/horarios?vista=horarios');
         $request->setUserResolver(fn () => $enrollment->estudiante);
         $this->assertSame([$class->id], array_column(app(HorarioController::class)->index($request)->getData(true)['data']['sesiones'], 'id'));
 
@@ -949,6 +1188,125 @@ class AcademicModulesTest extends TestCase
             'hora_fin' => '07:45',
         ], $this->rector, $class);
         $this->assertSame([$class->id], array_column(app(HorarioController::class)->index($request)->getData(true)['data']['sesiones'], 'id'));
+    }
+
+    public function test_schedule_view_requires_a_group_for_managers_and_filters_on_the_server(): void
+    {
+        $this->rector->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate(
+            'academico.plan_estudios.gestionar', 'web'));
+        $otherGroup = Grupo::create([
+            'grado_id' => $this->group->grado_id, 'ano_lectivo_id' => $this->year->id,
+            'nombre' => 'B', 'jornada_id' => $this->group->jornada_id,
+            'sede_id' => $this->group->sede_id, 'estado' => 'activo',
+        ]);
+        $otherAssignment = AsignacionDocente::create([
+            'ano_lectivo_id' => $this->year->id, 'grupo_id' => $otherGroup->id,
+            'materia_id' => $this->subject->id, 'docente_id' => null,
+        ]);
+        $first = (new HorarioService)->guardar([
+            'grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'docente_id' => $this->teacher->id, 'dia' => 'lunes',
+            'bloque_horario_id' => $this->block->id,
+        ], $this->rector);
+        $second = (new HorarioService)->guardar([
+            'grupo_id' => $otherGroup->id, 'materia_id' => $this->subject->id,
+            'docente_id' => null, 'dia' => 'lunes',
+            'bloque_horario_id' => $this->block->id,
+        ], $this->rector);
+        $request = function (string $query): Request {
+            $request = Request::create('/api/horarios?ano_lectivo_id='.$this->year->id.$query);
+            $request->setUserResolver(fn () => $this->rector);
+
+            return $request;
+        };
+        $controller = app(HorarioController::class);
+
+        $unselected = $controller->index($request('&vista=horarios'))->getData(true)['data'];
+        $this->assertTrue($unselected['can_manage']);
+        $this->assertSame([], $unselected['asignaciones']);
+        $this->assertSame([], $unselected['sesiones']);
+        $this->assertEqualsCanonicalizing([$this->group->id, $otherGroup->id], array_column($unselected['grupos'], 'id'));
+
+        $selected = $controller->index($request('&vista=horarios&grupo_id='.$this->group->id))->getData(true)['data'];
+        $this->assertSame([$this->assignment->id], array_column($selected['asignaciones'], 'id'));
+        $this->assertSame([$first->id], array_column($selected['sesiones'], 'id'));
+
+        $otherSelected = $controller->index($request('&vista=horarios&grupo_id='.$otherGroup->id))->getData(true)['data'];
+        $this->assertSame([$otherAssignment->id], array_column($otherSelected['asignaciones'], 'id'));
+        $this->assertSame([$second->id], array_column($otherSelected['sesiones'], 'id'));
+
+        $otherTabs = $controller->index($request(''))->getData(true)['data'];
+        $this->assertEqualsCanonicalizing([$first->id, $second->id], array_column($otherTabs['sesiones'], 'id'));
+    }
+
+    public function test_schedule_filter_catalogs_expose_stable_distinct_opaque_url_tokens(): void
+    {
+        $this->rector->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate(
+            'academico.plan_estudios.gestionar', 'web'));
+        $space = EspacioFisico::create([
+            'ano_lectivo_id' => $this->year->id,
+            'sede_id' => $this->group->sede_id,
+            'nombre' => 'Aula 1',
+            'tipo' => EspacioFisico::TIPO_AULA,
+            'estado' => EspacioFisico::ESTADO_DISPONIBLE,
+        ]);
+        $request = Request::create('/api/horarios?ano_lectivo_id='.$this->year->id.'&vista=horarios');
+        $request->setUserResolver(fn () => $this->rector);
+        $controller = app(HorarioController::class);
+        $first = $controller->index($request)->getData(true)['data'];
+        $again = $controller->index($request)->getData(true)['data'];
+
+        foreach ([
+            ['grupos', $this->group->id, 'grupo'],
+            ['espacios', $space->id, 'espacio-fisico'],
+            ['docentes', $this->teacher->id, 'docente'],
+        ] as [$catalog, $id, $resource]) {
+            $entry = collect($first[$catalog])->firstWhere('id', $id);
+            $this->assertNotNull($entry);
+            $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{24}$/', $entry['url_token']);
+            $this->assertSame(OpaqueUrlToken::for($resource, $id), $entry['url_token']);
+            $this->assertSame($entry['url_token'], collect($again[$catalog])->firstWhere('id', $id)['url_token']);
+        }
+        $this->assertCount(3, array_unique([
+            $first['grupos'][0]['url_token'],
+            $first['espacios'][0]['url_token'],
+            $first['docentes'][0]['url_token'],
+        ]));
+    }
+
+    public function test_evaluation_catalog_exposes_opaque_url_tokens_for_detail_routes(): void
+    {
+        [$period, $enrollment] = $this->gradeFixture();
+        $request = Request::create('/api/evaluacion/catalogo');
+        $request->setUserResolver(fn () => $this->rector);
+        $catalog = app(EvaluacionController::class)->catalogo($request)->getData(true)['data'];
+
+        foreach ([
+            ['asignaciones', $this->assignment->id, 'asignacion-docente'],
+            ['periodos', $period->id, 'periodo'],
+            ['matriculas', $enrollment->id, 'matricula'],
+        ] as [$collection, $id, $type]) {
+            $entry = collect($catalog[$collection])->firstWhere('id', $id);
+            $this->assertNotNull($entry);
+            $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{24}$/', $entry['url_token']);
+            $this->assertSame(OpaqueUrlToken::for($type, $id), $entry['url_token']);
+        }
+    }
+
+    public function test_schedule_group_must_belong_to_selected_year(): void
+    {
+        $this->rector->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate(
+            'academico.plan_estudios.gestionar', 'web'));
+        $otherYear = AnoLectivo::create([
+            'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',
+            'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'estado' => 'planificado',
+        ]);
+        $request = Request::create('/api/horarios?ano_lectivo_id='.$otherYear->id.'&vista=horarios&grupo_id='.$this->group->id);
+        $request->setUserResolver(fn () => $this->rector);
+
+        $this->expectException(HttpException::class);
+        $this->expectExceptionMessage('El grupo no pertenece al año lectivo seleccionado.');
+        app(HorarioController::class)->index($request);
     }
 
     public function test_direct_schedule_rejects_overlapping_group_classes_even_without_teacher(): void
