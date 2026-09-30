@@ -46,6 +46,21 @@ class RealtimeSyncTest extends TestCase
             'fecha_fin' => '2027-12-31', 'num_periodos' => 3, 'estado' => 'planificado']);
     }
 
+    public function test_invalidation_excludes_only_the_originating_socket_and_uses_the_configured_queue(): void
+    {
+        $request = Request::create('/api/horarios', 'PUT');
+        $request->headers->set('X-Socket-ID', '123.456');
+        $this->app->instance('request', $request);
+        config(['queue.default' => 'redis', 'performance.realtime_queue' => 'realtime']);
+        $event = new ApplicationChanged('realtime-a', ['schedule']);
+        $this->assertSame('123.456', $event->socket);
+        $this->assertSame(['resources' => ['schedule']], $event->broadcastWith());
+        $this->assertSame('realtime', $event->broadcastQueue());
+        $this->assertFalse($event->shouldBroadcastNow());
+        config(['queue.default' => 'sync']);
+        $this->assertTrue($event->shouldBroadcastNow());
+    }
+
     public function test_model_writes_from_commands_publish_without_a_controller(): void
     {
         $year = $this->year();
@@ -96,6 +111,16 @@ class RealtimeSyncTest extends TestCase
         app(SynchronizeRealtimeChanges::class)->handle($request, fn () => response()->json(['granted' => false]));
         Event::assertDispatchedTimes(ApplicationChanged::class, 1);
         Event::assertDispatched(ApplicationChanged::class, fn ($event) => $event->tenantId === 'realtime-a' && $event->resources === ['rbac']);
+    }
+
+    public function test_assignment_writes_do_not_broadcast_an_all_resources_refresh(): void
+    {
+        $this->assertSame('schedule', RealtimeChanges::resourceForPath('/api/asignaciones/public-token'));
+        $request = Request::create('/api/asignaciones/public-token', 'PUT');
+        $request->setUserResolver(fn () => new User(['role' => 'rector']));
+        app(SynchronizeRealtimeChanges::class)->handle($request, fn () => response()->json(['saved' => true]));
+        Event::assertDispatchedTimes(ApplicationChanged::class, 1);
+        Event::assertDispatched(ApplicationChanged::class, fn ($event) => $event->resources === ['schedule']);
     }
 
     public function test_reads_authentication_and_rejected_writes_do_not_trigger_refresh_loops(): void

@@ -68,7 +68,7 @@ final class RealtimeChanges
             'anos-lectivos', 'periodos' => 'academic',
             'estructura' => 'structure',
             'plan-estudios' => 'curriculum',
-            'horarios' => 'schedule',
+            'horarios', 'asignaciones' => 'schedule',
             'evaluacion' => 'evaluation',
             'siee', 'config' => 'academic-config',
             'eventos' => 'events',
