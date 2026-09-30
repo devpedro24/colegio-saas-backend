@@ -20,6 +20,7 @@ use App\Services\HorarioService;
 use App\Services\AsignacionHorarioService;
 use App\Services\AcademicYearSelection;
 use App\Support\Audit\AuditLogger;
+use App\Support\OpaqueUrlToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -33,17 +34,39 @@ class HorarioController extends Controller
         $manage = $user->can('academico.plan_estudios.gestionar');
         $student = $user->hasRole('estudiante');
         abort_unless($manage || $user->hasRole('docente') || $student, 403);
-        $yearId = $request->filled('ano_lectivo_id') ? $request->integer('ano_lectivo_id') : null;
-        $assignments = AsignacionDocente::with(['docente:id,name', 'materia', 'grupo.grado', 'grupo.sede'])
-            ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
-            ->when(! $manage, fn ($q) => $student
-                ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
-                : $q->where('docente_id', $user->id))->get();
-        $sessions = SesionHorario::with(['grupo.grado.nivel', 'materia', 'docente:id,name', 'bloque', 'espacio'])
-            ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
-            ->when(! $manage, fn ($q) => $student
-                ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
-                : $q->where('docente_id', $user->id))->get();
+        $filters = $request->validate([
+            'ano_lectivo_id' => ['nullable', 'integer', 'exists:anos_lectivos,id'],
+            'grupo_id' => ['nullable', 'integer', 'exists:grupos,id'],
+            'vista' => ['nullable', Rule::in(['horarios'])],
+        ]);
+        $yearId = isset($filters['ano_lectivo_id']) ? (int) $filters['ano_lectivo_id'] : null;
+        $groupId = isset($filters['grupo_id']) ? (int) $filters['grupo_id'] : null;
+        $scheduleView = ($filters['vista'] ?? null) === 'horarios';
+
+        if ($groupId !== null && $yearId !== null) {
+            abort_unless(Grupo::whereKey($groupId)->where('ano_lectivo_id', $yearId)->exists(), 422,
+                'El grupo no pertenece al año lectivo seleccionado.');
+        }
+
+        // El gestor necesita elegir un grupo en la vista de horarios. Así no se
+        // consultan ni serializan cientos de clases antes de escoger el filtro.
+        if ($scheduleView && $manage && $groupId === null) {
+            $assignments = collect();
+            $sessions = collect();
+        } else {
+            $assignments = AsignacionDocente::with(['docente:id,name', 'materia', 'grupo.grado', 'grupo.sede'])
+                ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+                ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
+                ->when(! $manage, fn ($q) => $student
+                    ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                    : $q->where('docente_id', $user->id))->get();
+            $sessions = SesionHorario::with(['grupo.grado.nivel', 'materia', 'docente:id,name', 'bloque', 'espacio'])
+                ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+                ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
+                ->when(! $manage, fn ($q) => $student
+                    ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                    : $q->where('docente_id', $user->id))->get();
+        }
         $groupIds = $assignments->pluck('grupo_id')->merge($sessions->pluck('grupo_id'))->unique();
         $subjectIds = $assignments->pluck('materia_id')->merge($sessions->pluck('materia_id'))->unique();
 
@@ -52,10 +75,14 @@ class HorarioController extends Controller
             'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(),
             'areas' => $manage ? Area::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->orderBy('nombre')->get() : [],
             'materias' => $manage ? Materia::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->orderBy('nombre')->get() : Materia::whereIn('id', $subjectIds)->get(),
-            'grupos' => Grupo::with(['grado.nivel', 'sede', 'jornada'])->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->when(! $manage, fn ($q) => $q->whereIn('id', $groupIds))->get(),
-            'docentes' => $manage ? User::role('docente')->where('status', 'active')->get(['id', 'name']) : [],
+            'grupos' => Grupo::with(['grado.nivel', 'sede', 'jornada'])->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->when(! $manage, fn ($q) => $q->whereIn('id', $groupIds))->get()
+                ->map(fn (Grupo $group) => [...$group->toArray(), 'url_token' => OpaqueUrlToken::for('grupo', $group->id)]),
+            'docentes' => $manage ? User::role('docente')->where('status', 'active')->get(['id', 'name'])
+                ->map(fn (User $teacher) => ['id' => $teacher->id, 'name' => $teacher->name,
+                    'url_token' => OpaqueUrlToken::for('docente', $teacher->id)]) : [],
             'bloques' => BloqueHorario::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->where('estado', 'activo')->where('es_descanso', false)->orderBy('hora_inicio')->get(),
-            'espacios' => EspacioFisico::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->where('estado', EspacioFisico::ESTADO_DISPONIBLE)->get(),
+            'espacios' => EspacioFisico::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->where('estado', EspacioFisico::ESTADO_DISPONIBLE)->get()
+                ->map(fn (EspacioFisico $space) => [...$space->toArray(), 'url_token' => OpaqueUrlToken::for('espacio-fisico', $space->id)]),
             'asignaciones' => $assignments,
             'sesiones' => $sessions,
         ]]);
