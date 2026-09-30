@@ -25,7 +25,7 @@ class EspacioFisicoController extends Controller
     /** Lista los espacios, filtrables por `sede_id`. */
     public function index(Request $request): JsonResponse
     {
-        $espacios = EspacioFisico::query()
+        $espacios = $this->paginateAcademic(EspacioFisico::query()
             ->with('sede:id,nombre')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('sede_id'), fn ($q) => $q->where('sede_id', (int) $request->query('sede_id')))
@@ -33,16 +33,15 @@ class EspacioFisicoController extends Controller
             ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
             ->orderBy('sede_id')
             ->orderBy('nombre')
-            ->orderBy('id')
-            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('id'), $request);
 
-        return $this->paginatedResponse($espacios);
+        return $this->paginatedResponse($espacios, 'espacio-fisico');
     }
 
     /** Detalle de un espacio. */
     public function show(int $id): JsonResponse
     {
-        return response()->json(['data' => EspacioFisico::with('sede:id,nombre')->findOrFail($id)]);
+        return response()->json(['data' => $this->withOpaqueToken(EspacioFisico::with('sede:id,nombre')->findOrFail($id), 'espacio-fisico')]);
     }
 
     /** Crea un espacio físico. */
@@ -77,7 +76,7 @@ class EspacioFisicoController extends Controller
             TenantDataChanged::dispatch('espacio_fisico', 'created', $data['nombre']);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $espacio->load('sede:id,nombre')], 201);
+        return response()->json(['data' => $this->withOpaqueToken($espacio->load('sede:id,nombre'), 'espacio-fisico')], 201);
     }
 
     /** Edita un espacio físico. */
@@ -111,7 +110,7 @@ class EspacioFisicoController extends Controller
             TenantDataChanged::dispatch('espacio_fisico', 'updated', $espacio->nombre);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $espacio->load('sede:id,nombre')]);
+        return response()->json(['data' => $this->withOpaqueToken($espacio->load('sede:id,nombre'), 'espacio-fisico')]);
     }
 
     /** Elimina (soft-delete) un espacio físico. */

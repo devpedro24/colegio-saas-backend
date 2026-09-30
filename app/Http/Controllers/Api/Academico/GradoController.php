@@ -25,7 +25,7 @@ class GradoController extends Controller
     /** Lista los grados, filtrables por `nivel_id`. */
     public function index(Request $request): JsonResponse
     {
-        $grados = Grado::query()
+        $grados = $this->paginateAcademic(Grado::query()
             ->with('nivel:id,nombre,nivel_educativo')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('nivel_id'), fn ($q) => $q->where('nivel_id', (int) $request->query('nivel_id')))
@@ -34,16 +34,15 @@ class GradoController extends Controller
             // Conserva el orden histórico de niveles según su primer grado.
             ->orderByRaw('(SELECT MIN(first_grade.id) FROM grados AS first_grade WHERE first_grade.nivel_id = grados.nivel_id AND first_grade.deleted_at IS NULL)')
             ->orderBy('created_at')
-            ->orderBy('id')
-            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('id'), $request);
 
-        return $this->paginatedResponse($grados);
+        return $this->paginatedResponse($grados, 'grado');
     }
 
     /** Detalle de un grado. */
     public function show(int $id): JsonResponse
     {
-        return response()->json(['data' => Grado::with('nivel:id,nombre,nivel_educativo')->findOrFail($id)]);
+        return response()->json(['data' => $this->withOpaqueToken(Grado::with('nivel:id,nombre,nivel_educativo')->findOrFail($id), 'grado')]);
     }
 
     /** Crea un grado. */
@@ -78,7 +77,7 @@ class GradoController extends Controller
             TenantDataChanged::dispatch('grado', 'created', $data['nombre']);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $grado->load('nivel:id,nombre,nivel_educativo')], 201);
+        return response()->json(['data' => $this->withOpaqueToken($grado->load('nivel:id,nombre,nivel_educativo'), 'grado')], 201);
     }
 
     /** Edita un grado. */
@@ -120,7 +119,7 @@ class GradoController extends Controller
             TenantDataChanged::dispatch('grado', 'updated', $grado->nombre);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $grado->load('nivel:id,nombre,nivel_educativo')]);
+        return response()->json(['data' => $this->withOpaqueToken($grado->load('nivel:id,nombre,nivel_educativo'), 'grado')]);
     }
 
     /** Elimina (soft-delete) un grado. */

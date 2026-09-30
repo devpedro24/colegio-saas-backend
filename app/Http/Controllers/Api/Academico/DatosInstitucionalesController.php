@@ -26,7 +26,7 @@ class DatosInstitucionalesController extends Controller
     {
         $datos = DatosInstitucionales::query()->first();
 
-        return response()->json(['data' => $datos]);
+        return response()->json(['data' => $this->present($datos)]);
     }
 
     /** Crea o actualiza (upsert) la unica fila de datos institucionales. */
@@ -70,6 +70,12 @@ class DatosInstitucionalesController extends Controller
             TenantDataChanged::dispatch('datos_institucionales', 'updated', $datos->nombre);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $datos]);
+        return response()->json(['data' => $this->present($datos)]);
+    }
+
+    /** La ficha es un singleton: no hay motivo para exponer su clave interna. */
+    private function present(?DatosInstitucionales $datos): ?array
+    {
+        return $datos?->only(['nombre', 'nit', 'resolucion_men', 'direccion', 'telefono', 'correo']);
     }
 }

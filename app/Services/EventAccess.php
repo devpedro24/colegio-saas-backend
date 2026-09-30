@@ -16,12 +16,12 @@ final class EventAccess
 {
     public function rector(User $user): bool
     {
-        return $user->esSuperadminPlataforma() || $user->hasRole('rector');
+        return $user->can('eventos.gestionar');
     }
 
     public function teacher(User $user): bool
     {
-        return $user->hasRole('docente');
+        return $user->can('eventos.publicar_asignados');
     }
 
     public function unrestricted(): bool
@@ -57,19 +57,20 @@ final class EventAccess
 
     public function authorizeWrite(User $user, array $data, ?Evento $event = null): void
     {
-        $rector = $this->rector($user);
-        abort_unless($rector || $this->teacher($user), 403, 'No tienes permiso para publicar eventos.');
-        abort_if($event && ! $rector && $event->created_by != $user->id, 403, 'Solo puedes editar tus propios eventos.');
+        $manager = $this->rector($user);
+        abort_if($event && ! $manager && $event->created_by != $user->id, 403, 'Solo puedes editar tus propios eventos.');
+        abort_if($event?->institucional && ! $user->can('eventos.publicar_institucional'), 403, 'No tienes permiso para modificar eventos institucionales.');
         if ($data['institucional']) {
-            abort_unless($rector, 403, 'Solo el rector puede publicar para todo el colegio.');
+            abort_unless($user->can('eventos.publicar_institucional'), 403, 'No tienes permiso para publicar para todo el colegio.');
             abort_if(! empty($data['grupo_ids']) || ! empty($data['materia_id']), 422, 'Un evento institucional no se restringe a grupos o asignaturas.');
 
             return;
         }
+        abort_unless($manager || $this->teacher($user), 403, 'No tienes permiso para publicar eventos.');
         $groups = array_unique($data['grupo_ids'] ?? []);
         abort_if($groups === [], 422, 'Selecciona al menos un grupo.');
         abort_unless(Grupo::where('estado', 'activo')->whereIn('id', $groups)->count() === count($groups), 422, 'Selecciona grupos activos de este colegio.');
-        if (! $rector && ! $this->unrestricted()) {
+        if (! $manager && ! $this->unrestricted()) {
             $authorized = AsignacionDocente::where('docente_id', $user->id)
                 ->when(! empty($data['materia_id']), fn ($q) => $q->where('materia_id', $data['materia_id']))
                 ->whereHas('anoLectivo', fn ($q) => $q->whereNotIn('estado', ['cerrado', 'archivado']))

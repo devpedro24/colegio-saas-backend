@@ -26,22 +26,21 @@ class NivelController extends Controller
     public function index(?Request $request = null): JsonResponse
     {
         $request ??= request();
-        $niveles = Nivel::query()
+        $niveles = $this->paginateAcademic(Nivel::query()
             ->when($request->filled('ano_lectivo_id'), fn ($query) => $query->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('search'), fn ($query) => $query->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
             ->when($request->filled('estado'), fn ($query) => $query->where('estado', $request->query('estado')))
             ->withCount('grados')
             ->orderBy('created_at')
-            ->orderBy('id')
-            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('id'), $request);
 
-        return $this->paginatedResponse($niveles);
+        return $this->paginatedResponse($niveles, 'nivel');
     }
 
     /** Detalle de un nivel. */
     public function show(int $id): JsonResponse
     {
-        return response()->json(['data' => Nivel::with('grados')->findOrFail($id)]);
+        return response()->json(['data' => $this->withOpaqueToken(Nivel::with('grados')->findOrFail($id), 'nivel')]);
     }
 
     /** Crea un nivel. */
@@ -68,7 +67,7 @@ class NivelController extends Controller
             TenantDataChanged::dispatch('nivel', 'created', $data['nivel_educativo']);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $nivel], 201);
+        return response()->json(['data' => $this->withOpaqueToken($nivel, 'nivel')], 201);
     }
 
     /** Edita un nivel. */
@@ -94,7 +93,7 @@ class NivelController extends Controller
             TenantDataChanged::dispatch('nivel', 'updated', $nivel->nivel_educativo);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $nivel]);
+        return response()->json(['data' => $this->withOpaqueToken($nivel, 'nivel')]);
     }
 
     /** Elimina (soft-delete) un nivel. */

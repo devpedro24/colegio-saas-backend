@@ -11,9 +11,12 @@ use App\Models\Academico\Grupo;
 use App\Models\Academico\Materia;
 use App\Models\StoredFile;
 use App\Services\EventAccess;
+use App\Support\OpaqueUrlToken;
+use App\Support\EventOpaquePresenter;
 use App\Support\Audit\AuditLogger;
 use App\Support\Storage\StorageException;
 use App\Support\Storage\StorageService;
+use App\Support\Storage\StoredFilePublicToken;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -32,19 +35,52 @@ class EventoController extends Controller
         $broad = $rector || ($teacher && $this->access->unrestricted());
         $groups = $this->access->groupIds($user);
         $assignments = AsignacionDocente::where('docente_id', $user->id)->get(['grupo_id', 'materia_id']);
+        $groupRows = Grupo::with('grado')->where('estado', 'activo')
+            ->when(! $broad, fn ($q) => $q->whereIn('id', $groups))
+            ->get(['id', 'nombre', 'grado_id', 'ano_lectivo_id']);
+        $subjectRows = ($teacher || $rector)
+            ? Materia::where('estado', 'activo')
+                ->when(! $broad, fn ($q) => $q->whereIn('id', $assignments->pluck('materia_id')))
+                ->get(['id', 'nombre']) : collect();
+
+        if ($request->boolean('opaque')) {
+            return response()->json(['data' => [
+                'puede_crear' => $rector || $teacher || $user->can('eventos.publicar_institucional'),
+                'es_rector' => $rector,
+                'docentes_cualquier_grupo' => $this->access->unrestricted(),
+                'grupos' => $groupRows->map(fn (Grupo $group) => [
+                    'url_token' => OpaqueUrlToken::for('grupo', $group->id),
+                    'nombre' => $group->nombre,
+                    'grado_token' => OpaqueUrlToken::for('grado', $group->grado_id),
+                    'ano_lectivo_token' => OpaqueUrlToken::for('ano-lectivo', $group->ano_lectivo_id),
+                    'grado' => $group->grado ? [
+                        'url_token' => OpaqueUrlToken::for('grado', $group->grado->id),
+                        'nombre' => $group->grado->nombre,
+                    ] : null,
+                ]),
+                'materias' => $subjectRows->map(fn (Materia $subject) => [
+                    'url_token' => OpaqueUrlToken::for('materia', $subject->id),
+                    'nombre' => $subject->nombre,
+                ]),
+                'asignaciones' => $assignments->map(fn (AsignacionDocente $assignment) => [
+                    'grupo_token' => OpaqueUrlToken::for('grupo', $assignment->grupo_id),
+                    'materia_token' => OpaqueUrlToken::for('materia', $assignment->materia_id),
+                ]),
+            ]]);
+        }
 
         return response()->json(['data' => [
-            'puede_crear' => $rector || $teacher, 'es_rector' => $rector,
+            'puede_crear' => $rector || $teacher || $user->can('eventos.publicar_institucional'), 'es_rector' => $rector,
             'docentes_cualquier_grupo' => $this->access->unrestricted(),
-            'grupos' => Grupo::with('grado')->where('estado', 'activo')->when(! $broad, fn ($q) => $q->whereIn('id', $groups))->get(['id', 'nombre', 'grado_id', 'ano_lectivo_id']),
-            'materias' => ($teacher || $rector) ? Materia::where('estado', 'activo')->when(! $broad, fn ($q) => $q->whereIn('id', $assignments->pluck('materia_id')))->get(['id', 'nombre']) : [],
+            'grupos' => $groupRows,
+            'materias' => $subjectRows,
             'asignaciones' => $assignments,
         ]]);
     }
 
     public function configurar(Request $request): JsonResponse
     {
-        abort_unless($this->access->rector($request->user()), 403);
+        abort_unless($request->user()->can('eventos.configurar'), 403);
         $data = $request->validate(['docentes_cualquier_grupo' => ['required', 'boolean']]);
         DB::transaction(function () use ($data, $request) {
             $previous = ['docentes_cualquier_grupo' => $this->access->unrestricted()];
@@ -66,6 +102,9 @@ class EventoController extends Controller
             ->whereBetween('fecha', [$filters['desde'], $filters['hasta']])
             ->when(! empty($filters['grupo_id']), fn ($q) => $q->where(fn ($q) => $q->where('institucional', true)->orWhereHas('grupos', fn ($q) => $q->where('grupos.id', $filters['grupo_id']))))
             ->orderBy('fecha')->orderBy('hora_inicio')->orderBy('id')->paginate(200);
+        $events->through(fn (Evento $event) => $request->boolean('opaque')
+            ? EventOpaquePresenter::present($event)
+            : [...$event->toArray(), 'url_token' => OpaqueUrlToken::for('evento', $event->id)]);
 
         return response()->json($events);
     }
@@ -75,11 +114,25 @@ class EventoController extends Controller
         $event = $this->access->visible($request->user())->with('grupos:id,nombre')->findOrFail($id);
         $fileIds = DB::table('evento_archivos')->where('evento_id', $id)->pluck('stored_file_id');
         $files = StoredFile::where('tenant_id', tenant()->getKey())->whereIn('id', $fileIds)->get()->map(fn ($file) => [
-            'id' => $file->id, 'nombre' => $file->original_name, 'mime' => $file->mime, 'size' => $file->size,
+            'url_token' => StoredFilePublicToken::for($file),
+            'nombre' => $file->original_name, 'mime' => $file->mime, 'size' => $file->size,
             'url' => $this->storage->signedUrl($file),
         ]);
 
-        return response()->json(['data' => [...$event->toArray(), 'archivos' => $files, 'puede_editar' => $this->access->rector($request->user()) || ($this->access->teacher($request->user()) && $event->created_by === $request->user()->id)]]);
+        $canEdit = $event->institucional
+            ? $request->user()->can('eventos.publicar_institucional')
+                && ($this->access->rector($request->user()) || $event->created_by === $request->user()->id)
+            : $this->access->rector($request->user())
+                || ($this->access->teacher($request->user()) && $event->created_by === $request->user()->id);
+
+        if ($request->boolean('opaque')) {
+            return response()->json(['data' => EventOpaquePresenter::present($event, $files->all(), $canEdit)]);
+        }
+
+        return response()->json(['data' => [...$event->toArray(),
+            'url_token' => OpaqueUrlToken::for('evento', $event->id),
+            'archivos' => $files,
+            'puede_editar' => $canEdit]]);
     }
 
     public function guardar(Request $request, ?int $id = null): JsonResponse
@@ -105,7 +158,12 @@ class EventoController extends Controller
             return $event;
         });
 
-        return response()->json(['data' => $event], $id ? 200 : 201);
+        if ($request->boolean('opaque')) {
+            return response()->json(['data' => EventOpaquePresenter::present($event)], $id ? 200 : 201);
+        }
+
+        return response()->json(['data' => [...$event->toArray(),
+            'url_token' => OpaqueUrlToken::for('evento', $event->id)]], $id ? 200 : 201);
     }
 
     public function archivo(Request $request, int $id): JsonResponse
@@ -126,7 +184,7 @@ class EventoController extends Controller
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
-        return response()->json(['data' => ['id' => $file->id]], 201);
+        return response()->json(['data' => ['url_token' => StoredFilePublicToken::for($file)]], 201);
     }
 
     public function destroy(Request $request, int $id): JsonResponse

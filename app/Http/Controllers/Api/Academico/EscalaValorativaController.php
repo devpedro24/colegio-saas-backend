@@ -9,6 +9,7 @@ use App\Events\TenantDataChanged;
 use App\Models\Academico\EscalaValorativa;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
+use App\Support\ConfigOpaqueData;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -24,16 +25,16 @@ class EscalaValorativaController extends Controller
     /** Lista las escalas, filtrable por `ano_lectivo_id`. */
     public function index(Request $request): JsonResponse
     {
+        $yearId = $request->boolean('opaque')
+            ? ConfigOpaqueData::year($request)->id
+            : ($request->filled('ano_lectivo_id') ? (int) $request->query('ano_lectivo_id') : null);
         $escalas = EscalaValorativa::query()
-            ->when(
-                $request->filled('ano_lectivo_id'),
-                fn ($q) => $q->where('ano_lectivo_id', (int) $request->query('ano_lectivo_id')),
-            )
+            ->when($yearId !== null, fn ($q) => $q->where('ano_lectivo_id', $yearId))
             ->orderByDesc('ano_lectivo_id')
             ->orderBy('nivel_educativo')
             ->get();
 
-        return response()->json(['data' => $escalas]);
+        return response()->json(['data' => $escalas->map(fn ($escala) => $this->present($escala))]);
     }
 
     /** Crea o actualiza (upsert) la escala de un ano lectivo (y nivel opcional). */
@@ -72,7 +73,7 @@ class EscalaValorativaController extends Controller
             TenantDataChanged::dispatch('escala', 'created', $data['nombre']);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $escala], $existente ? 200 : 201);
+        return response()->json(['data' => $this->present($escala)], $existente ? 200 : 201);
     }
 
     /** Actualiza una escala existente por id. */
@@ -80,6 +81,9 @@ class EscalaValorativaController extends Controller
     {
         $escala = EscalaValorativa::query()->findOrFail($id);
         $data = $this->validated($request);
+        if ($request->boolean('opaque')) {
+            abort_unless($escala->ano_lectivo_id === $data['ano_lectivo_id'], 422);
+        }
 
         $prev = $escala->only(array_keys($data));
         $escala->update($data);
@@ -97,7 +101,7 @@ class EscalaValorativaController extends Controller
             TenantDataChanged::dispatch('escala', 'updated', $escala->nombre);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $escala]);
+        return response()->json(['data' => $this->present($escala)]);
     }
 
     /**
@@ -107,8 +111,10 @@ class EscalaValorativaController extends Controller
      */
     private function validated(Request $request): array
     {
-        return $request->validate([
-            'ano_lectivo_id' => ['required', 'integer', 'exists:anos_lectivos,id'],
+        $opaque = $request->boolean('opaque');
+        $data = $request->validate([
+            'ano_lectivo_id' => $opaque ? ['prohibited'] : ['required', 'integer', 'exists:anos_lectivos,id'],
+            'ano_lectivo_token' => $opaque ? ['required', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'] : ['prohibited'],
             'nivel_educativo' => ['nullable', 'in:preescolar,primaria,secundaria,media'],
             'nombre' => ['required', 'string', 'max:120'],
             'tipo' => ['required', 'in:numerica,imagenes'],
@@ -116,6 +122,12 @@ class EscalaValorativaController extends Controller
             'valor_max' => ['nullable', 'numeric', 'gte:valor_min'],
             'decimales' => ['nullable', 'integer', 'min:0', 'max:5'],
         ]);
+        if ($opaque) {
+            $data['ano_lectivo_id'] = ConfigOpaqueData::year($request)->id;
+            unset($data['ano_lectivo_token']);
+        }
+
+        return $data;
     }
 
     /** Elimina una escala existente por id. */
@@ -140,5 +152,13 @@ class EscalaValorativaController extends Controller
         } catch (\Throwable) {}
 
         return response()->json(['data' => null]);
+    }
+
+    private function present(EscalaValorativa $escala): EscalaValorativa|array
+    {
+        return request()->boolean('opaque')
+            ? ConfigOpaqueData::present($escala, 'escala-valorativa',
+                ['nombre', 'nivel_educativo', 'tipo', 'valor_min', 'valor_max', 'decimales'])
+            : $escala;
     }
 }

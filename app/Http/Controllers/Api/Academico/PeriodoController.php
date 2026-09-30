@@ -10,6 +10,7 @@ use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
 use App\Services\PeriodoLifecycleService;
 use App\Support\Audit\AuditLogger;
+use App\Support\OpaqueUrlToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -434,10 +435,12 @@ class PeriodoController extends Controller
     private function present(Periodo $periodo): array
     {
         $today = PeriodoLifecycleService::today();
+        $opaque = request()->boolean('opaque');
 
         return [
-            'id' => $periodo->id,
-            'ano_lectivo_id' => $periodo->ano_lectivo_id,
+            ...($opaque ? [] : ['id' => $periodo->id, 'ano_lectivo_id' => $periodo->ano_lectivo_id]),
+            'url_token' => OpaqueUrlToken::for('periodo', $periodo->id),
+            ...($opaque ? ['ano_lectivo_token' => OpaqueUrlToken::for('ano-lectivo', $periodo->ano_lectivo_id)] : []),
             'nombre' => $periodo->nombre,
             'orden' => $periodo->orden,
             'fecha_inicio' => $periodo->fecha_inicio?->toDateString(),

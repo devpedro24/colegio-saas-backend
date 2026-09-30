@@ -56,7 +56,14 @@ class AnoLectivoController extends Controller
 
     public function estadoCopia(string $id, DuplicarAnoLectivoService $service): JsonResponse
     {
-        return response()->json(['data' => $service->copyStatus(AnoLectivo::findOrFail($id))]);
+        $status = $service->copyStatus(AnoLectivo::findOrFail($id));
+        if (request()->boolean('opaque')) {
+            $sourceId = $status['origen_id'];
+            unset($status['origen_id']);
+            $status['origen_token'] = $sourceId === null ? null : OpaqueUrlToken::for('ano-lectivo', $sourceId);
+        }
+
+        return response()->json(['data' => $status]);
     }
 
     /** Crea un año lectivo (nace en estado 'planificado'). */
@@ -150,12 +157,17 @@ class AnoLectivoController extends Controller
     public function copiarConfiguracion(Request $request, string $id, DuplicarAnoLectivoService $service): JsonResponse
     {
         $target = AnoLectivo::findOrFail($id);
+        $opaque = $request->boolean('opaque');
         $data = $request->validate([
-            'origen_id' => ['required', 'integer', 'exists:anos_lectivos,id'],
+            'origen_id' => [$opaque ? 'prohibited' : 'required', 'integer', 'exists:anos_lectivos,id'],
+            'origen_token' => [$opaque ? 'required' : 'prohibited', 'string', 'size:24'],
             'opciones' => ['required', 'array:'.implode(',', DuplicarAnoLectivoService::OPTIONS)],
             'opciones.*' => ['boolean'],
         ]);
-        $source = AnoLectivo::findOrFail($data['origen_id']);
+        $source = $opaque
+            ? OpaqueUrlToken::find('ano-lectivo', $data['origen_token'], AnoLectivo::query())
+            : AnoLectivo::findOrFail($data['origen_id']);
+        abort_unless($source instanceof AnoLectivo, 404);
         $updated = $service->copiarConfiguracion($source, $target, $data['opciones'], $request->user());
 
         return response()->json(['data' => $this->present($updated)]);
@@ -587,8 +599,8 @@ class AnoLectivoController extends Controller
      */
     private function present(AnoLectivo $ano, bool $conPeriodos = false): array
     {
+        $opaque = request()->boolean('opaque');
         $payload = [
-            'id' => $ano->id,
             // Stable tenant-bound URL selector; the legacy value resolves existing bookmarks.
             'url_token' => OpaqueUrlToken::for('ano-lectivo', $ano->id),
             'legacy_url_token' => hash_hmac('sha256', (string) tenancy()->tenant?->getTenantKey().'|ano-lectivo|'.$ano->id, (string) config('app.key')),
@@ -601,11 +613,14 @@ class AnoLectivoController extends Controller
             'estado' => $ano->estado,
             'created_at' => $ano->created_at?->toIso8601String(),
         ];
+        if (! $opaque) {
+            $payload['id'] = $ano->id;
+        }
 
         if ($conPeriodos) {
             $today = PeriodoLifecycleService::today();
             $payload['periodos'] = $ano->periodos->map(fn ($periodo) => [
-                'id' => $periodo->id,
+                ...($opaque ? ['url_token' => OpaqueUrlToken::for('periodo', $periodo->id)] : ['id' => $periodo->id]),
                 'nombre' => $periodo->nombre,
                 'orden' => $periodo->orden,
                 'fecha_inicio' => $periodo->fecha_inicio?->toDateString(),

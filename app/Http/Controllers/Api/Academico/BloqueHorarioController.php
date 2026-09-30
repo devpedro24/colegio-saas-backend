@@ -27,7 +27,7 @@ class BloqueHorarioController extends Controller
     /** Lista los bloques, filtrables por `jornada_id`. */
     public function index(Request $request): JsonResponse
     {
-        $bloques = BloqueHorario::query()
+        $bloques = $this->paginateAcademic(BloqueHorario::query()
             ->with('jornada.sede:id,nombre')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('jornada_id'), fn ($q) => $q->where('jornada_id', (int) $request->query('jornada_id')))
@@ -36,16 +36,15 @@ class BloqueHorarioController extends Controller
             ->orderBy('jornada_id')
             ->orderBy('hora_inicio')
             ->orderBy('hora_fin')
-            ->orderBy('id')
-            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('id'), $request);
 
-        return $this->paginatedResponse($bloques);
+        return $this->paginatedResponse($bloques, 'bloque-horario');
     }
 
     /** Detalle de un bloque. */
     public function show(int $id): JsonResponse
     {
-        return response()->json(['data' => BloqueHorario::with('jornada.sede:id,nombre')->findOrFail($id)]);
+        return response()->json(['data' => $this->withOpaqueToken(BloqueHorario::with('jornada.sede:id,nombre')->findOrFail($id), 'bloque-horario')]);
     }
 
     /** Crea un bloque. */
@@ -83,7 +82,7 @@ class BloqueHorarioController extends Controller
             TenantDataChanged::dispatch('bloque_horario', 'created', $data['nombre']);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $bloque->load('jornada.sede:id,nombre')], 201);
+        return response()->json(['data' => $this->withOpaqueToken($bloque->load('jornada.sede:id,nombre'), 'bloque-horario')], 201);
     }
 
     /** Edita un bloque. */
@@ -129,7 +128,7 @@ class BloqueHorarioController extends Controller
             TenantDataChanged::dispatch('bloque_horario', 'updated', $bloque->nombre);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $bloque->load('jornada.sede:id,nombre')]);
+        return response()->json(['data' => $this->withOpaqueToken($bloque->load('jornada.sede:id,nombre'), 'bloque-horario')]);
     }
 
     /** Elimina (soft-delete) un bloque. */

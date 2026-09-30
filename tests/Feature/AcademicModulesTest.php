@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\Academico\NivelController;
 use App\Http\Controllers\Api\Academico\PeriodoController;
 use App\Http\Controllers\Api\Academico\SedeController;
 use App\Http\Controllers\Api\Academico\SieeController;
+use App\Http\Middleware\EnsureOnboardingComplete;
 use App\Models\Academico\ActividadEvaluacion;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Area;
@@ -243,8 +244,9 @@ class AcademicModulesTest extends TestCase
             'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
         $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
             'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
-        $configuration = [...SieeConfiguration::DEFAULTS, 'escala_id' => $scale->id,
-            'metodo_id' => $method->id];
+        $configuration = [...SieeConfiguration::DEFAULTS, 'escala_token' => OpaqueUrlToken::for('escala-valorativa', $scale->id),
+            'metodo_token' => OpaqueUrlToken::for('metodo-aprobacion', $method->id)];
+        unset($configuration['escala_id'], $configuration['metodo_id']);
         $request = Request::create('/', 'PUT', $configuration);
         $request->setUserResolver(fn () => $this->rector);
 
@@ -284,6 +286,123 @@ class AcademicModulesTest extends TestCase
         } finally {
             tenancy()->initialize($this->school);
         }
+    }
+
+    public function test_siee_http_routes_require_tenant_bound_year_token_and_configuration_permission(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.configurar', 'web'));
+        $api = 'http://localhost/api/siee/';
+        $token = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        $otherSchool = Tenant::withoutEvents(fn () => Tenant::create([
+            'id' => 'academic-other', 'name' => 'Otro colegio', 'slug' => 'academic-other',
+            'plan' => 'esencial', 'tipo' => 'colegio', 'status' => 'active',
+        ]));
+        tenancy()->initialize($otherSchool);
+        $foreignToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        tenancy()->initialize($this->school);
+
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $this->getJson($api.$token)->assertOk();
+        $this->getJson($api.$token.'/curriculo')->assertOk();
+
+        foreach ([(string) $this->year->id, $foreignToken, str_repeat('x', 24)] as $invalid) {
+            $this->getJson($api.$invalid)->assertNotFound();
+            $this->getJson($api.$invalid.'/curriculo')->assertNotFound();
+            $this->putJson($api.$invalid, [])->assertNotFound();
+            $this->putJson($api.$invalid.'/curriculo', [])->assertNotFound();
+        }
+
+        $this->putJson($api.$token, [])->assertUnprocessable()->assertJsonValidationErrors('usar_areas');
+        $this->putJson($api.$token.'/curriculo', [])->assertUnprocessable()->assertJsonValidationErrors('grado_token');
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->teacher->createToken('web')->plainTextToken);
+        $this->getJson($api.$token)->assertForbidden();
+        $this->putJson($api.$token.'/curriculo', [])->assertForbidden();
+    }
+
+    public function test_siee_contract_exposes_and_accepts_only_scoped_opaque_selectors(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.configurar', 'web'));
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api';
+        $yearToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        $gradeToken = OpaqueUrlToken::for('grado', $this->group->grado_id);
+        $subjectToken = OpaqueUrlToken::for('materia', $this->subject->id);
+        $areaToken = OpaqueUrlToken::for('area', $this->subject->area_id);
+
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $configuration = SieeConfiguration::DEFAULTS;
+        unset($configuration['escala_id'], $configuration['metodo_id']);
+        $configuration['escala_token'] = OpaqueUrlToken::for('escala-valorativa', $scale->id);
+        $configuration['metodo_token'] = OpaqueUrlToken::for('metodo-aprobacion', $method->id);
+
+        $this->putJson($api.'/siee/'.$yearToken, $configuration)->assertOk()
+            ->assertJsonPath('data.configuracion.escala_token', $configuration['escala_token'])
+            ->assertJsonMissingPath('data.configuracion.escala_id');
+        $this->putJson($api.'/siee/'.$yearToken.'/curriculo', [
+            'grado_token' => $gradeToken, 'materia_token' => $subjectToken,
+            'area_token' => $areaToken, 'peso_area' => '20.5',
+        ])->assertOk()->assertJsonPath('data.curriculo.0.grado_token', $gradeToken)
+            ->assertJsonMissingPath('data.curriculo.0.grado_id');
+
+        $detail = $this->getJson($api.'/siee/'.$yearToken)->assertOk()->json('data');
+        $this->assertSame($subjectToken, $detail['materias'][0]['url_token']);
+        $this->assertSame($areaToken, $detail['materias'][0]['area']['url_token']);
+        $this->assertArrayNotHasKey('id', $detail['grados'][0]);
+        $this->assertArrayNotHasKey('id', $detail['escalas'][0]);
+        $this->assertArrayNotHasKey('ano_lectivo_id', $detail['metodos'][0]);
+        $this->getJson($api.'/siee/'.$yearToken.'/curriculo?grado_token='.$gradeToken)
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson($api.'/siee/'.$yearToken.'/curriculo?grado_id='.$this->group->grado_id)
+            ->assertUnprocessable()->assertJsonValidationErrors('grado_id');
+        $this->putJson($api.'/siee/'.$yearToken.'/curriculo', [
+            'grado_id' => $this->group->grado_id, 'materia_id' => $this->subject->id,
+        ])->assertUnprocessable()->assertJsonValidationErrors(['grado_id', 'materia_id']);
+        $this->putJson($api.'/siee/'.$yearToken, [...$configuration, 'escala_id' => $scale->id])
+            ->assertUnprocessable()->assertJsonValidationErrors('escala_id');
+
+        $otherYear = AnoLectivo::create(['nombre' => '2027', 'tipo_calendario' => 'A',
+            'fecha_inicio' => '2027-01-01', 'fecha_fin' => '2027-12-31', 'num_periodos' => 3]);
+        $foreignGrade = Grado::create(['ano_lectivo_id' => $otherYear->id,
+            'nivel_id' => $this->group->grado->nivel_id, 'nombre' => 'Segundo', 'codigo' => '02', 'estado' => 'activo']);
+        $this->putJson($api.'/siee/'.$yearToken.'/curriculo', [
+            'grado_token' => OpaqueUrlToken::for('grado', $foreignGrade->id),
+            'materia_token' => $subjectToken,
+        ])->assertUnprocessable()->assertJsonValidationErrors('grado_token');
+
+        $otherSchool = Tenant::withoutEvents(fn () => Tenant::create([
+            'id' => 'academic-other', 'name' => 'Otro colegio', 'slug' => 'academic-other',
+            'plan' => 'esencial', 'tipo' => 'colegio', 'status' => 'active',
+        ]));
+        tenancy()->initialize($otherSchool);
+        $otherTenantSubjectToken = OpaqueUrlToken::for('materia', $this->subject->id);
+        tenancy()->initialize($this->school);
+        $this->putJson($api.'/siee/'.$yearToken.'/curriculo', [
+            'grado_token' => $gradeToken, 'materia_token' => $otherTenantSubjectToken,
+        ])->assertUnprocessable()->assertJsonValidationErrors('materia_token');
+
+        $options = $this->getJson($api.'/catalogos-academicos?opaque=1&tipo=materias&ano_lectivo_token='
+            .$yearToken.'&compatible_nivel_token='.OpaqueUrlToken::for('nivel', $this->group->grado->nivel_id))
+            ->assertOk()->json('data');
+        $this->assertSame($subjectToken, $options[0]['url_token']);
+        $this->assertArrayNotHasKey('id', $options[0]);
+        $this->assertArrayNotHasKey('nivel_id', $options[0]);
+        $this->getJson($api.'/catalogos-academicos?opaque=1&tipo=materias&ano_lectivo_token='
+            .$yearToken.'&compatible_nivel_id='.$this->group->grado->nivel_id)
+            ->assertUnprocessable()->assertJsonValidationErrors('compatible_nivel_id');
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->teacher->createToken('web')->plainTextToken);
+        $this->getJson($api.'/catalogos-academicos?opaque=1&tipo=materias&ano_lectivo_token='.$yearToken)
+            ->assertForbidden();
     }
 
     public function test_sede_selector_is_opaque_and_legacy_links_still_resolve(): void
@@ -626,15 +745,26 @@ class AcademicModulesTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Los tests históricos de este módulo usan el contrato numérico antiguo.
+        // La excepción existe únicamente en testing y requiere esta cabecera.
+        $this->withHeader('X-Legacy-Academic-Ids', '1');
         // Conexión tenant real separada de la central, ambas SQLite en memoria.
         config(['tenancy.bootstrappers' => [], 'database.connections.academic_test' => ['driver' => 'sqlite', 'database' => ':memory:', 'foreign_key_constraints' => true]]);
         $this->school = Tenant::withoutEvents(fn () => Tenant::create(['id' => 'academic-test', 'name' => 'Colegio', 'slug' => 'academic-test', 'plan' => 'esencial', 'tipo' => 'colegio', 'status' => 'active']));
         DB::setDefaultConnection('academic_test');
         Artisan::call('migrate', ['--database' => 'academic_test', '--path' => 'database/migrations/tenant', '--force' => true]);
         tenancy()->initialize($this->school);
-        Role::findOrCreate('docente', 'web');
+        $teacherRole = Role::findOrCreate('docente', 'web');
         $rectorRole = Role::findOrCreate('rector', 'web');
-        foreach (['academico.anos.transicionar', 'academico.periodos.transicionar'] as $permission) {
+        foreach (['notas.registrar_materia_asignada', 'eventos.publicar_asignados'] as $permission) {
+            $teacherRole->givePermissionTo(Permission::findOrCreate($permission, 'web'));
+        }
+        foreach ([
+            'academico.anos.transicionar', 'academico.periodos.transicionar',
+            'notas.ver_consolidado_todos', 'notas.editar_no_dicta',
+            'academico.matriculas.gestionar', 'eventos.gestionar', 'eventos.configurar',
+            'eventos.publicar_institucional', 'eventos.publicar_asignados',
+        ] as $permission) {
             $rectorRole->givePermissionTo(Permission::findOrCreate($permission, 'web'));
         }
         $this->teacher = User::create(['name' => 'Docente', 'email' => 'teacher@test.test', 'password' => 'TeacherPassword123', 'role' => 'docente', 'status' => 'active']);
@@ -1346,6 +1476,187 @@ class AcademicModulesTest extends TestCase
         }
     }
 
+    public function test_evaluation_and_event_details_accept_tenant_bound_opaque_route_selectors(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        [$period, $enrollment] = $this->gradeFixture();
+        $event = Evento::create(['titulo' => 'Circular', 'descripcion' => 'Aviso',
+            'fecha' => '2026-09-25', 'created_by' => $this->rector->id, 'institucional' => true]);
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api';
+        $assignmentToken = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
+        $periodToken = OpaqueUrlToken::for('periodo', $period->id);
+        $enrollmentToken = OpaqueUrlToken::for('matricula', $enrollment->id);
+        $eventToken = OpaqueUrlToken::for('evento', $event->id);
+
+        $this->getJson("{$api}/evaluacion/planillas/{$assignmentToken}/{$periodToken}")
+            ->assertOk()->assertJsonPath('data.matriculas.0.url_token', $enrollmentToken);
+        $this->getJson("{$api}/evaluacion/boletines/{$enrollmentToken}")->assertOk();
+        $this->getJson("{$api}/eventos/{$eventToken}")
+            ->assertOk()->assertJsonPath('data.url_token', $eventToken);
+        $this->getJson("{$api}/eventos/{$assignmentToken}")->assertNotFound();
+        $this->getJson("{$api}/evaluacion/planillas/{$periodToken}/{$periodToken}")->assertNotFound();
+
+        $otherSchool = Tenant::withoutEvents(fn () => Tenant::create([
+            'id' => 'other-academic-routes', 'name' => 'Otro colegio', 'slug' => 'other-academic-routes',
+            'plan' => 'esencial', 'tipo' => 'colegio', 'status' => 'active',
+        ]));
+        tenancy()->initialize($otherSchool);
+        $foreignEventToken = OpaqueUrlToken::for('evento', $event->id);
+        tenancy()->initialize($this->school);
+        $this->getJson("{$api}/eventos/{$foreignEventToken}")->assertNotFound();
+    }
+
+    public function test_structure_and_study_plan_accept_tokens_without_cross_resource_resolution(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.estructura.gestionar', 'web'));
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api';
+        $gradeToken = OpaqueUrlToken::for('grado', $this->group->grado_id);
+        $areaToken = OpaqueUrlToken::for('area', $this->subject->area_id);
+
+        $this->getJson("{$api}/estructura/grados/{$gradeToken}")
+            ->assertOk()->assertJsonPath('data.url_token', $gradeToken);
+        $this->getJson("{$api}/estructura/grados/{$gradeToken}?opaque=1")
+            ->assertOk()->assertJsonMissingPath('data.id');
+        $this->getJson("{$api}/estructura/grados/{$this->group->grado_id}?opaque=1")
+            ->assertNotFound();
+        $this->getJson("{$api}/estructura/grados/{$areaToken}")->assertNotFound();
+        $this->putJson("{$api}/plan-estudios/areas/{$areaToken}", [
+            'ano_lectivo_id' => $this->year->id, 'nombre' => 'Ciencias Naturales',
+        ])->assertOk()->assertJsonPath('data.url_token', $areaToken);
+        $this->getJson("{$api}/plan-estudios/areas")
+            ->assertOk()->assertJsonPath('data.0.url_token', $areaToken);
+    }
+
+    public function test_academic_year_and_period_routes_accept_their_own_opaque_selectors(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.anos.gestionar', 'web'));
+        [$period] = $this->gradeFixture();
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api';
+        $yearToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        $periodToken = OpaqueUrlToken::for('periodo', $period->id);
+
+        $this->getJson("{$api}/anos-lectivos/{$yearToken}")->assertOk();
+        $this->getJson("{$api}/anos-lectivos/{$yearToken}/periodos")
+            ->assertOk()->assertJsonPath('data.0.url_token', $periodToken);
+        $this->getJson("{$api}/anos-lectivos/{$periodToken}")->assertNotFound();
+    }
+
+    public function test_structure_and_plan_opaque_mode_uses_only_tenant_scoped_public_identifiers(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.estructura.gestionar', 'web'));
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api';
+        $yearToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        $areaToken = OpaqueUrlToken::for('area', $this->subject->area_id);
+        $levelToken = OpaqueUrlToken::for('nivel', $this->group->grado->nivel_id);
+
+        $this->getJson("{$api}/estructura/grupos?opaque=1&ano_lectivo_token={$yearToken}")
+            ->assertOk()->assertJsonPath('data.0.url_token', OpaqueUrlToken::for('grupo', $this->group->id))
+            ->assertJsonMissingPath('data.0.id')->assertJsonMissingPath('data.0.grado_id')
+            ->assertJsonPath('data.0.grado_token', OpaqueUrlToken::for('grado', $this->group->grado_id));
+        $this->getJson("{$api}/estructura/sedes?opaque=1")
+            ->assertOk()->assertJsonMissingPath('data.0.id')->assertJsonMissingPath('data.0.tenant_id');
+        $this->getJson("{$api}/estructura/sedes/{$this->group->sede_id}?opaque=1")->assertNotFound();
+        $sedeToken = OpaqueUrlToken::for('sede', $this->group->sede_id);
+        $this->postJson("{$api}/estructura/sedes/{$sedeToken}/heredar?opaque=1")
+            ->assertUnprocessable(); // La sede principal se resolvió; no tiene tenant hijo al cual heredar.
+        $this->postJson("{$api}/estructura/sedes/{$this->group->sede_id}/heredar?opaque=1")
+            ->assertNotFound();
+        $this->getJson("{$api}/plan-estudios/materias?opaque=1&ano_lectivo_token={$yearToken}&area_token={$areaToken}")
+            ->assertOk()->assertJsonPath('data.0.url_token', OpaqueUrlToken::for('materia', $this->subject->id))
+            ->assertJsonPath('data.0.area_token', $areaToken)
+            ->assertJsonMissingPath('data.0.id')->assertJsonMissingPath('data.0.area.id');
+
+        $this->postJson("{$api}/plan-estudios/materias?opaque=1", [
+            'ano_lectivo_token' => $yearToken, 'area_token' => $areaToken,
+            'nivel_token' => $levelToken, 'nombre' => 'Química', 'intensidad_horaria' => 3,
+        ])->assertCreated()->assertJsonMissingPath('data.id')
+            ->assertJsonPath('data.ano_lectivo_token', $yearToken)
+            ->assertJsonPath('data.area_token', $areaToken)
+            ->assertJsonPath('data.nivel_token', $levelToken);
+        $this->postJson("{$api}/estructura/grupos?opaque=1", [
+            'ano_lectivo_token' => $yearToken,
+            'grado_token' => OpaqueUrlToken::for('grado', $this->group->grado_id),
+            'jornada_token' => OpaqueUrlToken::for('jornada', $this->group->jornada_id),
+            'sede_token' => OpaqueUrlToken::for('sede', $this->group->sede_id),
+            'nombre' => 'B',
+        ])->assertCreated()->assertJsonMissingPath('data.id')
+            ->assertJsonPath('data.ano_lectivo_token', $yearToken)
+            ->assertJsonPath('data.grado_token', OpaqueUrlToken::for('grado', $this->group->grado_id));
+        $this->postJson("{$api}/plan-estudios/materias?opaque=1", [
+            'ano_lectivo_token' => $yearToken, 'area_id' => $this->subject->area_id,
+            'nombre' => 'Física', 'intensidad_horaria' => 3,
+        ])->assertUnprocessable();
+        $this->getJson("{$api}/plan-estudios/materias?opaque=1&ano_lectivo_token={$yearToken}&area_token={$levelToken}")
+            ->assertUnprocessable();
+    }
+
+    public function test_opaque_academic_options_cover_structure_and_plan_without_numeric_ids(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.estructura.gestionar', 'web'));
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api/catalogos-academicos?opaque=1';
+        $yearToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        $sedeToken = OpaqueUrlToken::for('sede', $this->group->sede_id);
+        $journeyToken = OpaqueUrlToken::for('jornada', $this->group->jornada_id);
+        $levelToken = OpaqueUrlToken::for('nivel', $this->group->grado->nivel_id);
+        $gradeToken = OpaqueUrlToken::for('grado', $this->group->grado_id);
+        $areaToken = OpaqueUrlToken::for('area', $this->subject->area_id);
+
+        foreach ([
+            ['sedes', '', $sedeToken],
+            ['jornadas', "&ano_lectivo_token={$yearToken}&sede_token={$sedeToken}", $journeyToken],
+            ['niveles', "&ano_lectivo_token={$yearToken}", $levelToken],
+            ['grados', "&ano_lectivo_token={$yearToken}&nivel_token={$levelToken}", $gradeToken],
+            ['grupos', "&ano_lectivo_token={$yearToken}&grado_token={$gradeToken}", OpaqueUrlToken::for('grupo', $this->group->id)],
+            ['areas', "&ano_lectivo_token={$yearToken}", $areaToken],
+            ['materias', "&ano_lectivo_token={$yearToken}&area_token={$areaToken}", OpaqueUrlToken::for('materia', $this->subject->id)],
+        ] as [$type, $filters, $expected]) {
+            $this->getJson("{$api}&tipo={$type}{$filters}")
+                ->assertOk()->assertJsonPath('data.0.url_token', $expected)
+                ->assertJsonMissingPath('data.0.id');
+        }
+        $this->getJson("{$api}&tipo=grados&ano_lectivo_token={$yearToken}&nivel_id={$this->group->grado->nivel_id}")
+            ->assertUnprocessable();
+        $this->getJson("{$api}&tipo=jornadas&ano_lectivo_token={$yearToken}&sede_token={$levelToken}")
+            ->assertUnprocessable();
+    }
+
+    public function test_all_structure_and_plan_lists_remove_internal_and_foreign_ids_in_opaque_mode(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.estructura.gestionar', 'web'));
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $yearToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        foreach ([
+            'estructura/sedes', 'estructura/jornadas', 'estructura/niveles', 'estructura/grados',
+            'estructura/grupos', 'estructura/bloques-horarios', 'estructura/espacios-fisicos',
+            'plan-estudios/areas', 'plan-estudios/materias',
+        ] as $path) {
+            $data = $this->getJson("http://localhost/api/{$path}?opaque=1&ano_lectivo_token={$yearToken}")
+                ->assertOk()->json('data');
+            $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id|[a-z_]+_ids)"\s*:/',
+                json_encode($data, JSON_THROW_ON_ERROR), $path);
+        }
+    }
+
     public function test_schedule_group_must_belong_to_selected_year(): void
     {
         $this->rector->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate(
@@ -1439,12 +1750,16 @@ class AcademicModulesTest extends TestCase
         $controller = app(EventoController::class);
         $response = $controller->archivo($request, $event->id);
         $this->assertSame(201, $response->status());
-        $file = StoredFile::findOrFail($response->getData(true)['data']['id']);
+        $file = StoredFile::query()->where('tenant_id', $this->school->id)->firstOrFail();
+        $this->assertSame(\App\Support\Storage\StoredFilePublicToken::for($file),
+            $response->getData(true)['data']['url_token']);
+        $this->assertArrayNotHasKey('id', $response->getData(true)['data']);
         $this->assertSame('Contenido de prueba del evento.', Storage::disk('tenant')->get($file->path));
         $this->assertDatabaseHas('evento_archivos', ['evento_id' => $event->id, 'stored_file_id' => $file->id]);
         $this->assertDatabaseHas('audit_logs', ['recurso' => 'evento', 'accion' => 'UPLOAD', 'recurso_id' => (string) $event->id]);
         $detail = $controller->show($request, $event->id)->getData(true)['data'];
-        $this->assertSame($file->id, $detail['archivos'][0]['id']);
+        $this->assertSame(\App\Support\Storage\StoredFilePublicToken::for($file), $detail['archivos'][0]['url_token']);
+        $this->assertArrayNotHasKey('id', $detail['archivos'][0]);
         $this->assertStringContainsString('signature=', $detail['archivos'][0]['url']);
     }
 
@@ -1473,6 +1788,146 @@ class AcademicModulesTest extends TestCase
         $this->assertTrue(true);
         $this->expectException(HttpException::class);
         $access->authorizeWrite($this->teacher, [...$data, 'materia_id' => 999]);
+    }
+
+    public function test_event_permissions_remain_separate_and_assignment_scope_is_enforced(): void
+    {
+        $rectorRole = Role::findByName('rector', 'web');
+        $rectorRole->revokePermissionTo('eventos.publicar_institucional');
+        $rectorRole->revokePermissionTo('eventos.configurar');
+        $this->rector = $this->rector->fresh();
+        $this->assertTrue($this->rector->can('eventos.gestionar'));
+
+        $access = new EventAccess;
+        $institutional = Evento::create(['titulo' => 'Circular', 'descripcion' => 'Aviso',
+            'fecha' => '2026-09-25', 'created_by' => $this->rector->id, 'institucional' => true]);
+        foreach ([
+            ['institucional' => true, 'grupo_ids' => []],
+            ['institucional' => false, 'grupo_ids' => [$this->group->id]],
+        ] as $data) {
+            try {
+                $access->authorizeWrite($this->rector, $data, $institutional);
+                $this->fail('Gestionar eventos no permite publicar ni modificar un evento institucional.');
+            } catch (HttpException $error) {
+                $this->assertSame(403, $error->getStatusCode());
+            }
+        }
+        $request = Request::create('/api/eventos/configuracion', 'PUT', ['docentes_cualquier_grupo' => true]);
+        $request->setUserResolver(fn () => $this->rector);
+        try {
+            app(EventoController::class)->configurar($request);
+            $this->fail('Gestionar eventos no permite cambiar la política de publicación docente.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+
+        $other = User::create(['name' => 'Otra docente', 'email' => 'other-events@test.test',
+            'password' => 'Password12345', 'role' => 'docente', 'status' => 'active']);
+        $other->assignRole('docente');
+        try {
+            $access->authorizeWrite($other, ['institucional' => false,
+                'grupo_ids' => [$this->group->id], 'materia_id' => $this->subject->id]);
+            $this->fail('Publicar eventos asignados exige una asignación de grupo y materia.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+
+        Role::findByName('docente', 'web')->revokePermissionTo('eventos.publicar_asignados');
+        $this->teacher = $this->teacher->fresh();
+        try {
+            $access->authorizeWrite($this->teacher, ['institucional' => false,
+                'grupo_ids' => [$this->group->id], 'materia_id' => $this->subject->id]);
+            $this->fail('La asignación no permite publicar si se revocó el permiso.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+    }
+
+    public function test_event_opaque_mode_accepts_group_tokens_without_exposing_internal_ids(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api/eventos';
+        $groupToken = OpaqueUrlToken::for('grupo', $this->group->id);
+        $subjectToken = OpaqueUrlToken::for('materia', $this->subject->id);
+        $catalog = $this->getJson("{$api}/catalogo?opaque=1")
+            ->assertOk()->assertJsonPath('data.grupos.0.url_token', $groupToken)
+            ->assertJsonMissingPath('data.grupos.0.id')->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id|created_by)"\s*:/',
+            json_encode($catalog, JSON_THROW_ON_ERROR));
+
+        $created = $this->postJson("{$api}?opaque=1", [
+            'titulo' => 'Feria de ciencias', 'descripcion' => 'Presentación de proyectos',
+            'fecha' => '2026-09-25', 'categoria' => 'actividad', 'institucional' => false,
+            'grupo_tokens' => [$groupToken], 'materia_token' => $subjectToken,
+        ])->assertCreated()->assertJsonMissingPath('data.id')
+            ->assertJsonPath('data.grupo_tokens.0', $groupToken)
+            ->assertJsonPath('data.materia_token', $subjectToken)->json('data');
+        $eventToken = $created['url_token'];
+
+        $this->getJson("{$api}?opaque=1&desde=2026-09-01&hasta=2026-09-30&grupo_token={$groupToken}")
+            ->assertOk()->assertJsonPath('data.0.url_token', $eventToken)
+            ->assertJsonMissingPath('data.0.id');
+        $this->getJson("{$api}/{$eventToken}?opaque=1")
+            ->assertOk()->assertJsonPath('data.url_token', $eventToken)
+            ->assertJsonMissingPath('data.created_by');
+        $this->putJson("{$api}/{$eventToken}?opaque=1", [
+            'titulo' => 'Feria actualizada', 'descripcion' => 'Presentación de proyectos',
+            'fecha' => '2026-09-25', 'categoria' => 'actividad', 'institucional' => false,
+            'grupo_tokens' => [$groupToken], 'materia_token' => $subjectToken,
+        ])->assertOk()->assertJsonPath('data.titulo', 'Feria actualizada');
+
+        $this->getJson("{$api}/".Evento::firstOrFail()->id.'?opaque=1')->assertNotFound();
+        $this->postJson("{$api}?opaque=1", [
+            'titulo' => 'ID oculto', 'descripcion' => 'No procede', 'fecha' => '2026-09-25',
+            'categoria' => 'actividad', 'institucional' => false,
+            'grupo_ids' => [$this->group->id],
+        ])->assertUnprocessable();
+        $this->getJson("{$api}?opaque=1&desde=2026-09-01&hasta=2026-09-30&grupo_token={$subjectToken}")
+            ->assertUnprocessable();
+
+    }
+
+    public function test_event_opaque_writes_still_enforce_owner_institutional_and_teacher_assignment(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $event = Evento::create(['titulo' => 'Circular', 'descripcion' => 'Aviso',
+            'fecha' => '2026-09-25', 'categoria' => 'actividad',
+            'created_by' => $this->rector->id, 'institucional' => false]);
+        $event->grupos()->attach($this->group->id);
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->teacher->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api/eventos';
+        $eventToken = OpaqueUrlToken::for('evento', $event->id);
+        $groupToken = OpaqueUrlToken::for('grupo', $this->group->id);
+        $subjectToken = OpaqueUrlToken::for('materia', $this->subject->id);
+
+        $this->putJson("{$api}/{$eventToken}?opaque=1", [
+            'titulo' => 'Cambio ajeno', 'descripcion' => 'No procede', 'fecha' => '2026-09-25',
+            'categoria' => 'actividad', 'institucional' => false,
+            'grupo_tokens' => [$groupToken], 'materia_token' => $subjectToken,
+        ])->assertForbidden();
+        $this->postJson("{$api}?opaque=1", [
+            'titulo' => 'Circular docente', 'descripcion' => 'No procede', 'fecha' => '2026-09-25',
+            'categoria' => 'actividad', 'institucional' => true, 'grupo_tokens' => [],
+        ])->assertForbidden();
+    }
+
+    public function test_event_opaque_create_rejects_a_teacher_without_the_selected_group_assignment(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $unassigned = User::create(['name' => 'Docente sin grupo', 'email' => 'event-unassigned@test.test',
+            'password' => 'Password12345', 'role' => 'docente', 'status' => 'active']);
+        $unassigned->assignRole('docente');
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($unassigned->createToken('web')->plainTextToken);
+        $this->postJson('http://localhost/api/eventos?opaque=1', [
+            'titulo' => 'Evento no asignado', 'descripcion' => 'No procede', 'fecha' => '2026-09-25',
+            'categoria' => 'actividad', 'institucional' => false,
+            'grupo_tokens' => [OpaqueUrlToken::for('grupo', $this->group->id)],
+            'materia_token' => OpaqueUrlToken::for('materia', $this->subject->id),
+        ])->assertForbidden();
     }
 
     public function test_unrelated_teacher_cannot_see_a_group_event(): void
@@ -1508,7 +1963,8 @@ class AcademicModulesTest extends TestCase
         $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id, 'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
         $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS, 'modo_asignatura' => 'SIMPLE_AVERAGE', 'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
         $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Trimestre 1', 'orden' => 1, 'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-04-30', 'estado' => 'abierto']);
-        Role::findOrCreate('estudiante', 'web');
+        Role::findOrCreate('estudiante', 'web')
+            ->givePermissionTo(Permission::findOrCreate('notas.ver_propias', 'web'));
         $student = User::create(['name' => 'Estudiante', 'email' => 'student@test.test', 'password' => 'Student123456', 'role' => 'estudiante', 'status' => 'active']);
         $student->assignRole('estudiante');
         $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id, 'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
@@ -1516,6 +1972,162 @@ class AcademicModulesTest extends TestCase
         $activity = ActividadEvaluacion::create(['componente_id' => $component->id, 'nombre' => 'Taller 1', 'fecha' => '2026-02-05']);
 
         return [$period, $enrollment, $activity];
+    }
+
+    public function test_evaluation_opaque_contract_covers_catalog_sheet_writes_and_report(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api/evaluacion';
+        $yearToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        $assignmentToken = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
+        $periodToken = OpaqueUrlToken::for('periodo', $period->id);
+        $enrollmentToken = OpaqueUrlToken::for('matricula', $enrollment->id);
+        $activityToken = OpaqueUrlToken::for('actividad-evaluacion', $activity->id);
+
+        $catalog = $this->getJson("{$api}/catalogo?opaque=1&ano_lectivo_token={$yearToken}")
+            ->assertOk()->assertJsonPath('data.asignaciones.0.url_token', $assignmentToken)
+            ->assertJsonPath('data.matriculas.0.url_token', $enrollmentToken)->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($catalog));
+
+        $sheet = $this->getJson("{$api}/planillas/{$assignmentToken}/{$periodToken}?opaque=1")
+            ->assertOk()->assertJsonPath('data.componentes.0.actividades.0.url_token', $activityToken)
+            ->assertJsonPath('data.resultados.0.matricula_token', $enrollmentToken)->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($sheet));
+
+        $this->postJson("{$api}/componentes?opaque=1", [
+            'asignacion_token' => $assignmentToken, 'periodo_token' => $periodToken,
+            'nombre' => 'Exámenes', 'modo' => 'SIMPLE_AVERAGE',
+        ])->assertCreated()->assertJsonMissingPath('data.id');
+        $componentToken = OpaqueUrlToken::for('componente-evaluacion', $activity->componente_id);
+        $this->postJson("{$api}/actividades?opaque=1", [
+            'componente_token' => $componentToken, 'nombre' => 'Taller 2',
+            'fecha' => '2026-02-10',
+        ])->assertCreated()->assertJsonMissingPath('data.id');
+        $saved = $this->putJson("{$api}/planillas/{$assignmentToken}/{$periodToken}?opaque=1", [
+            'notas' => [['actividad_token' => $activityToken, 'matricula_token' => $enrollmentToken,
+                'valor' => '4.5', 'version' => 0, 'motivo' => 'Evaluación inicial']],
+        ])->assertOk()->assertJsonPath('data.calificaciones.0.matricula_token', $enrollmentToken)->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($saved));
+        $report = $this->getJson("{$api}/boletines/{$enrollmentToken}?opaque=1")
+            ->assertOk()->assertJsonPath('data.estudiante.url_token', OpaqueUrlToken::for('usuario', $enrollment->estudiante_id))
+            ->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($report));
+        $this->assertDoesNotMatchRegularExpression('/(?:actividad|componente|materia|periodo):[0-9]+"/', json_encode($report));
+    }
+
+    public function test_evaluation_opaque_rejects_numeric_and_foreign_selectors(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api/evaluacion';
+        $assignmentToken = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
+        $periodToken = OpaqueUrlToken::for('periodo', $period->id);
+        $enrollmentToken = OpaqueUrlToken::for('matricula', $enrollment->id);
+        $activityToken = OpaqueUrlToken::for('actividad-evaluacion', $activity->id);
+
+        $this->getJson("{$api}/planillas/{$this->assignment->id}/{$periodToken}?opaque=1")->assertNotFound();
+        $this->getJson("{$api}/boletines/{$enrollment->id}?opaque=1")->assertNotFound();
+        $this->postJson("{$api}/matriculas?opaque=1", [
+            'grupo_id' => $this->group->id, 'estudiante_id' => $enrollment->estudiante_id,
+        ])->assertUnprocessable()->assertJsonValidationErrors('grupo_id');
+        $this->putJson("{$api}/planillas/{$assignmentToken}/{$periodToken}?opaque=1", [
+            'notas' => [['actividad_id' => $activity->id, 'matricula_token' => $enrollmentToken,
+                'valor' => '4', 'version' => 0, 'motivo' => 'Prueba inválida']],
+        ])->assertUnprocessable();
+        $this->postJson("{$api}/componentes?opaque=1", [
+            'asignacion_token' => $periodToken, 'periodo_token' => $periodToken,
+            'nombre' => 'Forjado', 'modo' => 'SIMPLE_AVERAGE',
+        ])->assertUnprocessable();
+        $this->getJson("{$api}/catalogo?opaque=1&grupo_id={$this->group->id}")
+            ->assertUnprocessable()->assertJsonValidationErrors('grupo_id');
+
+        $otherSchool = Tenant::withoutEvents(fn () => Tenant::create([
+            'id' => 'other-evaluation-opaque', 'name' => 'Otro colegio', 'slug' => 'other-evaluation-opaque',
+            'plan' => 'esencial', 'tipo' => 'colegio', 'status' => 'active',
+        ]));
+        tenancy()->initialize($otherSchool);
+        $foreignEnrollmentToken = OpaqueUrlToken::for('matricula', $enrollment->id);
+        tenancy()->initialize($this->school);
+        $this->getJson("{$api}/boletines/{$foreignEnrollmentToken}?opaque=1")->assertNotFound();
+        $this->putJson("{$api}/planillas/{$assignmentToken}/{$periodToken}?opaque=1", [
+            'notas' => [['actividad_token' => $activityToken, 'matricula_token' => $foreignEnrollmentToken,
+                'valor' => '4', 'version' => 0, 'motivo' => 'Prueba inválida']],
+        ])->assertUnprocessable();
+    }
+
+    public function test_schedule_opaque_lists_and_writes_keep_private_keys_server_side(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api';
+        $yearToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        $assignmentToken = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
+        $groupToken = OpaqueUrlToken::for('grupo', $this->group->id);
+        $subjectToken = OpaqueUrlToken::for('materia', $this->subject->id);
+        $teacherToken = OpaqueUrlToken::for('usuario', $this->teacher->id);
+        $blockToken = OpaqueUrlToken::for('bloque-horario', $this->block->id);
+
+        $list = $this->getJson("{$api}/horarios?opaque=1&ano_lectivo_token={$yearToken}&grupo_token={$groupToken}&vista=horarios")
+            ->assertOk()->assertJsonPath('data.asignaciones.0.url_token', $assignmentToken)
+            ->assertJsonPath('data.grupos.0.url_token', $groupToken)->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($list));
+        $options = $this->getJson("{$api}/catalogos-academicos?opaque=1&tipo=bloques&ano_lectivo_token={$yearToken}")
+            ->assertOk()->assertJsonPath('data.0.url_token', $blockToken)->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($options));
+        $space = EspacioFisico::create(['ano_lectivo_id' => $this->year->id, 'sede_id' => $this->group->sede_id,
+            'nombre' => 'Aula 101', 'tipo' => 'aula', 'estado' => EspacioFisico::ESTADO_DISPONIBLE]);
+        $spaceToken = OpaqueUrlToken::for('espacio-fisico', $space->id);
+        $spaceOptions = $this->getJson("{$api}/catalogos-academicos?opaque=1&tipo=espacios&ano_lectivo_token={$yearToken}")
+            ->assertOk()->assertJsonPath('data.0.url_token', $spaceToken)->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($spaceOptions));
+
+        $this->postJson("{$api}/asignaciones?opaque=1", [
+            'ano_lectivo_token' => $yearToken, 'grupo_token' => $groupToken,
+            'materia_token' => $subjectToken, 'docente_token' => $teacherToken,
+        ])->assertOk()->assertJsonPath('data.url_token', $assignmentToken)->assertJsonMissingPath('data.id');
+        $created = $this->postJson("{$api}/horarios?opaque=1", [
+            'asignacion_token' => $assignmentToken, 'grupo_token' => $groupToken,
+            'materia_token' => $subjectToken, 'docente_token' => $teacherToken,
+            'bloque_horario_token' => $blockToken, 'dia' => 'lunes',
+        ])->assertCreated()->assertJsonPath('data.grupo_token', $groupToken)->json('data');
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($created));
+        $this->getJson("{$api}/horarios?opaque=1&ano_lectivo_token={$yearToken}&grupo_token={$groupToken}&vista=horarios")
+            ->assertOk()->assertJsonPath('data.sesiones.0.url_token', $created['url_token']);
+        $this->getJson("{$api}/horarios?opaque=1&grupo_id={$this->group->id}")
+            ->assertUnprocessable()->assertJsonValidationErrors('grupo_id');
+        $this->putJson("{$api}/horarios/".SesionHorario::firstOrFail()->id.'?opaque=1', [
+            'dia' => 'martes', 'grupo_token' => $groupToken, 'materia_token' => $subjectToken,
+            'bloque_horario_token' => $blockToken,
+        ])->assertNotFound();
+    }
+
+    public function test_opaque_people_options_limit_students_to_the_assigned_teacher(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        [$period, $enrollment] = $this->gradeFixture();
+        $other = User::create(['name' => 'Estudiante ajeno', 'email' => 'other-student@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $other->assignRole('estudiante');
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->teacher->createToken('web')->plainTextToken);
+        $api = 'http://localhost/api/catalogos-academicos?opaque=1';
+
+        $students = $this->getJson($api.'&tipo=estudiantes')->assertOk()->json('data');
+        $this->assertSame([OpaqueUrlToken::for('usuario', $enrollment->estudiante_id)],
+            array_column($students, 'url_token'));
+        $this->assertDoesNotMatchRegularExpression('/"(?:id|[a-z_]+_id)"\s*:/', json_encode($students));
+        $teachers = $this->getJson($api.'&tipo=docentes')->assertOk()->json('data');
+        $this->assertSame([OpaqueUrlToken::for('usuario', $this->teacher->id)],
+            array_column($teachers, 'url_token'));
+        $this->getJson($api.'&tipo=estudiantes&selected_token='.OpaqueUrlToken::for('usuario', $other->id))
+            ->assertUnprocessable()->assertJsonValidationErrors('selected_token');
     }
 
     public function test_grade_updates_are_exact_audited_and_optimistically_locked(): void
@@ -1594,6 +2206,61 @@ class AcademicModulesTest extends TestCase
         $this->assertSame(200, $controller->boletin($request, $enrollment->id)->status());
     }
 
+    public function test_gradebook_and_enrollment_actions_require_their_permissions_even_for_a_rector(): void
+    {
+        $rectorRole = Role::findByName('rector', 'web');
+        $rectorRole->revokePermissionTo('notas.editar_no_dicta');
+        $rectorRole->revokePermissionTo('academico.matriculas.gestionar');
+        $this->rector = $this->rector->fresh();
+        $this->assertFalse($this->rector->can('notas.editar_no_dicta'));
+        $this->assertFalse($this->rector->can('academico.matriculas.gestionar'));
+
+        $book = new GradebookService;
+        $book->authorizeAssignment($this->rector, $this->assignment);
+        try {
+            $book->authorizeAssignment($this->rector, $this->assignment, write: true);
+            $this->fail('Ver el consolidado no permite modificar notas ajenas.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+
+        $request = Request::create('/api/evaluacion/matriculas', 'POST', [
+            'grupo_id' => $this->group->id, 'estudiante_id' => $this->teacher->id,
+        ]);
+        $request->setUserResolver(fn () => $this->rector);
+        try {
+            app(EvaluacionController::class)->matricular($request);
+            $this->fail('El rol de rector no debe sustituir el permiso de matrícula revocado.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+        $this->assertDatabaseCount('matriculas', 0);
+    }
+
+    public function test_assigned_teacher_cannot_access_another_teachers_gradebook_or_write_without_permission(): void
+    {
+        $other = User::create(['name' => 'Otra docente', 'email' => 'other-gradebook@test.test',
+            'password' => 'Password12345', 'role' => 'docente', 'status' => 'active']);
+        $other->assignRole('docente');
+        $book = new GradebookService;
+        foreach ([false, true] as $write) {
+            try {
+                $book->authorizeAssignment($other, $this->assignment, write: $write);
+                $this->fail('Un docente no debe acceder a la asignación de otro.');
+            } catch (HttpException $error) {
+                $this->assertSame(403, $error->getStatusCode());
+            }
+        }
+        Role::findByName('docente', 'web')->revokePermissionTo('notas.registrar_materia_asignada');
+        $this->teacher = $this->teacher->fresh();
+        try {
+            $book->authorizeAssignment($this->teacher, $this->assignment, write: true);
+            $this->fail('La asignación no debe sustituir un permiso revocado.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+    }
+
     public function test_grade_batch_rolls_back_if_any_grade_exceeds_scale(): void
     {
         [$period, $enrollment, $activity] = $this->gradeFixture();
@@ -1622,6 +2289,40 @@ class AcademicModulesTest extends TestCase
         $this->assertSame([$this->group->id], (new EventAccess)->groupIds($enrollment->estudiante));
     }
 
+    public function test_fourteen_grades_arrive_complete_even_if_a_five_row_page_was_requested(): void
+    {
+        for ($i = 2; $i <= 14; $i++) {
+            Grado::create(['ano_lectivo_id' => $this->year->id, 'nivel_id' => $this->group->grado->nivel_id,
+                'nombre' => 'Grado '.$i, 'codigo' => sprintf('%02d', $i), 'estado' => 'activo']);
+        }
+
+        $small = app(GradoController::class)->index(Request::create('/api/grados?ano_lectivo_id='.$this->year->id
+            .'&page=3&per_page=5'))->getData(true);
+        $this->assertCount(14, $small['data']);
+        $this->assertSame(14, $small['meta']['total']);
+        $this->assertSame(20, $small['meta']['per_page']);
+        $this->assertSame(1, $small['meta']['current_page']);
+        $this->assertSame(1, $small['meta']['last_page']);
+
+        for ($i = 15; $i <= 20; $i++) {
+            Grado::create(['ano_lectivo_id' => $this->year->id, 'nivel_id' => $this->group->grado->nivel_id,
+                'nombre' => 'Grado '.$i, 'codigo' => sprintf('%02d', $i), 'estado' => 'activo']);
+        }
+        $threshold = app(GradoController::class)->index(Request::create('/api/grados?ano_lectivo_id='.$this->year->id
+            .'&per_page=5'))->getData(true);
+        $this->assertCount(20, $threshold['data']);
+        $this->assertSame(1, $threshold['meta']['last_page']);
+
+        Grado::create(['ano_lectivo_id' => $this->year->id, 'nivel_id' => $this->group->grado->nivel_id,
+            'nombre' => 'Grado 21', 'codigo' => '21', 'estado' => 'activo']);
+        $large = app(GradoController::class)->index(Request::create('/api/grados?ano_lectivo_id='.$this->year->id
+            .'&page=2&per_page=5'))->getData(true);
+        $this->assertCount(5, $large['data']);
+        $this->assertSame(21, $large['meta']['total']);
+        $this->assertSame(2, $large['meta']['current_page']);
+        $this->assertSame(5, $large['meta']['per_page']);
+    }
+
     public function test_academic_lists_page_in_sql_and_filter_before_counting(): void
     {
         for ($i = 1; $i <= 22; $i++) {
@@ -1630,16 +2331,19 @@ class AcademicModulesTest extends TestCase
         $controller = app(\App\Http\Controllers\Api\Academico\PlanEstudiosController::class);
         $first = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id))->getData(true);
         $second = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id.'&page=2'))->getData(true);
-        $filtered = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id.'&search=%C3%81rea%202&per_page=10'))->getData(true);
+        $filtered = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id.'&search=%C3%81rea%202&per_page=5'))->getData(true);
         $all = $controller->areas(Request::create('/api/plan-estudios/areas?ano_lectivo_id='.$this->year->id.'&per_page=1000'))->getData(true);
 
-        $this->assertCount(5, $first['data']);
-        $this->assertCount(5, $second['data']);
+        $this->assertCount(20, $first['data']);
+        $this->assertCount(3, $second['data']);
         $this->assertSame(23, $first['meta']['total']);
-        $this->assertSame(5, $first['meta']['last_page']);
-        $this->assertSame(6, $second['meta']['from']);
+        $this->assertSame(20, $first['meta']['per_page']);
+        $this->assertSame(2, $first['meta']['last_page']);
+        $this->assertSame(21, $second['meta']['from']);
         $this->assertEmpty(array_intersect(array_column($first['data'], 'id'), array_column($second['data'], 'id')));
         $this->assertSame(3, $filtered['meta']['total']);
+        $this->assertCount(3, $filtered['data']);
+        $this->assertSame(20, $filtered['meta']['per_page']);
         $this->assertCount(23, $all['data']);
         $this->assertSame(1000, $all['meta']['per_page']);
     }
@@ -1648,7 +2352,7 @@ class AcademicModulesTest extends TestCase
     {
         $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
         Role::findOrCreate('estudiante', 'web');
-        for ($i = 1; $i <= 11; $i++) {
+        for ($i = 1; $i <= 21; $i++) {
             $subject = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => sprintf('Materia %02d', $i),
                 'intensidad_horaria' => 1, 'estado' => 'activo']);
             AsignacionDocente::create(['ano_lectivo_id' => $this->year->id, 'grupo_id' => $this->group->id,
@@ -1658,7 +2362,7 @@ class AcademicModulesTest extends TestCase
         $request->setUserResolver(fn () => $this->rector);
         $schedule = app(HorarioController::class)->index($request)->getData(true)['data'];
         $this->assertCount(5, $schedule['asignaciones']);
-        $this->assertSame(12, $schedule['pagination']['asignaciones']['total']);
+        $this->assertSame(22, $schedule['pagination']['asignaciones']['total']);
         $this->assertSame(2, $schedule['pagination']['asignaciones']['current_page']);
 
         $token = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
@@ -1666,7 +2370,7 @@ class AcademicModulesTest extends TestCase
         $request->setUserResolver(fn () => $this->rector);
         $catalog = app(EvaluacionController::class)->catalogo($request)->getData(true)['data'];
         $this->assertCount(5, $catalog['asignaciones']);
-        $this->assertSame(12, $catalog['pagination']['asignaciones']['total']);
+        $this->assertSame(22, $catalog['pagination']['asignaciones']['total']);
         $this->assertSame(2, $catalog['pagination']['asignaciones']['current_page']);
         $this->assertSame($this->assignment->id, $catalog['selected_asignacion']['id']);
         $this->assertSame(1, $catalog['pagination']['matriculas']['current_page']);
@@ -1704,8 +2408,8 @@ class AcademicModulesTest extends TestCase
         $request->setUserResolver(fn () => $this->rector);
         $options = app(\App\Http\Controllers\Api\Academico\AcademicOptionsController::class)($request)->getData(true);
         $this->assertSame(61, $options['meta']['total']);
-        $this->assertSame(5, $options['meta']['per_page']);
-        $this->assertCount(6, $options['data']);
+        $this->assertSame(20, $options['meta']['per_page']);
+        $this->assertCount(21, $options['data']);
         $this->assertContains($last->id, array_column($options['data'], 'id'));
 
         $request = Request::create('/api/catalogos-academicos?tipo=materias&ano_lectivo_id='.$this->year->id.'&search=Electiva%2060');
@@ -1715,19 +2419,91 @@ class AcademicModulesTest extends TestCase
         $this->assertSame($last->id, $found['data'][0]['id']);
     }
 
+    public function test_curriculum_subject_options_follow_the_grade_level_and_keep_general_subjects(): void
+    {
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $primaryLevel = $this->group->grado->nivel_id;
+        $secondaryLevel = Nivel::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Secundaria',
+            'nivel_educativo' => 'secundaria', 'estado' => 'activo']);
+        $primary = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Lectura primaria',
+            'nivel_id' => $primaryLevel, 'intensidad_horaria' => 2, 'estado' => 'activo']);
+        $secondary = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Química secundaria',
+            'nivel_id' => $secondaryLevel->id, 'intensidad_horaria' => 2, 'estado' => 'activo']);
+
+        $request = Request::create('/api/catalogos-academicos?tipo=materias&ano_lectivo_id='.$this->year->id
+            .'&compatible_nivel_id='.$primaryLevel.'&per_page=20');
+        $request->setUserResolver(fn () => $this->rector);
+        $options = app(\App\Http\Controllers\Api\Academico\AcademicOptionsController::class)($request)->getData(true)['data'];
+        $ids = array_column($options, 'id');
+        $this->assertContains($this->subject->id, $ids);
+        $this->assertContains($primary->id, $ids);
+        $this->assertNotContains($secondary->id, $ids);
+
+        $badRequest = Request::create('/', 'PUT', ['grado_token' => OpaqueUrlToken::for('grado', $this->group->grado_id),
+            'materia_token' => OpaqueUrlToken::for('materia', $secondary->id), 'peso_area' => '20.5']);
+        $badRequest->setUserResolver(fn () => $this->rector);
+        try {
+            app(SieeController::class)->curriculo($badRequest, $this->year->id);
+            $this->fail('Una materia de secundaria no puede asignarse a primaria.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+        }
+        $this->assertDatabaseMissing('materias_curriculares', ['grado_id' => $this->group->grado_id,
+            'materia_id' => $secondary->id]);
+    }
+
+    public function test_curriculum_inherits_subject_area_and_updates_weight_without_trailing_zeroes(): void
+    {
+        $controller = app(SieeController::class);
+        $save = function (string $weight, ?int $areaId = null) use ($controller): array {
+            $request = Request::create('/', 'PUT', [
+                'grado_token' => OpaqueUrlToken::for('grado', $this->group->grado_id),
+                'materia_token' => OpaqueUrlToken::for('materia', $this->subject->id),
+                'area_token' => $areaId ? OpaqueUrlToken::for('area', $areaId) : null,
+                'peso_area' => $weight,
+            ]);
+            $request->setUserResolver(fn () => $this->rector);
+
+            return $controller->curriculo($request, $this->year->id)->getData(true)['data'];
+        };
+
+        $first = $save('20.5');
+        $this->assertSame(OpaqueUrlToken::for('area', $this->subject->area_id), $first['curriculo'][0]['area_token']);
+        $this->assertSame('20.5', $first['curriculo'][0]['peso_area']);
+        $this->assertSame('20.5', DB::table('materias_curriculares')->value('peso_area'));
+
+        $updated = $save('7.25', $this->subject->area_id);
+        $this->assertSame('7.25', $updated['curriculo'][0]['peso_area']);
+        $this->assertSame(1, DB::table('materias_curriculares')->count());
+
+        $differentArea = Area::create(['ano_lectivo_id' => $this->year->id,
+            'nombre' => 'Otra área', 'estado' => 'activo']);
+        try {
+            $save('8', $differentArea->id);
+            $this->fail('El área del currículo debe coincidir con la materia.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+        }
+        $this->assertSame('7.25', DB::table('materias_curriculares')->value('peso_area'));
+    }
+
     public function test_curriculum_and_gradebook_page_related_rows_without_losing_totals(): void
     {
-        for ($i = 1; $i <= 12; $i++) {
+        for ($i = 1; $i <= 21; $i++) {
             $subject = Materia::create(['ano_lectivo_id' => $this->year->id, 'nombre' => sprintf('Currículo %02d', $i),
                 'intensidad_horaria' => 1, 'estado' => 'activo']);
             DB::table('materias_curriculares')->insert(['ano_lectivo_id' => $this->year->id,
                 'grado_id' => $this->group->grado_id, 'materia_id' => $subject->id,
                 'created_at' => now(), 'updated_at' => now()]);
         }
+        $defaultCurriculum = app(SieeController::class)->curriculoIndex(
+            Request::create('/api/siee/'.$this->year->id.'/curriculo'), $this->year->id)->getData(true);
+        $this->assertCount(20, $defaultCurriculum['data']);
+        $this->assertSame(20, $defaultCurriculum['meta']['per_page']);
         $curriculum = app(SieeController::class)->curriculoIndex(
             Request::create('/api/siee/'.$this->year->id.'/curriculo?page=2&per_page=5'), $this->year->id)->getData(true);
         $this->assertCount(5, $curriculum['data']);
-        $this->assertSame(12, $curriculum['meta']['total']);
+        $this->assertSame(21, $curriculum['meta']['total']);
         $this->assertSame(2, $curriculum['meta']['current_page']);
 
         [$period, $firstEnrollment, $activity] = $this->gradeFixture();
@@ -1745,9 +2521,47 @@ class AcademicModulesTest extends TestCase
         $request = Request::create('/api/evaluacion/planillas/'.$this->assignment->id.'/'.$period->id.'?page=2');
         $request->setUserResolver(fn () => $this->rector);
         $sheet = app(EvaluacionController::class)->planilla($request, $this->assignment->id, $period->id)->getData(true)['data'];
-        $this->assertCount(5, $sheet['matriculas']);
-        $this->assertCount(5, $sheet['resultados']);
+        $this->assertCount(12, $sheet['matriculas']);
+        $this->assertCount(12, $sheet['resultados']);
         $this->assertSame(12, $sheet['pagination']['matriculas']['total']);
-        $this->assertSame([], $sheet['calificaciones']);
+        $this->assertSame(20, $sheet['pagination']['matriculas']['per_page']);
+        $this->assertCount(1, $sheet['calificaciones']);
+    }
+
+    public function test_curriculum_weight_can_change_after_empty_period_closes_but_not_after_closed_grades(): void
+    {
+        $controller = app(SieeController::class);
+        Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Período sin notas',
+            'orden' => 2, 'fecha_inicio' => '2026-05-01', 'fecha_fin' => '2026-08-31', 'estado' => 'cerrado']);
+
+        $initial = $controller->show($this->year->id)->getData(true)['data'];
+        $this->assertFalse($initial['editable']);
+        $this->assertTrue($initial['curriculo_editable']);
+
+        $request = Request::create('/', 'PUT', ['grado_token' => OpaqueUrlToken::for('grado', $this->group->grado_id),
+            'materia_token' => OpaqueUrlToken::for('materia', $this->subject->id), 'peso_area' => '20.5']);
+        $request->setUserResolver(fn () => $this->rector);
+        $saved = $controller->curriculo($request, $this->year->id)->getData(true)['data'];
+        $this->assertSame('20.5', $saved['curriculo'][0]['peso_area']);
+
+        [$openPeriod, $enrollment, $activity] = $this->gradeFixture();
+        (new GradebookService)->saveGrades($this->rector, $this->assignment, $openPeriod->id, [[
+            'matricula_id' => $enrollment->id, 'actividad_id' => $activity->id,
+            'valor' => '4', 'version' => 0,
+        ]]);
+        $openPeriod->update(['estado' => 'cerrado']);
+
+        $locked = $controller->show($this->year->id)->getData(true)['data'];
+        $this->assertFalse($locked['curriculo_editable']);
+        $request = Request::create('/', 'PUT', ['grado_token' => OpaqueUrlToken::for('grado', $this->group->grado_id),
+            'materia_token' => OpaqueUrlToken::for('materia', $this->subject->id), 'peso_area' => '7.25']);
+        $request->setUserResolver(fn () => $this->rector);
+        try {
+            $controller->curriculo($request, $this->year->id);
+            $this->fail('Un período cerrado con notas debe preservar el peso del currículo.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+        }
+        $this->assertSame('20.5', DB::table('materias_curriculares')->value('peso_area'));
     }
 }

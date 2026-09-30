@@ -13,6 +13,8 @@ use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Services\SedeProvisioner;
 use App\Support\Audit\AuditLogger;
+use App\Support\AcademicOpaqueRecord;
+use App\Support\OpaqueUrlToken;
 use App\Support\Sedes\SedeLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -43,14 +45,13 @@ class SedeController extends Controller
                 'per_page' => $this->resolvePerPage($request), 'total' => 0, 'from' => null, 'to' => null]]);
         }
 
-        $result = Sede::query()
+        $result = $this->paginateAcademic(Sede::query()
             ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
             ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
             ->orderByRaw('tenant_id IS NULL DESC')
             ->orderBy('nombre')
-            ->orderBy('id')
-            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request))
-            ->through(fn (Sede $sede) => $this->enrich($this->snapshot($sede)));
+            ->orderBy('id'), $request)
+            ->through(fn (Sede $sede) => $this->present($sede));
 
         return $this->paginatedResponse($result);
     }
@@ -60,7 +61,7 @@ class SedeController extends Controller
     {
         $sede = $this->findSede($id);
 
-        return response()->json(['data' => $this->enrich($this->snapshot($sede))]);
+        return response()->json(['data' => $this->present($sede)]);
     }
 
     /** Crea una sede (con tenant hijo si se indica slug). */
@@ -151,7 +152,7 @@ class SedeController extends Controller
         }
 
         return response()->json([
-            'data' => $this->enrich($this->snapshot($sede)),
+            'data' => $this->present($sede),
             'coordinador_password' => $password,
         ], 201);
     }
@@ -183,7 +184,7 @@ class SedeController extends Controller
         } catch (\Throwable) {
         }
 
-        return response()->json(['data' => $this->enrich($this->snapshot($sede))]);
+        return response()->json(['data' => $this->present($sede)]);
     }
 
     /** Elimina (soft-delete) una sede y baja su tenant hijo a cuarentena. */
@@ -247,11 +248,24 @@ class SedeController extends Controller
             Log::warning('[WS] ConfiguracionHeredada dispatch failed', ['error' => $e->getMessage()]);
         }
 
-        return response()->json(['data' => $result]);
+        return response()->json(['data' => $request->boolean('opaque')
+            ? AcademicOpaqueRecord::present($result, 'sede') : $result]);
+    }
+
+    /** @return array<string, mixed> */
+    private function present(Sede $sede): array
+    {
+        $data = $this->enrich($this->snapshot($sede));
+
+        return request()->boolean('opaque') ? AcademicOpaqueRecord::present($data, 'sede') : $data;
     }
 
     private function findSede($id): Sede
     {
+        if (request()->boolean('opaque')) {
+            return OpaqueUrlToken::find('sede', (string) $id, Sede::query()) ?? abort(404);
+        }
+
         return Sede::fromPublicId((string) $id) ?? abort(404);
     }
 
@@ -263,6 +277,7 @@ class SedeController extends Controller
         return [
             'id' => $sede->id,
             'hashed_id' => $sede->hashed_id,
+            'url_token' => $sede->hashed_id,
             'nombre' => $sede->nombre,
             'direccion' => $sede->direccion,
             'telefono' => $sede->telefono,

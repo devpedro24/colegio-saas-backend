@@ -19,6 +19,7 @@ use App\Models\User;
 use App\Services\GradebookService;
 use App\Services\SieeConfiguration;
 use App\Support\Audit\AuditLogger;
+use App\Support\EvaluationOpaquePresenter as PublicEval;
 use App\Support\OpaqueUrlToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -35,8 +36,8 @@ class EvaluacionController extends Controller
     {
         $user = $request->user();
         $manage = $this->book->manages($user);
-        $teacher = $user->hasRole('docente');
-        abort_unless($manage || $teacher || $user->hasRole('estudiante'), 403);
+        $teacher = $user->can('notas.registrar_materia_asignada');
+        abort_unless($manage || $teacher || $user->can('notas.ver_propias'), 403);
         $yearId = $request->filled('ano_lectivo_id') ? $request->integer('ano_lectivo_id') : null;
         $groupId = $request->filled('grupo_id') ? $request->integer('grupo_id') : null;
         $term = trim((string) $request->query('search', ''));
@@ -63,12 +64,10 @@ class EvaluacionController extends Controller
                 ->orWhereHas('grupo', fn ($group) => $group->where('nombre', 'like', '%'.$term.'%'))));
         $selectedAssignment = $this->selectedByToken($assignmentQuery, 'asignacion-docente', $request->query('asignacion_token'));
         $selectedEnrollment = $this->selectedByToken($enrollmentQuery, 'matricula', $request->query('matricula_token'));
-        $assignments = $assignmentQuery->orderByDesc('id')->paginate(
-            $this->resolvePerPage($request, 'asignaciones_per_page'), ['*'], 'asignaciones_page',
-            $this->resolvePage($request, 'asignaciones_page'));
-        $enrollments = $enrollmentQuery->orderByDesc('id')->paginate(
-            $this->resolvePerPage($request, 'matriculas_per_page'), ['*'], 'matriculas_page',
-            $this->resolvePage($request, 'matriculas_page'));
+        $assignments = $this->paginateAcademic($assignmentQuery->orderByDesc('id'), $request,
+            ['*'], 'asignaciones_page', 'asignaciones_per_page');
+        $enrollments = $this->paginateAcademic($enrollmentQuery->orderByDesc('id'), $request,
+            ['*'], 'matriculas_page', 'matriculas_per_page');
         $availableStudents = $manage ? User::role('estudiante')->where('status', 'active')
             ->when($yearId, fn ($q) => $q->whereNotIn('id', Matricula::where('ano_lectivo_id', $yearId)
                 ->where('estado', 'activa')->select('estudiante_id')))
@@ -83,9 +82,31 @@ class EvaluacionController extends Controller
             ->when(! $manage, fn ($q) => $q->whereIn('id', AsignacionDocente::where('docente_id', $user->id)->select('materia_id'))),
             $request, 'materia_search', [$request->integer('materia_id'), $request->integer('selected_materia_id')]) : collect();
 
+        if ($request->boolean('opaque')) {
+            abort_if($request->filled('asignacion_token') && ! $selectedAssignment, 404);
+            abort_if($request->filled('matricula_token') && ! $selectedEnrollment, 404);
+
+            return response()->json(['data' => [
+                'can_manage' => $manage, 'can_configure' => $user->can('academico.configurar'),
+                'can_view_reports' => $manage || $user->can('notas.ver_propias'),
+                'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado'])->map(PublicEval::year(...)),
+                'periodos' => Periodo::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+                    ->orderBy('orden')->get()->map(PublicEval::period(...)),
+                'asignaciones' => $assignments->getCollection()->map(PublicEval::assignment(...)),
+                'matriculas' => $enrollments->getCollection()->map(PublicEval::enrollment(...)),
+                'pagination' => ['asignaciones' => $this->paginationMeta($assignments), 'matriculas' => $this->paginationMeta($enrollments)],
+                'selected_asignacion' => $selectedAssignment ? PublicEval::assignment($selectedAssignment) : null,
+                'selected_matricula' => $selectedEnrollment ? PublicEval::enrollment($selectedEnrollment) : null,
+                'grupos' => $groupOptions->map(PublicEval::group(...)),
+                'materias' => $subjectOptions->map(PublicEval::subject(...)),
+                'estudiantes' => $availableStudents->map(PublicEval::user(...)),
+                'estudiantes_disponibles' => $availableStudents->map(PublicEval::user(...)),
+            ]]);
+        }
+
         return response()->json(['data' => [
             'can_manage' => $manage, 'can_configure' => $user->can('academico.configurar'),
-            'can_view_reports' => $manage || $user->hasRole('estudiante'),
+            'can_view_reports' => $manage || $user->can('notas.ver_propias'),
             'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado']),
             'periodos' => Periodo::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->orderBy('orden')->get()
                 ->map(fn (Periodo $period) => [...$period->toArray(), 'url_token' => OpaqueUrlToken::for('periodo', $period->id)]),
@@ -135,7 +156,7 @@ class EvaluacionController extends Controller
 
     public function matricular(Request $request): JsonResponse
     {
-        abort_unless($this->book->manages($request->user()), 403);
+        abort_unless($this->book->canManageEnrollment($request->user()), 403);
         $data = $request->validate(['grupo_id' => ['required', 'integer'], 'estudiante_id' => ['required', 'integer']]);
         $enrollment = DB::transaction(function () use ($data, $request) {
             $group = Grupo::findOrFail($data['grupo_id']);
@@ -152,7 +173,8 @@ class EvaluacionController extends Controller
             return $enrollment;
         });
 
-        return response()->json(['data' => $enrollment], 201);
+        return response()->json(['data' => $request->boolean('opaque')
+            ? PublicEval::enrollment($enrollment->load(['estudiante:id,name', 'grupo.grado'])) : $enrollment], 201);
     }
 
     public function planilla(Request $request, int $asignacion, int $periodo): JsonResponse
@@ -163,19 +185,54 @@ class EvaluacionController extends Controller
         $year = AnoLectivo::findOrFail($assignment->ano_lectivo_id);
         $config = app(SieeConfiguration::class)->resolve($year);
         $components = ComponenteEvaluacion::with('actividades')->where('asignacion_id', $asignacion)->where('periodo_id', $periodo)->get();
-        $enrollmentPage = Matricula::with('estudiante:id,name')
+        $enrollmentPage = $this->paginateAcademic(Matricula::with('estudiante:id,name')
             ->where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')
             ->when($request->filled('search'), fn ($q) => $q->whereHas('estudiante', fn ($student) =>
                 $student->where('name', 'like', '%'.trim((string) $request->query('search')).'%')))
-            ->orderBy('id')->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('id'), $request);
         $enrollments = $enrollmentPage->getCollection();
+
+        if ($request->boolean('opaque')) {
+            return response()->json(['data' => [
+                'editable' => $year->estado === 'en_curso' && $period->estado === 'abierto',
+                'configuracion' => PublicEval::config($config),
+                'componentes' => $components->map(PublicEval::component(...)),
+                'matriculas' => $enrollments->map(PublicEval::enrollment(...)),
+                'pagination' => ['matriculas' => $this->paginationMeta($enrollmentPage)],
+                'calificaciones' => Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))
+                    ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))
+                    ->get()->map(PublicEval::grade(...)),
+                'resultados' => $enrollments->map(fn (Matricula $enrollment) => [
+                    'matricula_token' => PublicEval::token('matricula', $enrollment->id),
+                    ...PublicEval::result($this->book->subjectResult($assignment, $enrollment, $period, $config)),
+                ]),
+            ]]);
+        }
 
         return response()->json(['data' => [
             'editable' => $year->estado === 'en_curso' && $period->estado === 'abierto', 'configuracion' => $config,
-            'componentes' => $components, 'matriculas' => $enrollments,
+            'componentes' => $components->map(fn (ComponenteEvaluacion $component) => [
+                ...$component->toArray(),
+                'url_token' => OpaqueUrlToken::for('componente-evaluacion', $component->id),
+                'actividades' => $component->actividades->map(fn (ActividadEvaluacion $activity) => [
+                    ...$activity->toArray(),
+                    'url_token' => OpaqueUrlToken::for('actividad-evaluacion', $activity->id),
+                ]),
+            ]),
+            'matriculas' => $enrollments->map(fn (Matricula $enrollment) => [
+                ...$enrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $enrollment->id),
+            ]),
             'pagination' => ['matriculas' => $this->paginationMeta($enrollmentPage)],
-            'calificaciones' => Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get(),
-            'resultados' => $enrollments->map(fn ($enrollment) => ['matricula_id' => $enrollment->id, ...$this->book->subjectResult($assignment, $enrollment, $period, $config)]),
+            'calificaciones' => Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get()
+                ->map(fn (Calificacion $grade) => [...$grade->toArray(),
+                    'matricula_token' => OpaqueUrlToken::for('matricula', $grade->matricula_id),
+                    'actividad_token' => OpaqueUrlToken::for('actividad-evaluacion', $grade->actividad_id),
+                ]),
+            'resultados' => $enrollments->map(fn (Matricula $enrollment) => [
+                'matricula_id' => $enrollment->id,
+                'matricula_token' => OpaqueUrlToken::for('matricula', $enrollment->id),
+                ...$this->book->subjectResult($assignment, $enrollment, $period, $config),
+            ]),
         ]]);
     }
 
@@ -187,7 +244,7 @@ class EvaluacionController extends Controller
             'modo' => ['required', Rule::in(['SIMPLE_AVERAGE', 'WEIGHTED_AVERAGE'])],
         ]);
         $assignment = AsignacionDocente::findOrFail($data['asignacion_id']);
-        $this->book->authorizeAssignment($request->user(), $assignment);
+        $this->book->authorizeAssignment($request->user(), $assignment, write: true);
         $component = DB::transaction(function () use ($data, $assignment, $request, $id) {
             $this->book->writable($assignment, $data['periodo_id']);
             $component = $id ? ComponenteEvaluacion::where('asignacion_id', $assignment->id)->where('periodo_id', $data['periodo_id'])->findOrFail($id) : new ComponenteEvaluacion;
@@ -199,7 +256,12 @@ class EvaluacionController extends Controller
             return $component;
         });
 
-        return response()->json(['data' => $component], $id ? 200 : 201);
+        if ($request->boolean('opaque')) {
+            return response()->json(['data' => PublicEval::component($component)], $id ? 200 : 201);
+        }
+
+        return response()->json(['data' => [...$component->toArray(),
+            'url_token' => OpaqueUrlToken::for('componente-evaluacion', $component->id)]], $id ? 200 : 201);
     }
 
     public function actividad(Request $request, ?int $id = null): JsonResponse
@@ -209,7 +271,7 @@ class EvaluacionController extends Controller
             'fecha' => ['required', 'date_format:Y-m-d'], 'peso' => ['nullable', 'numeric', 'min:0', 'max:100', 'decimal:0,4'],
         ]);
         $component = ComponenteEvaluacion::findOrFail($data['componente_id']);
-        $this->book->authorizeAssignment($request->user(), $component->asignacion);
+        $this->book->authorizeAssignment($request->user(), $component->asignacion, write: true);
         $activity = DB::transaction(function () use ($data, $component, $request, $id) {
             $period = $this->book->writable($component->asignacion, $component->periodo_id);
             abort_if($data['fecha'] < $period->fecha_inicio->toDateString() || $data['fecha'] > $period->fecha_fin->toDateString(), 422, 'La actividad debe estar dentro de las fechas del período.');
@@ -221,7 +283,12 @@ class EvaluacionController extends Controller
             return $activity;
         });
 
-        return response()->json(['data' => $activity], $id ? 200 : 201);
+        if ($request->boolean('opaque')) {
+            return response()->json(['data' => PublicEval::activity($activity)], $id ? 200 : 201);
+        }
+
+        return response()->json(['data' => [...$activity->toArray(),
+            'url_token' => OpaqueUrlToken::for('actividad-evaluacion', $activity->id)]], $id ? 200 : 201);
     }
 
     public function notas(Request $request, int $asignacion, int $periodo): JsonResponse
@@ -241,10 +308,11 @@ class EvaluacionController extends Controller
     {
         $enrollment = Matricula::with(['estudiante:id,name', 'grupo.grado'])->findOrFail($id);
         // Un docente no obtiene las notas de otras asignaturas; usa su planilla.
-        abort_unless($this->book->manages($request->user()) || $enrollment->estudiante_id == $request->user()->id, 403);
+        abort_unless($this->book->manages($request->user()) || ($enrollment->estudiante_id == $request->user()->id
+            && $request->user()->can('notas.ver_propias')), 403);
         $report = $this->book->report($enrollment);
         AuditLogger::tenant($request->user(), 'READ', 'boletin_preliminar', (string) $id);
 
-        return response()->json(['data' => $report]);
+        return response()->json(['data' => $request->boolean('opaque') ? PublicEval::report($report) : $report]);
     }
 }

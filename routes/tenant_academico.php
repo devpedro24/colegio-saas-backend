@@ -24,6 +24,10 @@ use App\Http\Controllers\Api\Academico\SieeController;
 use App\Http\Controllers\Api\InstitutionContextController;
 use App\Http\Controllers\Api\Platform\StorageController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Middleware\ResolveOpaqueSieeYear;
+use App\Http\Middleware\ResolveAcademicRouteIdentifier;
+use App\Http\Middleware\ResolveAcademicInputIdentifiers;
+use App\Http\Middleware\RequireOpaqueAcademicContract;
 use App\Services\ConfigurationGate;
 use Illuminate\Support\Facades\Route;
 
@@ -37,48 +41,48 @@ use Illuminate\Support\Facades\Route;
 |
 |   1. routes/tenant.php  -> grupo de SUBDOMINIO (<slug>.<dominio>), como
 |      siempre lo han consumido los colegios reales.
-|   2. routes/api.php     -> grupo CENTRAL header-resuelto (localhost + header
-|      'X-Tenant: <colegio.id>'), por donde el superadmin suplantando alcanza
-|      el mismo colegio SIN subdominio.
+|   2. routes/api.php     -> grupo CENTRAL con sesión de suplantación en cookie
+|      HttpOnly, por donde el superadmin alcanza el colegio sin subdominio.
 |
 | Se asume que el grupo incluyente YA aplica:
 |   - `auth:sanctum` (identidad del usuario del colegio o del usuario sombra),
 |   - el prefijo `api`,
-|   - y la inicializacion de tenancy (por subdominio o por header X-Tenant).
+|   - y la inicialización de tenancy (por subdominio o sesión de suplantación).
 | Aqui solo van los controles de autorizacion por permiso (`can:`).
 |
 */
 
+Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
 Route::get('/catalogos-academicos', AcademicOptionsController::class);
 
 // Años lectivos y periodos: permiso 'academico.anos.gestionar'.
 Route::middleware('can:academico.anos.gestionar')->group(function () {
     Route::get('/anos-lectivos', [AnoLectivoController::class, 'index']);
     Route::post('/anos-lectivos', [AnoLectivoController::class, 'store']);
-    Route::post('/anos-lectivos/{id}/duplicar', [AnoLectivoController::class, 'duplicar']);
-    Route::post('/anos-lectivos/{id}/copiar-configuracion', [AnoLectivoController::class, 'copiarConfiguracion']);
-    Route::get('/anos-lectivos/{id}/estado-copia', [AnoLectivoController::class, 'estadoCopia']);
-    Route::get('/anos-lectivos/{id}', [AnoLectivoController::class, 'show']);
-    Route::put('/anos-lectivos/{id}', [AnoLectivoController::class, 'update']);
-    Route::delete('/anos-lectivos/{id}', [AnoLectivoController::class, 'destroy']);
+    Route::post('/anos-lectivos/{id}/duplicar', [AnoLectivoController::class, 'duplicar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
+    Route::post('/anos-lectivos/{id}/copiar-configuracion', [AnoLectivoController::class, 'copiarConfiguracion'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
+    Route::get('/anos-lectivos/{id}/estado-copia', [AnoLectivoController::class, 'estadoCopia'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
+    Route::get('/anos-lectivos/{id}', [AnoLectivoController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
+    Route::put('/anos-lectivos/{id}', [AnoLectivoController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
+    Route::delete('/anos-lectivos/{id}', [AnoLectivoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
 
     // Periodos: index/store anidados bajo el año; mutaciones por id de periodo.
-    Route::get('/anos-lectivos/{ano}/periodos', [PeriodoController::class, 'index']);
-    Route::post('/anos-lectivos/{ano}/periodos', [PeriodoController::class, 'store']);
-    Route::put('/periodos/{id}', [PeriodoController::class, 'update']);
-    Route::delete('/periodos/{id}', [PeriodoController::class, 'destroy']);
+    Route::get('/anos-lectivos/{ano}/periodos', [PeriodoController::class, 'index'])->middleware(ResolveAcademicRouteIdentifier::class.':ano,ano-lectivo');
+    Route::post('/anos-lectivos/{ano}/periodos', [PeriodoController::class, 'store'])->middleware(ResolveAcademicRouteIdentifier::class.':ano,ano-lectivo');
+    Route::put('/periodos/{id}', [PeriodoController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,periodo');
+    Route::delete('/periodos/{id}', [PeriodoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,periodo');
 });
 
 // La gestión del calendario puede delegarse; sus cambios de estado son del rector.
 Route::middleware('can:academico.anos.transicionar')->group(function () {
-    Route::post('/anos-lectivos/{id}/iniciar', [AnoLectivoController::class, 'iniciar']);
-    Route::post('/anos-lectivos/{id}/cerrar', [AnoLectivoController::class, 'cerrar']);
-    Route::post('/anos-lectivos/{id}/reabrir', [AnoLectivoController::class, 'reabrir']);
+    Route::post('/anos-lectivos/{id}/iniciar', [AnoLectivoController::class, 'iniciar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
+    Route::post('/anos-lectivos/{id}/cerrar', [AnoLectivoController::class, 'cerrar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
+    Route::post('/anos-lectivos/{id}/reabrir', [AnoLectivoController::class, 'reabrir'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
 });
 Route::middleware('can:academico.periodos.transicionar')->group(function () {
-    Route::post('/periodos/{id}/abrir', [PeriodoController::class, 'abrir']);
-    Route::post('/periodos/{id}/cerrar', [PeriodoController::class, 'cerrar']);
-    Route::post('/periodos/{id}/reabrir', [PeriodoController::class, 'reabrir']);
+    Route::post('/periodos/{id}/abrir', [PeriodoController::class, 'abrir'])->middleware(ResolveAcademicRouteIdentifier::class.':id,periodo');
+    Route::post('/periodos/{id}/cerrar', [PeriodoController::class, 'cerrar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,periodo');
+    Route::post('/periodos/{id}/reabrir', [PeriodoController::class, 'reabrir'])->middleware(ResolveAcademicRouteIdentifier::class.':id,periodo');
 });
 
 // Configuración del colegio: permiso 'academico.configurar'.
@@ -91,23 +95,23 @@ Route::middleware('can:academico.configurar')->prefix('config')->group(function 
 
     Route::get('/escalas', [EscalaValorativaController::class, 'index']);
     Route::post('/escalas', [EscalaValorativaController::class, 'store']);
-    Route::put('/escalas/{id}', [EscalaValorativaController::class, 'update']);
-    Route::delete('/escalas/{id}', [EscalaValorativaController::class, 'destroy']);
+    Route::put('/escalas/{id}', [EscalaValorativaController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,escala-valorativa');
+    Route::delete('/escalas/{id}', [EscalaValorativaController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,escala-valorativa');
 
     Route::get('/metodos-aprobacion', [MetodoAprobacionController::class, 'index']);
     Route::post('/metodos-aprobacion', [MetodoAprobacionController::class, 'store']);
-    Route::put('/metodos-aprobacion/{id}', [MetodoAprobacionController::class, 'update']);
-    Route::delete('/metodos-aprobacion/{id}', [MetodoAprobacionController::class, 'destroy']);
+    Route::put('/metodos-aprobacion/{id}', [MetodoAprobacionController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,metodo-aprobacion');
+    Route::delete('/metodos-aprobacion/{id}', [MetodoAprobacionController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,metodo-aprobacion');
 
     Route::get('/modelos-pedagogicos', [ModeloPedagogicoController::class, 'index']);
     Route::post('/modelos-pedagogicos', [ModeloPedagogicoController::class, 'store']);
-    Route::put('/modelos-pedagogicos/{id}', [ModeloPedagogicoController::class, 'update']);
-    Route::delete('/modelos-pedagogicos/{id}', [ModeloPedagogicoController::class, 'destroy']);
+    Route::put('/modelos-pedagogicos/{id}', [ModeloPedagogicoController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,modelo-pedagogico');
+    Route::delete('/modelos-pedagogicos/{id}', [ModeloPedagogicoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,modelo-pedagogico');
 });
 
 // Jerarquía organizacional (Bloque B / Fase 1): Sede→Jornada→Nivel→Grado→
 // Grupo + bloques horarios + espacios físicos. Permiso 'academico.estructura.gestionar'.
-Route::middleware('can:academico.estructura.gestionar')->prefix('estructura')->group(function () {
+Route::middleware(['can:academico.estructura.gestionar', ResolveAcademicInputIdentifiers::class])->prefix('estructura')->group(function () {
     // Sedes
     Route::get('/sedes', [SedeController::class, 'index']);
     Route::post('/sedes', [SedeController::class, 'store']);
@@ -119,98 +123,109 @@ Route::middleware('can:academico.estructura.gestionar')->prefix('estructura')->g
     // Jornadas (pertenecen a una sede)
     Route::get('/jornadas', [JornadaController::class, 'index']);
     Route::post('/jornadas', [JornadaController::class, 'store']);
-    Route::get('/jornadas/{id}', [JornadaController::class, 'show']);
-    Route::put('/jornadas/{id}', [JornadaController::class, 'update']);
-    Route::delete('/jornadas/{id}', [JornadaController::class, 'destroy']);
+    Route::get('/jornadas/{id}', [JornadaController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,jornada');
+    Route::put('/jornadas/{id}', [JornadaController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,jornada');
+    Route::delete('/jornadas/{id}', [JornadaController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,jornada');
 
     // Niveles educativos
     Route::get('/niveles', [NivelController::class, 'index']);
     Route::post('/niveles', [NivelController::class, 'store']);
-    Route::get('/niveles/{id}', [NivelController::class, 'show']);
-    Route::put('/niveles/{id}', [NivelController::class, 'update']);
-    Route::delete('/niveles/{id}', [NivelController::class, 'destroy']);
+    Route::get('/niveles/{id}', [NivelController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,nivel');
+    Route::put('/niveles/{id}', [NivelController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,nivel');
+    Route::delete('/niveles/{id}', [NivelController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,nivel');
 
     // Grados (pertenecen a un nivel)
     Route::get('/grados', [GradoController::class, 'index']);
     Route::post('/grados', [GradoController::class, 'store']);
-    Route::get('/grados/{id}', [GradoController::class, 'show']);
-    Route::put('/grados/{id}', [GradoController::class, 'update']);
-    Route::delete('/grados/{id}', [GradoController::class, 'destroy']);
+    Route::get('/grados/{id}', [GradoController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,grado');
+    Route::put('/grados/{id}', [GradoController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,grado');
+    Route::delete('/grados/{id}', [GradoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,grado');
 
     // Grupos (grado + año lectivo + jornada)
     Route::get('/grupos', [GrupoController::class, 'index']);
     Route::post('/grupos', [GrupoController::class, 'store']);
-    Route::get('/grupos/{id}', [GrupoController::class, 'show']);
-    Route::put('/grupos/{id}', [GrupoController::class, 'update']);
-    Route::delete('/grupos/{id}', [GrupoController::class, 'destroy']);
+    Route::get('/grupos/{id}', [GrupoController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,grupo');
+    Route::put('/grupos/{id}', [GrupoController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,grupo');
+    Route::delete('/grupos/{id}', [GrupoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,grupo');
 
     // Bloques horarios
     Route::get('/bloques-horarios', [BloqueHorarioController::class, 'index']);
     Route::post('/bloques-horarios', [BloqueHorarioController::class, 'store']);
-    Route::get('/bloques-horarios/{id}', [BloqueHorarioController::class, 'show']);
-    Route::put('/bloques-horarios/{id}', [BloqueHorarioController::class, 'update']);
-    Route::delete('/bloques-horarios/{id}', [BloqueHorarioController::class, 'destroy']);
+    Route::get('/bloques-horarios/{id}', [BloqueHorarioController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,bloque-horario');
+    Route::put('/bloques-horarios/{id}', [BloqueHorarioController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,bloque-horario');
+    Route::delete('/bloques-horarios/{id}', [BloqueHorarioController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,bloque-horario');
 
     // Espacios físicos
     Route::get('/espacios-fisicos', [EspacioFisicoController::class, 'index']);
     Route::post('/espacios-fisicos', [EspacioFisicoController::class, 'store']);
-    Route::get('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'show']);
-    Route::put('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'update']);
-    Route::delete('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'destroy']);
+    Route::get('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,espacio-fisico');
+    Route::put('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,espacio-fisico');
+    Route::delete('/espacios-fisicos/{id}', [EspacioFisicoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,espacio-fisico');
 });
 
 // Plan de estudios (Bloque C): áreas y materias. Las asignaciones y horarios
 // se suman sobre estas entidades en el siguiente incremento.
-Route::middleware('can:academico.plan_estudios.gestionar')->prefix('plan-estudios')->group(function () {
+Route::middleware(['can:academico.plan_estudios.gestionar', ResolveAcademicInputIdentifiers::class])->prefix('plan-estudios')->group(function () {
     Route::get('/areas', [PlanEstudiosController::class, 'areas']);
     Route::post('/areas', [PlanEstudiosController::class, 'storeArea']);
-    Route::put('/areas/{id}', [PlanEstudiosController::class, 'updateArea']);
-    Route::delete('/areas/{id}', [PlanEstudiosController::class, 'destroyArea']);
+    Route::put('/areas/{id}', [PlanEstudiosController::class, 'updateArea'])->middleware(ResolveAcademicRouteIdentifier::class.':id,area');
+    Route::delete('/areas/{id}', [PlanEstudiosController::class, 'destroyArea'])->middleware(ResolveAcademicRouteIdentifier::class.':id,area');
 
     Route::get('/materias', [PlanEstudiosController::class, 'materias']);
     Route::post('/materias', [PlanEstudiosController::class, 'storeMateria']);
-    Route::put('/materias/{id}', [PlanEstudiosController::class, 'updateMateria']);
-    Route::delete('/materias/{id}', [PlanEstudiosController::class, 'destroyMateria']);
+    Route::put('/materias/{id}', [PlanEstudiosController::class, 'updateMateria'])->middleware(ResolveAcademicRouteIdentifier::class.':id,materia');
+    Route::delete('/materias/{id}', [PlanEstudiosController::class, 'destroyMateria'])->middleware(ResolveAcademicRouteIdentifier::class.':id,materia');
 });
 
-// Pipeline de archivos por tenant (RN-AC-001..006): cualquier usuario autenticado
-// del colegio (o el superadmin suplantando) puede subir a su cuota. La descarga
-// se hace con URL firmada generada por StorageService (ruta central).
-Route::post('/archivos', [StorageController::class, 'store']);
+// Carga genérica institucional: requiere permiso y límite por usuario/colegio.
+// Los adjuntos de un módulo usan su propia autorización de recurso.
+Route::post('/archivos', [StorageController::class, 'store'])
+    ->middleware(['can:archivos.subir', 'throttle:school-uploads']);
 
-Route::get('/horarios', [HorarioController::class, 'index']);
-Route::prefix('evaluacion')->controller(EvaluacionController::class)->group(function () {
+Route::get('/horarios', [HorarioController::class, 'index'])->middleware(ResolveAcademicInputIdentifiers::class);
+Route::middleware(ResolveAcademicInputIdentifiers::class)->prefix('evaluacion')->controller(EvaluacionController::class)->group(function () {
     Route::get('/catalogo', 'catalogo');
     Route::post('/matriculas', 'matricular');
-    Route::get('/planillas/{asignacion}/{periodo}', 'planilla');
-    Route::put('/planillas/{asignacion}/{periodo}', 'notas');
+    Route::get('/planillas/{asignacion}/{periodo}', 'planilla')->middleware([
+        ResolveAcademicRouteIdentifier::class.':asignacion,asignacion-docente',
+        ResolveAcademicRouteIdentifier::class.':periodo,periodo',
+    ]);
+    Route::put('/planillas/{asignacion}/{periodo}', 'notas')->middleware([
+        ResolveAcademicRouteIdentifier::class.':asignacion,asignacion-docente',
+        ResolveAcademicRouteIdentifier::class.':periodo,periodo',
+    ]);
     Route::post('/componentes', 'componente');
-    Route::put('/componentes/{id}', 'componente');
+    Route::put('/componentes/{id}', 'componente')->middleware(ResolveAcademicRouteIdentifier::class.':id,componente-evaluacion');
     Route::post('/actividades', 'actividad');
-    Route::put('/actividades/{id}', 'actividad');
-    Route::get('/boletines/{id}', 'boletin');
+    Route::put('/actividades/{id}', 'actividad')->middleware(ResolveAcademicRouteIdentifier::class.':id,actividad-evaluacion');
+    Route::get('/boletines/{id}', 'boletin')->middleware(ResolveAcademicRouteIdentifier::class.':id,matricula');
 });
-Route::middleware('can:academico.configurar')->group(function () {
+Route::middleware(['can:academico.configurar', ResolveOpaqueSieeYear::class])->group(function () {
     Route::get('/siee/{id}', [SieeController::class, 'show']);
     Route::get('/siee/{id}/curriculo', [SieeController::class, 'curriculoIndex']);
     Route::put('/siee/{id}', [SieeController::class, 'update']);
     Route::put('/siee/{id}/curriculo', [SieeController::class, 'curriculo']);
 });
-Route::get('/eventos/catalogo', [EventoController::class, 'catalogo']);
-Route::put('/eventos/configuracion', [EventoController::class, 'configurar']);
-Route::get('/eventos', [EventoController::class, 'index']);
-Route::post('/eventos', [EventoController::class, 'guardar']);
-Route::get('/eventos/{id}', [EventoController::class, 'show']);
-Route::put('/eventos/{id}', [EventoController::class, 'guardar']);
-Route::delete('/eventos/{id}', [EventoController::class, 'destroy']);
-Route::post('/eventos/{id}/archivos', [EventoController::class, 'archivo']);
-Route::middleware('can:academico.plan_estudios.gestionar')->group(function () {
+Route::middleware(ResolveAcademicInputIdentifiers::class)->group(function () {
+    Route::get('/eventos/catalogo', [EventoController::class, 'catalogo']);
+    Route::put('/eventos/configuracion', [EventoController::class, 'configurar']);
+    Route::get('/eventos', [EventoController::class, 'index']);
+    Route::post('/eventos', [EventoController::class, 'guardar']);
+    Route::get('/eventos/{id}', [EventoController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,evento');
+    Route::put('/eventos/{id}', [EventoController::class, 'guardar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,evento');
+    Route::delete('/eventos/{id}', [EventoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,evento');
+    Route::post('/eventos/{id}/archivos', [EventoController::class, 'archivo'])->middleware([
+        ResolveAcademicRouteIdentifier::class.':id,evento', 'throttle:school-uploads',
+    ]);
+});
+Route::middleware(['can:academico.plan_estudios.gestionar', ResolveAcademicInputIdentifiers::class])->group(function () {
     Route::post('/asignaciones', [HorarioController::class, 'asignar']);
-    Route::put('/asignaciones/{id}', [HorarioController::class, 'editarAsignacion']);
-    Route::delete('/asignaciones/{id}', [HorarioController::class, 'desasignar']);
+    Route::put('/asignaciones/{id}', [HorarioController::class, 'editarAsignacion'])->middleware(ResolveAcademicRouteIdentifier::class.':id,asignacion-docente');
+    Route::delete('/asignaciones/{id}', [HorarioController::class, 'desasignar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,asignacion-docente');
     Route::post('/horarios', [HorarioController::class, 'guardar']);
-    Route::put('/horarios/{id}', [HorarioController::class, 'guardar']);
-    Route::delete('/horarios/{id}', [HorarioController::class, 'eliminar']);
+    Route::put('/horarios/{id}', [HorarioController::class, 'guardar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,sesion-horario');
+    Route::delete('/horarios/{id}', [HorarioController::class, 'eliminar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,sesion-horario');
+});
 });
 
 // Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion

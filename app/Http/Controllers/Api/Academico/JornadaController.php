@@ -25,7 +25,7 @@ class JornadaController extends Controller
     /** Lista las jornadas, filtrables por `sede_id`. */
     public function index(Request $request): JsonResponse
     {
-        $jornadas = Jornada::query()
+        $jornadas = $this->paginateAcademic(Jornada::query()
             ->with('sede:id,nombre')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('sede_id'), fn ($q) => $q->where('sede_id', (int) $request->query('sede_id')))
@@ -33,10 +33,9 @@ class JornadaController extends Controller
             ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
             ->orderBy('sede_id')
             ->orderBy('nombre')
-            ->orderBy('id')
-            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('id'), $request);
 
-        return $this->paginatedResponse($jornadas);
+        return $this->paginatedResponse($jornadas, 'jornada');
     }
 
     /** Detalle de una jornada (incluye bloques horarios). */
@@ -44,7 +43,7 @@ class JornadaController extends Controller
     {
         $jornada = Jornada::with('sede:id,nombre', 'bloques')->findOrFail($id);
 
-        return response()->json(['data' => $jornada]);
+        return response()->json(['data' => $this->withOpaqueToken($jornada, 'jornada')]);
     }
 
     /** Crea una jornada. */
@@ -84,7 +83,7 @@ class JornadaController extends Controller
             TenantDataChanged::dispatch('jornada', 'created', $data['nombre']);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $jornada->load('sede:id,nombre')], 201);
+        return response()->json(['data' => $this->withOpaqueToken($jornada->load('sede:id,nombre'), 'jornada')], 201);
     }
 
     /** Edita una jornada. */
@@ -124,7 +123,7 @@ class JornadaController extends Controller
             TenantDataChanged::dispatch('jornada', 'updated', $jornada->nombre);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $jornada->load('sede:id,nombre')]);
+        return response()->json(['data' => $this->withOpaqueToken($jornada->load('sede:id,nombre'), 'jornada')]);
     }
 
     /** Elimina (soft-delete) una jornada. */

@@ -23,13 +23,13 @@ class PlanEstudiosController extends Controller
 
     public function areas(Request $request): JsonResponse
     {
-        $areas = Area::query()->withCount('materias')
+        $areas = $this->paginateAcademic(Area::query()->withCount('materias')
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
             ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
-            ->orderBy('nombre')->orderBy('id')->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('nombre')->orderBy('id'), $request);
 
-        return $this->paginatedResponse($areas);
+        return $this->paginatedResponse($areas, 'area');
     }
 
     public function storeArea(Request $request): JsonResponse
@@ -45,7 +45,7 @@ class PlanEstudiosController extends Controller
         AuditLogger::tenant($request->user(), 'CREATE', 'area', (string) $area->id, null, $area->toArray());
         TenantDataChanged::dispatch('area', 'created', $area->nombre);
 
-        return response()->json(['data' => $area], 201);
+        return response()->json(['data' => $this->withOpaqueToken($area, 'area')], 201);
     }
 
     public function updateArea(Request $request, int $id): JsonResponse
@@ -64,7 +64,7 @@ class PlanEstudiosController extends Controller
         AuditLogger::tenant($request->user(), 'UPDATE', 'area', (string) $area->id, $before, $area->fresh()->toArray());
         TenantDataChanged::dispatch('area', 'updated', $area->nombre);
 
-        return response()->json(['data' => $area->fresh()]);
+        return response()->json(['data' => $this->withOpaqueToken($area->fresh(), 'area')]);
     }
 
     public function destroyArea(Request $request, int $id): JsonResponse
@@ -86,15 +86,15 @@ class PlanEstudiosController extends Controller
 
     public function materias(Request $request): JsonResponse
     {
-        $materias = Materia::query()->with(['area:id,nombre', 'nivel:id,nombre'])
+        $materias = $this->paginateAcademic(Materia::query()->with(['area:id,nombre', 'nivel:id,nombre'])
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('area_id'), fn ($q) => $q->where('area_id', $request->integer('area_id')))
             ->when($request->filled('nivel_id'), fn ($q) => $q->where('nivel_id', $request->integer('nivel_id')))
             ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
             ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
-            ->orderBy('nombre')->orderBy('id')->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('nombre')->orderBy('id'), $request);
 
-        return $this->paginatedResponse($materias);
+        return $this->paginatedResponse($materias, 'materia');
     }
 
     public function storeMateria(Request $request): JsonResponse
@@ -107,7 +107,7 @@ class PlanEstudiosController extends Controller
         AuditLogger::tenant($request->user(), 'CREATE', 'materia', (string) $materia->id, null, $materia->toArray());
         TenantDataChanged::dispatch('materia', 'created', $materia->nombre);
 
-        return response()->json(['data' => $materia->load(['area:id,nombre', 'nivel:id,nombre'])], 201);
+        return response()->json(['data' => $this->withOpaqueToken($materia->load(['area:id,nombre', 'nivel:id,nombre']), 'materia')], 201);
     }
 
     public function updateMateria(Request $request, int $id): JsonResponse
@@ -123,7 +123,7 @@ class PlanEstudiosController extends Controller
         AuditLogger::tenant($request->user(), 'UPDATE', 'materia', (string) $materia->id, $before, $materia->fresh()->toArray());
         TenantDataChanged::dispatch('materia', 'updated', $materia->nombre);
 
-        return response()->json(['data' => $materia->fresh()->load(['area:id,nombre', 'nivel:id,nombre'])]);
+        return response()->json(['data' => $this->withOpaqueToken($materia->fresh()->load(['area:id,nombre', 'nivel:id,nombre']), 'materia')]);
     }
 
     public function destroyMateria(Request $request, int $id): JsonResponse

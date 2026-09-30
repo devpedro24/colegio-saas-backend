@@ -20,12 +20,22 @@ final class GradebookService
 {
     public function manages(User $user): bool
     {
-        return $user->esSuperadminPlataforma() || $user->hasRole('rector');
+        return $user->can('notas.ver_consolidado_todos') || $user->can('notas.editar_no_dicta');
     }
 
-    public function authorizeAssignment(User $user, AsignacionDocente $assignment): void
+    public function canManageEnrollment(User $user): bool
     {
-        abort_unless($this->manages($user) || ($user->hasRole('docente') && $assignment->docente_id == $user->id), 403);
+        return $user->can('academico.matriculas.gestionar');
+    }
+
+    public function authorizeAssignment(User $user, AsignacionDocente $assignment, bool $write = false): void
+    {
+        $assigned = $assignment->docente_id == $user->id
+            && $user->can('notas.registrar_materia_asignada');
+        $allowed = $write
+            ? $user->can('notas.editar_no_dicta') || $assigned
+            : $this->manages($user) || $assigned;
+        abort_unless($allowed, 403);
     }
 
     /** Dentro de una transacción: todos los escritores toman los mismos locks. */
@@ -40,7 +50,7 @@ final class GradebookService
 
     public function saveGrades(User $actor, AsignacionDocente $assignment, int $periodId, array $rows): void
     {
-        $this->authorizeAssignment($actor, $assignment);
+        $this->authorizeAssignment($actor, $assignment, write: true);
         DB::transaction(function () use ($actor, $assignment, $periodId, $rows) {
             $this->writable($assignment, $periodId);
             $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));

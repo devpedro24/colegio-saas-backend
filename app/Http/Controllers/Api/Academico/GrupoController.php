@@ -27,7 +27,7 @@ class GrupoController extends Controller
     /** Lista los grupos, filtrables por `ano_lectivo_id` y/o `grado_id`. */
     public function index(Request $request): JsonResponse
     {
-        $grupos = Grupo::query()
+        $grupos = $this->paginateAcademic(Grupo::query()
             ->with(['grado:id,nombre,nivel_id', 'grado.nivel:id,nombre', 'anoLectivo:id,nombre', 'jornada:id,nombre', 'sede:id,nombre'])
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', (int) $request->query('ano_lectivo_id')))
             ->when($request->filled('grado_id'), fn ($q) => $q->where('grado_id', (int) $request->query('grado_id')))
@@ -38,10 +38,9 @@ class GrupoController extends Controller
             ->orderByDesc('ano_lectivo_id')
             ->orderBy('grado_id')
             ->orderBy('nombre')
-            ->orderBy('id')
-            ->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+            ->orderBy('id'), $request);
 
-        return $this->paginatedResponse($grupos);
+        return $this->paginatedResponse($grupos, 'grupo');
     }
 
     /** Detalle de un grupo. */
@@ -49,7 +48,7 @@ class GrupoController extends Controller
     {
         $grupo = Grupo::with(['grado:id,nombre', 'anoLectivo:id,nombre', 'jornada:id,nombre', 'sede:id,nombre'])->findOrFail($id);
 
-        return response()->json(['data' => $grupo]);
+        return response()->json(['data' => $this->withOpaqueToken($grupo, 'grupo')]);
     }
 
     /** Crea un grupo. */
@@ -99,7 +98,7 @@ class GrupoController extends Controller
             TenantDataChanged::dispatch('grupo', 'created', $data['nombre']);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $grupo->load(['grado:id,nombre', 'anoLectivo:id,nombre', 'jornada:id,nombre', 'sede:id,nombre'])], 201);
+        return response()->json(['data' => $this->withOpaqueToken($grupo->load(['grado:id,nombre', 'anoLectivo:id,nombre', 'jornada:id,nombre', 'sede:id,nombre']), 'grupo')], 201);
     }
 
     /** Edita un grupo. */
@@ -153,7 +152,7 @@ class GrupoController extends Controller
             TenantDataChanged::dispatch('grupo', 'updated', $grupo->nombre);
         } catch (\Throwable) {}
 
-        return response()->json(['data' => $grupo->load(['grado:id,nombre', 'anoLectivo:id,nombre', 'jornada:id,nombre', 'sede:id,nombre'])]);
+        return response()->json(['data' => $this->withOpaqueToken($grupo->load(['grado:id,nombre', 'anoLectivo:id,nombre', 'jornada:id,nombre', 'sede:id,nombre']), 'grupo')]);
     }
 
     /** Elimina (soft-delete) un grupo. */

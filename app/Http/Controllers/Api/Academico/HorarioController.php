@@ -21,7 +21,9 @@ use App\Services\HorarioService;
 use App\Services\AsignacionHorarioService;
 use App\Services\AcademicYearSelection;
 use App\Support\Audit\AuditLogger;
+use App\Support\AcademicOpaqueRecord;
 use App\Support\OpaqueUrlToken;
+use App\Support\ScheduleOpaquePresenter;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
@@ -82,7 +84,7 @@ class HorarioController extends Controller
             if ($scheduleView) {
                 $assignments = $assignmentQuery->orderBy('id')->get();
             } else {
-                $assignmentPage = $assignmentQuery->orderBy('id')->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+                $assignmentPage = $this->paginateAcademic($assignmentQuery->orderBy('id'), $request);
                 $assignments = $assignmentPage->getCollection();
             }
             $sessions = SesionHorario::with(['grupo.grado.nivel', 'materia', 'docente:id,name', 'bloque', 'espacio'])
@@ -139,13 +141,34 @@ class HorarioController extends Controller
             [$groupId, $request->integer('selected_grupo_id')], 'grupo', 'grupo_token');
         $teachers = $manage ? $this->boundedOptions(User::role('docente')->where('status', 'active'),
             $request, 'docente_search', [$request->integer('docente_id'), $request->integer('selected_docente_id')],
-            'docente', 'docente_token') : collect();
+            $request->boolean('opaque') ? 'usuario' : 'docente', 'docente_token') : collect();
         $blocks = $this->boundedOptions(BloqueHorario::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
             ->where('estado', 'activo')->where('es_descanso', false), $request, 'bloque_search',
             [$request->integer('selected_bloque_id')], null, null, 'hora_inicio');
         $spaces = $this->boundedOptions(EspacioFisico::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
             ->where('estado', EspacioFisico::ESTADO_DISPONIBLE), $request, 'espacio_search',
             [$request->integer('selected_espacio_id')], 'espacio-fisico', 'espacio_token');
+
+        if ($request->boolean('opaque')) {
+            return response()->json(['data' => [
+                'can_manage' => $manage,
+                'counts' => ['sesiones' => $sessionCount, 'materias' => $subjectCount],
+                'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get()->map(fn (AnoLectivo $year) => AcademicOpaqueRecord::present($year, 'ano-lectivo')),
+                'areas' => $areas->map(fn (Area $area) => AcademicOpaqueRecord::present($area, 'area')),
+                'materias' => $subjects->map(fn (Materia $subject) => AcademicOpaqueRecord::present($subject, 'materia')),
+                'grupos' => $groups->map(fn (Grupo $group) => AcademicOpaqueRecord::present($group, 'grupo')),
+                'docentes' => $teachers->map(ScheduleOpaquePresenter::user(...)),
+                'bloques' => $blocks->map(fn (BloqueHorario $block) => AcademicOpaqueRecord::present($block, 'bloque-horario')),
+                'espacios' => $spaces->map(fn (EspacioFisico $space) => AcademicOpaqueRecord::present($space, 'espacio-fisico')),
+                'asignaciones' => $assignments->map(ScheduleOpaquePresenter::assignment(...)),
+                'pagination' => ['asignaciones' => $assignmentPage
+                    ? $this->paginationMeta($assignmentPage)
+                    : ['current_page' => 1, 'last_page' => 1, 'per_page' => $this->resolvePerPage($request),
+                        'total' => $assignments->count(), 'from' => $assignments->isEmpty() ? null : 1,
+                        'to' => $assignments->isEmpty() ? null : $assignments->count()]],
+                'sesiones' => $sessions->map(ScheduleOpaquePresenter::session(...)),
+            ]]);
+        }
 
         return response()->json(['data' => [
             'can_manage' => $manage,
@@ -223,7 +246,10 @@ class HorarioController extends Controller
             return $assignment;
         });
 
-        return response()->json(['data' => $assignment->load(['docente:id,name', 'materia', 'grupo.grado'])], $wasCreated ? 201 : 200);
+        $assignment->load(['docente:id,name', 'materia', 'grupo.grado']);
+
+        return response()->json(['data' => $request->boolean('opaque')
+            ? ScheduleOpaquePresenter::assignment($assignment) : $assignment], $wasCreated ? 201 : 200);
     }
 
     public function editarAsignacion(Request $request, int $id, AsignacionHorarioService $service, HorarioService $horarios): JsonResponse
@@ -277,7 +303,10 @@ class HorarioController extends Controller
             return $assignment->fresh();
         });
 
-        return response()->json(['data' => $assignment->load(['docente:id,name', 'materia', 'grupo.grado'])]);
+        $assignment->load(['docente:id,name', 'materia', 'grupo.grado']);
+
+        return response()->json(['data' => $request->boolean('opaque')
+            ? ScheduleOpaquePresenter::assignment($assignment) : $assignment]);
     }
 
     public function desasignar(Request $request, int $id): JsonResponse
@@ -310,7 +339,10 @@ class HorarioController extends Controller
             'espacio_fisico_id' => ['nullable', 'integer'],
         ]);
         $session = $id ? SesionHorario::findOrFail($id) : null;
-        return response()->json(['data' => $service->guardar($data, $request->user(), $session)], $id ? 200 : 201);
+        $saved = $service->guardar($data, $request->user(), $session);
+
+        return response()->json(['data' => $request->boolean('opaque')
+            ? ScheduleOpaquePresenter::session($saved) : $saved], $id ? 200 : 201);
     }
 
     public function eliminar(Request $request, int $id): JsonResponse
