@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Area;
 use App\Models\Academico\AsignacionDocente;
@@ -21,6 +22,8 @@ use App\Services\AsignacionHorarioService;
 use App\Services\AcademicYearSelection;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -28,6 +31,8 @@ use Illuminate\Validation\Rule;
 
 class HorarioController extends Controller
 {
+    use PaginatesRequests;
+
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -37,10 +42,14 @@ class HorarioController extends Controller
         $filters = $request->validate([
             'ano_lectivo_id' => ['nullable', 'integer', 'exists:anos_lectivos,id'],
             'grupo_id' => ['nullable', 'integer', 'exists:grupos,id'],
+            'materia_id' => ['nullable', 'integer', 'exists:materias,id'],
+            'docente_id' => ['nullable', 'integer', 'exists:users,id'],
+            'search' => ['nullable', 'string', 'max:120'],
             'vista' => ['nullable', Rule::in(['horarios'])],
         ]);
         $yearId = isset($filters['ano_lectivo_id']) ? (int) $filters['ano_lectivo_id'] : null;
         $groupId = isset($filters['grupo_id']) ? (int) $filters['grupo_id'] : null;
+        $teacherId = isset($filters['docente_id']) ? (int) $filters['docente_id'] : null;
         $scheduleView = ($filters['vista'] ?? null) === 'horarios';
 
         if ($groupId !== null && $yearId !== null) {
@@ -50,42 +59,145 @@ class HorarioController extends Controller
 
         // El gestor necesita elegir un grupo en la vista de horarios. Así no se
         // consultan ni serializan cientos de clases antes de escoger el filtro.
+        $assignmentPage = null;
         if ($scheduleView && $manage && $groupId === null) {
             $assignments = collect();
             $sessions = collect();
         } else {
-            $assignments = AsignacionDocente::with(['docente:id,name', 'materia', 'grupo.grado', 'grupo.sede'])
+            $assignmentQuery = AsignacionDocente::with(['docente:id,name', 'materia', 'grupo.grado', 'grupo.sede'])
                 ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
                 ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
+                ->when(isset($filters['materia_id']), fn ($q) => $q->where('materia_id', $filters['materia_id']))
+                ->when($teacherId, fn ($q) => $q->where('docente_id', $teacherId))
+                ->when(! empty($filters['search']), function ($q) use ($filters) {
+                    $term = '%'.trim($filters['search']).'%';
+                    $q->where(fn ($match) => $match
+                        ->whereHas('materia', fn ($subject) => $subject->where('nombre', 'like', $term))
+                        ->orWhereHas('grupo', fn ($group) => $group->where('nombre', 'like', $term))
+                        ->orWhereHas('docente', fn ($teacher) => $teacher->where('name', 'like', $term)));
+                })
                 ->when(! $manage, fn ($q) => $student
                     ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
-                    : $q->where('docente_id', $user->id))->get();
+                    : $q->where('docente_id', $user->id));
+            if ($scheduleView) {
+                $assignments = $assignmentQuery->orderBy('id')->get();
+            } else {
+                $assignmentPage = $assignmentQuery->orderBy('id')->paginate($this->resolvePerPage($request), ['*'], 'page', $this->resolvePage($request));
+                $assignments = $assignmentPage->getCollection();
+            }
             $sessions = SesionHorario::with(['grupo.grado.nivel', 'materia', 'docente:id,name', 'bloque', 'espacio'])
                 ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
                 ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
+                ->when($teacherId, fn ($q) => $q->where('docente_id', $teacherId))
+                ->when(isset($filters['materia_id']), fn ($q) => $q->where('materia_id', $filters['materia_id']))
+                ->when(! $scheduleView, fn ($q) => $q->whereIn('asignacion_id', $assignments->pluck('id')))
                 ->when(! $manage, fn ($q) => $student
                     ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
                     : $q->where('docente_id', $user->id))->get();
         }
         $groupIds = $assignments->pluck('grupo_id')->merge($sessions->pluck('grupo_id'))->unique();
         $subjectIds = $assignments->pluck('materia_id')->merge($sessions->pluck('materia_id'))->unique();
+        $sessionCount = SesionHorario::query()
+            ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
+            ->when($teacherId, fn ($q) => $q->where('docente_id', $teacherId))
+            ->when(isset($filters['materia_id']), fn ($q) => $q->where('materia_id', $filters['materia_id']))
+            ->when(! $manage, fn ($q) => $student
+                ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                : $q->where('docente_id', $user->id))->count();
+        $subjectCount = $manage && $groupId === null && $teacherId === null && ! isset($filters['materia_id'])
+            ? Materia::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->count()
+            : Materia::query()
+                ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+                ->where(function (Builder $q) use ($yearId, $groupId, $teacherId, $filters, $manage, $student, $user) {
+                    $assignmentsWithSubject = AsignacionDocente::query()->select('materia_id')
+                        ->when($yearId, fn ($query) => $query->where('ano_lectivo_id', $yearId))
+                        ->when($groupId, fn ($query) => $query->where('grupo_id', $groupId))
+                        ->when($teacherId, fn ($query) => $query->where('docente_id', $teacherId))
+                        ->when(isset($filters['materia_id']), fn ($query) => $query->where('materia_id', $filters['materia_id']))
+                        ->when(! $manage, fn ($query) => $student
+                            ? $query->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                            : $query->where('docente_id', $user->id));
+                    $sessionsWithSubject = SesionHorario::query()->select('materia_id')
+                        ->when($yearId, fn ($query) => $query->where('ano_lectivo_id', $yearId))
+                        ->when($groupId, fn ($query) => $query->where('grupo_id', $groupId))
+                        ->when($teacherId, fn ($query) => $query->where('docente_id', $teacherId))
+                        ->when(isset($filters['materia_id']), fn ($query) => $query->where('materia_id', $filters['materia_id']))
+                        ->when(! $manage, fn ($query) => $student
+                            ? $query->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                            : $query->where('docente_id', $user->id));
+                    $q->whereIn('id', $assignmentsWithSubject)->orWhereIn('id', $sessionsWithSubject);
+                })->count();
+        $areas = $manage ? $this->boundedOptions(Area::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId)),
+            $request, 'area_search', [$request->integer('selected_area_id')]) : collect();
+        $subjects = $this->boundedOptions(Materia::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->when(! $manage, fn ($q) => $q->whereIn('id', $subjectIds)), $request, 'materia_search',
+            [$request->integer('materia_id'), $request->integer('selected_materia_id')]);
+        $groups = $this->boundedOptions(Grupo::with(['grado.nivel', 'sede', 'jornada'])
+            ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->when(! $manage, fn ($q) => $q->whereIn('id', $groupIds)), $request, 'grupo_search',
+            [$groupId, $request->integer('selected_grupo_id')], 'grupo', 'grupo_token');
+        $teachers = $manage ? $this->boundedOptions(User::role('docente')->where('status', 'active'),
+            $request, 'docente_search', [$request->integer('docente_id'), $request->integer('selected_docente_id')],
+            'docente', 'docente_token') : collect();
+        $blocks = $this->boundedOptions(BloqueHorario::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->where('estado', 'activo')->where('es_descanso', false), $request, 'bloque_search',
+            [$request->integer('selected_bloque_id')], null, null, 'hora_inicio');
+        $spaces = $this->boundedOptions(EspacioFisico::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
+            ->where('estado', EspacioFisico::ESTADO_DISPONIBLE), $request, 'espacio_search',
+            [$request->integer('selected_espacio_id')], 'espacio-fisico', 'espacio_token');
 
         return response()->json(['data' => [
             'can_manage' => $manage,
+            'counts' => ['sesiones' => $sessionCount, 'materias' => $subjectCount],
             'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(),
-            'areas' => $manage ? Area::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->orderBy('nombre')->get() : [],
-            'materias' => $manage ? Materia::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->orderBy('nombre')->get() : Materia::whereIn('id', $subjectIds)->get(),
-            'grupos' => Grupo::with(['grado.nivel', 'sede', 'jornada'])->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->when(! $manage, fn ($q) => $q->whereIn('id', $groupIds))->get()
+            'areas' => $areas,
+            'materias' => $subjects,
+            'grupos' => $groups
                 ->map(fn (Grupo $group) => [...$group->toArray(), 'url_token' => OpaqueUrlToken::for('grupo', $group->id)]),
-            'docentes' => $manage ? User::role('docente')->where('status', 'active')->get(['id', 'name'])
-                ->map(fn (User $teacher) => ['id' => $teacher->id, 'name' => $teacher->name,
-                    'url_token' => OpaqueUrlToken::for('docente', $teacher->id)]) : [],
-            'bloques' => BloqueHorario::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->where('estado', 'activo')->where('es_descanso', false)->orderBy('hora_inicio')->get(),
-            'espacios' => EspacioFisico::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->where('estado', EspacioFisico::ESTADO_DISPONIBLE)->get()
+            'docentes' => $teachers->map(fn (User $teacher) => ['id' => $teacher->id, 'name' => $teacher->name,
+                'url_token' => OpaqueUrlToken::for('docente', $teacher->id)]),
+            'bloques' => $blocks,
+            'espacios' => $spaces
                 ->map(fn (EspacioFisico $space) => [...$space->toArray(), 'url_token' => OpaqueUrlToken::for('espacio-fisico', $space->id)]),
             'asignaciones' => $assignments,
+            'pagination' => ['asignaciones' => $assignmentPage
+                ? $this->paginationMeta($assignmentPage)
+                : ['current_page' => 1, 'last_page' => 1, 'per_page' => $this->resolvePerPage($request),
+                    'total' => $assignments->count(), 'from' => $assignments->isEmpty() ? null : 1,
+                    'to' => $assignments->isEmpty() ? null : $assignments->count()]],
             'sesiones' => $sessions,
         ]]);
+    }
+
+    /** Mantiene los selectores livianos sin perder una opción ya elegida. */
+    private function boundedOptions(Builder $query, Request $request, string $searchParam,
+        array $selectedIds = [], ?string $resource = null, ?string $tokenParam = null,
+        string $sort = 'nombre'): Collection
+    {
+        $base = clone $query;
+        $name = $query->getModel() instanceof User ? 'name' : 'nombre';
+        $term = trim((string) $request->query($searchParam, ''));
+        $items = $query->when($term !== '', fn ($q) => $q->where($name, 'like', '%'.$term.'%'))
+            ->orderBy($sort === 'nombre' ? $name : $sort)->orderBy('id')->limit(50)->get();
+        if ($resource && $tokenParam && is_string($request->query($tokenParam))) {
+            $token = $request->query($tokenParam);
+            if (preg_match('/^[A-Za-z0-9_-]{24}$/', $token)) {
+                foreach ((clone $base)->select('id')->cursor() as $candidate) {
+                    if (hash_equals(OpaqueUrlToken::for($resource, $candidate->id), $token)) {
+                        $selectedIds[] = $candidate->id;
+                        break;
+                    }
+                }
+            }
+        }
+        foreach (array_unique(array_filter($selectedIds)) as $id) {
+            if (! $items->contains('id', $id) && ($selected = (clone $base)->find($id))) {
+                $items->push($selected);
+            }
+        }
+
+        return $items;
     }
 
     public function asignar(Request $request, AsignacionHorarioService $service): JsonResponse
