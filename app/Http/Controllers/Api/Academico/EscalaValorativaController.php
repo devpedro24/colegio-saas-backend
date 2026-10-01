@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\EscalaValorativa;
 use App\Services\ConfigurationGate;
+use App\Services\SieeConfiguration;
 use App\Support\Audit\AuditLogger;
 use App\Support\ConfigOpaqueData;
 use Illuminate\Http\JsonResponse;
@@ -120,11 +121,15 @@ class EscalaValorativaController extends Controller
             'tipo' => ['required', 'in:numerica,imagenes'],
             'valor_min' => ['nullable', 'numeric'],
             'valor_max' => ['nullable', 'numeric', 'gte:valor_min'],
-            'decimales' => ['nullable', 'integer', 'min:0', 'max:5'],
+            'decimales' => ['nullable', 'integer', 'in:'.SieeConfiguration::RESULT_DECIMALS],
         ]);
         if ($opaque) {
             $data['ano_lectivo_id'] = ConfigOpaqueData::year($request)->id;
             unset($data['ano_lectivo_token']);
+        }
+
+        if ($data['tipo'] === EscalaValorativa::TIPO_NUMERICA) {
+            $data['decimales'] = SieeConfiguration::RESULT_DECIMALS;
         }
 
         return $data;

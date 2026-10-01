@@ -37,6 +37,19 @@ class GradeCalculationServiceTest extends TestCase
         $this->assertSame('89.6', $result['display_value']);
     }
 
+    public function test_weighted_grade_uses_exact_percentages_and_half_down_when_configured(): void
+    {
+        $service = new GradeCalculationService;
+        $config = ['nota_minima' => '3', 'decimales' => 1, 'precision_calculo' => 8, 'redondeo' => 'HALF_DOWN'];
+        foreach (['3.15' => '3.1', '3.16' => '3.2', '3.19' => '3.2', '3.14' => '3.1', '3.10' => '3.1'] as $value => $expected) {
+            $this->assertSame($expected, $service->result(['mode' => 'MANUAL', 'manual' => (string) $value], $config)['display_value']);
+        }
+        $exact = $service->result($this->weighted(['1.5', '3', '5'], ['30', '40', '30']), $config);
+        $this->assertSame('3.1', $exact['display_value']);
+        $this->assertSame('3.15', rtrim(rtrim($exact['raw_value'], '0'), '.'));
+        $this->assertSame('63/20', $exact['exact_value']);
+    }
+
     public function test_weights_must_total_one_hundred_and_missing_values_are_not_zero(): void
     {
         $this->expectException(ValidationException::class);

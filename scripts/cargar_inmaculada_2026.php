@@ -298,7 +298,7 @@ $result = $tenant->run(function (): array {
         $scaleId = $insert('escalas_valorativas', [
             'ano_lectivo_id' => $yearId, 'nivel_educativo' => null,
             'nombre' => 'Escala institucional de 0 a 5', 'tipo' => 'numerica',
-            'valor_min' => 0, 'valor_max' => 5, 'decimales' => 2,
+            'valor_min' => 0, 'valor_max' => 5, 'decimales' => 1,
         ]);
         $methodId = $insert('metodos_aprobacion', [
             'ano_lectivo_id' => $yearId, 'calculo_nota' => 'promedio_simple',
@@ -316,7 +316,7 @@ $result = $tenant->run(function (): array {
             'siee' => json_encode([
                 'usar_areas' => true, 'modo_area' => 'SIMPLE_AVERAGE',
                 'modo_asignatura' => 'SIMPLE_AVERAGE', 'modo_anual' => 'WEIGHTED_AVERAGE',
-                'redondeo' => 'HALF_UP', 'precision_calculo' => 8,
+                'redondeo' => 'HALF_DOWN', 'precision_calculo' => 8,
                 'recuperacion' => 'REPLACE', 'mostrar_final' => true,
                 'etiqueta_final' => 'Definitiva anual',
                 'escala_id' => $scaleId, 'metodo_id' => $methodId,

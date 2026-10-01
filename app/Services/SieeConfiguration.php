@@ -10,9 +10,12 @@ use App\Models\Academico\MetodoAprobacion;
 
 final class SieeConfiguration
 {
+    public const RESULT_DECIMALS = 1;
+    public const RESULT_ROUNDING = 'HALF_DOWN';
+
     public const DEFAULTS = [
         'usar_areas' => false, 'modo_area' => 'SIMPLE_AVERAGE', 'modo_asignatura' => 'WEIGHTED_AVERAGE',
-        'modo_anual' => 'SIMPLE_AVERAGE', 'redondeo' => 'HALF_UP', 'precision_calculo' => 8,
+        'modo_anual' => 'SIMPLE_AVERAGE', 'redondeo' => 'HALF_DOWN', 'precision_calculo' => 8,
         'recuperacion' => 'REPLACE', 'mostrar_final' => true, 'etiqueta_final' => 'Definitiva',
         'escala_id' => null, 'metodo_id' => null,
     ];
@@ -24,6 +27,10 @@ final class SieeConfiguration
         $method = MetodoAprobacion::where('ano_lectivo_id', $year->id)->find($config['metodo_id']);
         abort_unless($scale && $method && $scale->tipo === 'numerica', 422, 'Selecciona una escala numérica y un método de aprobación del año en la configuración SIEE.');
 
-        return [...$config, 'valor_min' => $scale->valor_min, 'valor_max' => $scale->valor_max, 'decimales' => $scale->decimales, 'nota_minima' => $method->nota_minima];
+        // Política de presentación uniforme, también para años históricos.
+        // El cálculo conserva su precisión interna y las notas originales.
+        return [...$config, 'valor_min' => $scale->valor_min, 'valor_max' => $scale->valor_max,
+            'decimales' => self::RESULT_DECIMALS, 'redondeo' => self::RESULT_ROUNDING,
+            'nota_minima' => $method->nota_minima];
     }
 }

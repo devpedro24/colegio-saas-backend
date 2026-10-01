@@ -292,7 +292,8 @@ class SedeProvisioner
             foreach ($snapshot['escalas'] as $escala) {
                 EscalaValorativa::firstOrCreate(
                     ['ano_lectivo_id' => $anoMap[$escala['ano_lectivo_id']] ?? $escala['ano_lectivo_id'], 'nombre' => $escala['nombre'], 'nivel_educativo' => $escala['nivel_educativo']],
-                    ['tipo' => $escala['tipo'], 'valor_min' => $escala['valor_min'], 'valor_max' => $escala['valor_max'], 'decimales' => $escala['decimales']],
+                    ['tipo' => $escala['tipo'], 'valor_min' => $escala['valor_min'], 'valor_max' => $escala['valor_max'],
+                        'decimales' => $escala['tipo'] === 'numerica' ? SieeConfiguration::RESULT_DECIMALS : $escala['decimales']],
                 );
             }
         }
