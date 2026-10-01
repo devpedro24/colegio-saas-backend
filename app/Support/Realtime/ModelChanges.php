@@ -26,7 +26,7 @@ final class ModelChanges
         $connection = $model->getConnection();
         $tenantId = $connection->getName() === 'tenant' ? tenant()?->getKey() : null;
         $resource = match ($table) {
-            'anos_lectivos', 'periodos' => 'academic',
+            'anos_lectivos', 'periodos', 'preinformes' => 'academic',
             'sedes', 'jornadas', 'niveles', 'grados', 'grupos', 'bloques_horarios', 'espacios_fisicos' => 'structure',
             'areas', 'materias' => 'curriculum',
             'asignaciones_docentes', 'sesiones_horario' => 'schedule',

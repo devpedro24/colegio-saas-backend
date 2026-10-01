@@ -20,6 +20,9 @@ final class AcademicTokenIndex
         'asignaciones_docentes' => ['asignacion-docente'], 'sesiones_horario' => ['sesion-horario'],
         'matriculas' => ['matricula'], 'componentes_evaluacion' => ['componente-evaluacion'],
         'actividades_evaluacion' => ['actividad-evaluacion'], 'eventos' => ['evento'],
+        'recuperaciones_academicas' => ['recuperacion-academica'],
+        'promociones_academicas' => ['promocion-academica'],
+        'preinformes' => ['preinforme'],
         'escalas_valorativas' => ['escala-valorativa'], 'metodos_aprobacion' => ['metodo-aprobacion'],
         'modelos_pedagogicos' => ['modelo-pedagogico'], 'users' => ['usuario', 'docente'],
     ];
@@ -55,6 +58,11 @@ final class AcademicTokenIndex
     {
         $count = 0;
         foreach (self::RESOURCES as $table => $resources) {
+            // El índice se instala antes de algunas tablas académicas futuras.
+            // Un colegio nuevo debe poder migrar desde cero en orden cronológico.
+            if (! DB::getSchemaBuilder()->hasTable($table)) {
+                continue;
+            }
             DB::table($table)->select('id')->orderBy('id')->chunkById(500, function ($records) use ($resources, &$count): void {
                 $rows = [];
                 foreach ($records as $record) {

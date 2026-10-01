@@ -21,6 +21,8 @@ use App\Services\SieeConfiguration;
 use App\Support\Audit\AuditLogger;
 use App\Support\EvaluationOpaquePresenter as PublicEval;
 use App\Support\OpaqueUrlToken;
+use App\Support\StudentRosterName;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -36,12 +38,17 @@ class EvaluacionController extends Controller
     {
         $user = $request->user();
         $manage = $this->book->manages($user);
+        $canEnroll = $this->book->canManageEnrollment($user);
+        $view = $request->validate(['vista' => ['sometimes', Rule::in(['planillas', 'matriculas', 'boletines'])]])['vista'] ?? null;
+        abort_if($view === 'matriculas' && ! $canEnroll, 403);
+        $enrollmentView = $view === 'matriculas';
         $teacher = $user->can('notas.registrar_materia_asignada');
-        abort_unless($manage || $teacher || $user->can('notas.ver_propias'), 403);
+        abort_unless($manage || $teacher || $user->can('notas.ver_propias') || ($enrollmentView && $canEnroll), 403);
         $yearId = $request->filled('ano_lectivo_id') ? $request->integer('ano_lectivo_id') : null;
         $groupId = $request->filled('grupo_id') ? $request->integer('grupo_id') : null;
         $term = trim((string) $request->query('search', ''));
         $assignmentQuery = AsignacionDocente::with(['materia:id,nombre', 'grupo.grado'])
+            ->when($enrollmentView || $view === 'boletines', fn ($q) => $q->whereRaw('1 = 0'))
             ->when(! $manage, fn ($q) => $q->where('docente_id', $teacher ? $user->id : -1))
             ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
             ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
@@ -52,7 +59,8 @@ class EvaluacionController extends Controller
                 ->orWhereHas('grupo', fn ($group) => $group->where('nombre', 'like', '%'.$term.'%'))
                 ->orWhereHas('docente', fn ($teacherQuery) => $teacherQuery->where('name', 'like', '%'.$term.'%'))));
         $enrollmentQuery = Matricula::with(['estudiante:id,name', 'grupo.grado'])
-            ->when(! $manage, fn ($q) => $teacher
+            ->when($view === 'planillas', fn ($q) => $q->whereRaw('1 = 0'))
+            ->when(! $manage && ! ($enrollmentView && $canEnroll), fn ($q) => $teacher
                 ? $q->whereIn('grupo_id', AsignacionDocente::where('docente_id', $user->id)->select('grupo_id'))
                 : $q->where('estudiante_id', $user->id))
             ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
@@ -68,16 +76,16 @@ class EvaluacionController extends Controller
             ['*'], 'asignaciones_page', 'asignaciones_per_page');
         $enrollments = $this->paginateAcademic($enrollmentQuery->orderByDesc('id'), $request,
             ['*'], 'matriculas_page', 'matriculas_per_page');
-        $availableStudents = $manage ? User::role('estudiante')->where('status', 'active')
+        $availableStudents = $canEnroll && ($enrollmentView || $view === null) ? User::role('estudiante')->where('status', 'active')
             ->when($yearId, fn ($q) => $q->whereNotIn('id', Matricula::where('ano_lectivo_id', $yearId)
                 ->where('estado', 'activa')->select('estudiante_id')))
             ->when($request->filled('student_search'), fn ($q) => $q->where('name', 'like', '%'.trim((string) $request->query('student_search')).'%'))
             ->orderBy('name')->limit(50)->get(['id', 'name']) : collect();
-        $groupOptions = ($manage || $teacher) ? $this->boundedCatalog(Grupo::with('grado')->where('estado', 'activo')
+        $groupOptions = ($manage || $teacher || ($enrollmentView && $canEnroll)) ? $this->boundedCatalog(Grupo::with('grado')->where('estado', 'activo')
             ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
-            ->when(! $manage, fn ($q) => $q->whereIn('id', AsignacionDocente::where('docente_id', $user->id)->select('grupo_id'))),
+            ->when(! $manage && ! ($enrollmentView && $canEnroll), fn ($q) => $q->whereIn('id', AsignacionDocente::where('docente_id', $user->id)->select('grupo_id'))),
             $request, 'group_search', [$groupId, $request->integer('selected_grupo_id')]) : collect();
-        $subjectOptions = ($manage || $teacher) ? $this->boundedCatalog(Materia::where('estado', 'activo')
+        $subjectOptions = ! $enrollmentView && ($manage || $teacher) ? $this->boundedCatalog(Materia::where('estado', 'activo')
             ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
             ->when(! $manage, fn ($q) => $q->whereIn('id', AsignacionDocente::where('docente_id', $user->id)->select('materia_id'))),
             $request, 'materia_search', [$request->integer('materia_id'), $request->integer('selected_materia_id')]) : collect();
@@ -87,7 +95,7 @@ class EvaluacionController extends Controller
             abort_if($request->filled('matricula_token') && ! $selectedEnrollment, 404);
 
             return response()->json(['data' => [
-                'can_manage' => $manage, 'can_configure' => $user->can('academico.configurar'),
+                'can_manage' => $manage, 'can_manage_enrollments' => $canEnroll, 'can_configure' => $user->can('academico.configurar'),
                 'can_view_reports' => $manage || $user->can('notas.ver_propias'),
                 'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado'])->map(PublicEval::year(...)),
                 'periodos' => Periodo::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
@@ -105,7 +113,7 @@ class EvaluacionController extends Controller
         }
 
         return response()->json(['data' => [
-            'can_manage' => $manage, 'can_configure' => $user->can('academico.configurar'),
+            'can_manage' => $manage, 'can_manage_enrollments' => $canEnroll, 'can_configure' => $user->can('academico.configurar'),
             'can_view_reports' => $manage || $user->can('notas.ver_propias'),
             'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado']),
             'periodos' => Periodo::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->orderBy('orden')->get()
@@ -175,31 +183,61 @@ class EvaluacionController extends Controller
         $period = Periodo::where('ano_lectivo_id', $assignment->ano_lectivo_id)->findOrFail($periodo);
         $year = AnoLectivo::findOrFail($assignment->ano_lectivo_id);
         $config = app(SieeConfiguration::class)->resolve($year);
-        $components = ComponenteEvaluacion::with('actividades')->where('asignacion_id', $asignacion)->where('periodo_id', $periodo)->get();
-        $enrollmentPage = $this->paginateAcademic(Matricula::with('estudiante:id,name')
-            ->where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')
-            ->when($request->filled('search'), fn ($q) => $q->whereHas('estudiante', fn ($student) =>
-                $student->where('name', 'like', '%'.trim((string) $request->query('search')).'%')))
-            ->orderBy('id'), $request);
+        $components = ComponenteEvaluacion::with('actividades')->where('asignacion_id', $asignacion)->where('periodo_id', $periodo)->orderBy('id')->get();
+        // El modelo de usuario aún no separa nombres y apellidos. Ordenar el
+        // grupo completo ANTES de paginar evita números de lista basados en IDs.
+        $roster = Matricula::with('estudiante:id,name')
+            ->where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')->get()
+            ->sort(fn (Matricula $a, Matricula $b) =>
+                strcmp(StudentRosterName::sortKey($a->estudiante->name), StudentRosterName::sortKey($b->estudiante->name))
+                ?: ($a->id <=> $b->id))->values();
+        $perPage = $roster->count() <= 20 ? 20 : $this->resolvePerPage($request);
+        $page = $roster->count() <= 20 ? 1 : $this->resolvePage($request);
+        $enrollmentPage = new LengthAwarePaginator($roster->forPage($page, $perPage)->values(), $roster->count(), $perPage, $page);
         $enrollments = $enrollmentPage->getCollection();
         $grades = Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))
             ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get();
         $gradesByEnrollment = $grades->groupBy('matricula_id');
+        $periodConfig = $this->book->periodConfig($config, $period);
         $results = $enrollments->mapWithKeys(fn (Matricula $enrollment) => [$enrollment->id =>
             $this->book->resultFromLoaded($components,
-                $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $config)]);
+                $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $periodConfig)]);
 
         if ($request->boolean('opaque')) {
             return response()->json(['data' => [
-                'editable' => $year->estado === 'en_curso' && $period->estado === 'abierto',
+                'editable' => $year->estado === 'en_curso' && $period->estado === 'abierto'
+                    && ($request->user()->can('notas.editar_no_dicta') || ($assignment->docente_id == $request->user()->id && $request->user()->can('notas.registrar_materia_asignada')))
+                    && (!($period->configuracion_notas['usar_preinformes'] ?? false) || app(\App\Services\AcademicPlanAccess::class)->preinformes()),
+                'requiere_motivo' => $this->book->requiresReason($request->user(), $assignment),
+                'permisos' => collect(['crear', 'editar', 'eliminar'])->mapWithKeys(fn ($action) => [$action => $request->user()->can('notas.actividades.'.$action)])
+                    ->put('configurar', $request->user()->can('notas.planilla.configurar')),
+                'secciones' => app(\App\Services\FlexibleGradingService::class)->sections($period, $components),
+                'usa_preinformes' => (bool) ($period->configuracion_notas['usar_preinformes'] ?? false),
+                'modo_preinformes' => $period->configuracion_notas['modo'] ?? null,
+                'estructura_anterior' => $components->where('es_directo', false)->whereNull('preinforme_id')->isNotEmpty(),
+                'periodo' => PublicEval::period($period),
                 'configuracion' => PublicEval::config($config),
                 'componentes' => $components->map(PublicEval::component(...)),
-                'matriculas' => $enrollments->map(PublicEval::enrollment(...)),
+                'matriculas' => $enrollments->map(fn (Matricula $enrollment) => [
+                    ...PublicEval::enrollment($enrollment),
+                    'nombre_lista' => StudentRosterName::display($enrollment->estudiante->name),
+                ]),
                 'pagination' => ['matriculas' => $this->paginationMeta($enrollmentPage)],
                 'calificaciones' => $grades->map(PublicEval::grade(...)),
                 'resultados' => $enrollments->map(fn (Matricula $enrollment) => [
                     'matricula_token' => PublicEval::token('matricula', $enrollment->id),
                     ...PublicEval::result($results->get($enrollment->id)),
+                    'provisional' => $this->book->provisionalFromResult($results->get($enrollment->id), $config),
+                    'secciones' => $components->map(function ($component) use ($gradesByEnrollment, $enrollment, $config) {
+                        $result = $this->book->calculate(['mode' => $component->modo,
+                            'inputs' => $component->actividades->map(fn ($activity) => [
+                                'weight' => $activity->peso,
+                                'value' => $gradesByEnrollment->get($enrollment->id, collect())->firstWhere('actividad_id', $activity->id)?->valor,
+                            ])->all()], $config);
+                        return ['componente_token' => PublicEval::token('componente-evaluacion', $component->id),
+                            ...PublicEval::result($result),
+                            'provisional' => $this->book->provisionalFromResult($result, $config)];
+                    }),
                 ]),
             ]]);
         }
@@ -216,6 +254,7 @@ class EvaluacionController extends Controller
             ]),
             'matriculas' => $enrollments->map(fn (Matricula $enrollment) => [
                 ...$enrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $enrollment->id),
+                'nombre_lista' => StudentRosterName::display($enrollment->estudiante->name),
             ]),
             'pagination' => ['matriculas' => $this->paginationMeta($enrollmentPage)],
             'calificaciones' => $grades
@@ -233,6 +272,7 @@ class EvaluacionController extends Controller
 
     public function componente(Request $request, ?int $id = null): JsonResponse
     {
+        if ($request->boolean('opaque')) abort_unless($request->user()->can('notas.planilla.configurar'), 403);
         $data = $request->validate([
             'asignacion_id' => ['required', 'integer'], 'periodo_id' => ['required', 'integer'],
             'nombre' => ['required', 'string', 'max:120'], 'peso' => ['nullable', 'numeric', 'min:0', 'max:100', 'decimal:0,4'],
@@ -241,7 +281,8 @@ class EvaluacionController extends Controller
         $assignment = AsignacionDocente::findOrFail($data['asignacion_id']);
         $this->book->authorizeAssignment($request->user(), $assignment, write: true);
         $component = DB::transaction(function () use ($data, $assignment, $request, $id) {
-            $this->book->writable($assignment, $data['periodo_id']);
+            $period = $this->book->writable($assignment, $data['periodo_id']);
+            abort_if($period->configuracion_notas !== null, 422, 'Gestiona las actividades desde la planilla y los preinformes desde su configuración.');
             $component = $id ? ComponenteEvaluacion::where('asignacion_id', $assignment->id)->where('periodo_id', $data['periodo_id'])->findOrFail($id) : new ComponenteEvaluacion;
             abort_if(ComponenteEvaluacion::where('asignacion_id', $assignment->id)->where('periodo_id', $data['periodo_id'])->where('nombre', $data['nombre'])->when($id, fn ($q) => $q->where('id', '!=', $id))->exists(), 422, 'Ya existe un componente con ese nombre.');
             $previous = $component->exists ? $component->toArray() : null;
@@ -261,6 +302,7 @@ class EvaluacionController extends Controller
 
     public function actividad(Request $request, ?int $id = null): JsonResponse
     {
+        if ($request->boolean('opaque')) abort_unless($request->user()->can($id ? 'notas.actividades.editar' : 'notas.actividades.crear'), 403);
         $data = $request->validate([
             'componente_id' => ['required', 'integer'], 'nombre' => ['required', 'string', 'max:160'],
             'fecha' => ['required', 'date_format:Y-m-d'], 'peso' => ['nullable', 'numeric', 'min:0', 'max:100', 'decimal:0,4'],
@@ -269,6 +311,7 @@ class EvaluacionController extends Controller
         $this->book->authorizeAssignment($request->user(), $component->asignacion, write: true);
         $activity = DB::transaction(function () use ($data, $component, $request, $id) {
             $period = $this->book->writable($component->asignacion, $component->periodo_id);
+            abort_if($period->configuracion_notas !== null || $component->es_directo, 422, 'Gestiona esta actividad desde la planilla actualizada.');
             abort_if($data['fecha'] < $period->fecha_inicio->toDateString() || $data['fecha'] > $period->fecha_fin->toDateString(), 422, 'La actividad debe estar dentro de las fechas del período.');
             $activity = $id ? ActividadEvaluacion::where('componente_id', $component->id)->findOrFail($id) : new ActividadEvaluacion;
             $previous = $activity->exists ? $activity->toArray() : null;
@@ -288,11 +331,18 @@ class EvaluacionController extends Controller
 
     public function notas(Request $request, int $asignacion, int $periodo): JsonResponse
     {
+        $rows = $request->input('notas');
+        if (is_array($rows)) {
+            foreach ($rows as &$row) if (is_array($row) && isset($row['valor']) && is_string($row['valor'])) $row['valor'] = str_replace(',', '.', trim($row['valor']));
+            unset($row);
+            $request->merge(['notas' => $rows]);
+        }
         $data = $request->validate([
             'notas' => ['required', 'array', 'min:1', 'max:1000'],
             'notas.*.actividad_id' => ['required', 'integer'], 'notas.*.matricula_id' => ['required', 'integer'],
             'notas.*.valor' => ['present', 'nullable', 'numeric', 'decimal:0,8'], 'notas.*.version' => ['required', 'integer', 'min:0'],
-            'notas.*.observacion' => ['nullable', 'string', 'max:1000'], 'notas.*.motivo' => ['required', 'string', 'min:3', 'max:500'],
+            'notas.*.observacion' => ['nullable', 'string', 'max:1000'],
+            'notas.*.motivo' => [$this->book->requiresReason($request->user(), AsignacionDocente::findOrFail($asignacion)) ? 'required' : 'nullable', 'string', 'min:3', 'max:500'],
         ]);
         $this->book->saveGrades($request->user(), AsignacionDocente::findOrFail($asignacion), $periodo, $data['notas']);
 

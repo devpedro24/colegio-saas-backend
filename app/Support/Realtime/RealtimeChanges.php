@@ -63,6 +63,9 @@ final class RealtimeChanges
 
     public static function resourceForPath(string $path): string
     {
+        if (preg_match('#^/?(?:api/)?siee/[^/]+/curriculo(?:/|$|\?)#', $path)) {
+            return 'curriculum';
+        }
         $root = explode('/', trim(preg_replace('#^/?api/#', '', $path), '/'))[0];
         return match ($root) {
             'anos-lectivos', 'periodos' => 'academic',

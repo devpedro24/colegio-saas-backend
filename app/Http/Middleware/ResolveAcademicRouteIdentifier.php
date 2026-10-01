@@ -22,6 +22,7 @@ use App\Models\Academico\MetodoAprobacion;
 use App\Models\Academico\ModeloPedagogico;
 use App\Models\Academico\Nivel;
 use App\Models\Academico\Periodo;
+use App\Models\Academico\RecuperacionAcademica;
 use App\Models\Academico\Sede;
 use App\Models\Academico\SesionHorario;
 use App\Support\OpaqueUrlToken;
@@ -54,6 +55,7 @@ final class ResolveAcademicRouteIdentifier
         'modelo-pedagogico' => ModeloPedagogico::class,
         'nivel' => Nivel::class,
         'periodo' => Periodo::class,
+        'recuperacion-academica' => RecuperacionAcademica::class,
         'sede' => Sede::class,
         'sesion-horario' => SesionHorario::class,
     ];

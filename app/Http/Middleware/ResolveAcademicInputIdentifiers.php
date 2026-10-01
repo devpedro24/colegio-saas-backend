@@ -69,6 +69,17 @@ final class ResolveAcademicInputIdentifiers
         foreach (self::INPUTS as $tokenField => [$idField, $resource, $modelClass]) {
             $token = $request->input($tokenField);
             if ($token === null || $token === '') {
+                // A deliberately selected "Todos los niveles" is an explicit null,
+                // unlike an omitted educational-level selection.
+                if ($tokenField === 'nivel_token' && $token === null && array_key_exists($tokenField, $request->all())) {
+                    // Laravel converts empty strings to null before this middleware;
+                    // preserve the distinction using the original JSON payload.
+                    $raw = json_decode($request->getContent(), true);
+                    if (is_array($raw) && ($raw[$tokenField] ?? null) === '') {
+                        throw ValidationException::withMessages(['nivel_id' => 'Selecciona el nivel educativo o Todos los niveles.']);
+                    }
+                    $request->merge([$idField => null]);
+                }
                 continue;
             }
             $model = OpaqueUrlToken::find($resource, $token, $modelClass::query());

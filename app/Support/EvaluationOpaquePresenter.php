@@ -93,7 +93,7 @@ final class EvaluationOpaquePresenter
     {
         return ['url_token' => self::token('actividad-evaluacion', $activity->id),
             'componente_token' => self::token('componente-evaluacion', $activity->componente_id),
-            'nombre' => $activity->nombre, 'fecha' => $activity->fecha, 'peso' => $activity->peso];
+            'nombre' => $activity->nombre, 'fecha' => $activity->fecha, 'peso' => $activity->peso, 'version' => $activity->version];
     }
 
     public static function grade(Calificacion $grade): array
@@ -117,8 +117,18 @@ final class EvaluationOpaquePresenter
 
     public static function result(array $result): array
     {
+        // Preserve the engine's rounding and exact arithmetic; only remove
+        // presentation padding at the public decimal boundary.
+        foreach (['raw_value', 'display_value'] as $field) {
+            if (isset($result[$field])) {
+                $result[$field] = AcademicDecimal::normalize($result[$field]);
+            }
+        }
         if (isset($result['trace'])) {
             $result['trace'] = self::trace($result['trace']);
+        }
+        if (isset($result['resultado_original']) && is_array($result['resultado_original'])) {
+            $result['resultado_original'] = self::result($result['resultado_original']);
         }
 
         return $result;
@@ -168,7 +178,7 @@ final class EvaluationOpaquePresenter
     {
         $public = [];
         foreach ($trace as $key => $value) {
-            if ($key === 'reference' && is_string($value) && preg_match('/\A(componente|actividad|materia|periodo):([0-9]+)\z/', $value, $match)) {
+            if ($key === 'reference' && is_string($value) && preg_match('/\A(componente|actividad|materia|periodo|preinforme):([0-9]+)\z/', $value, $match)) {
                 $resource = match ($match[1]) {
                     'componente' => 'componente-evaluacion', 'actividad' => 'actividad-evaluacion',
                     default => $match[1],
