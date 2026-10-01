@@ -17,6 +17,7 @@ use App\Models\Academico\MetodoAprobacion;
 use App\Models\Academico\ModeloPedagogico;
 use App\Models\Academico\Nivel;
 use App\Models\Academico\Periodo;
+use App\Models\Academico\Preinforme;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Support\Facades\DB;
@@ -114,7 +115,9 @@ final class DuplicarAnoLectivoService
                 $siee['metodo_id'] = $maps['metodos'][$siee['metodo_id']] ?? null;
                 $target->update(['siee' => $siee]);
             }
-            $periodosCopiados = $options['periodos'] ? $this->copyPeriods($source, $target) : 0;
+            $periodosCopiados = $options['periodos'] ? $this->copyPeriods($source, $target, $actor) : 0;
+            $preparacionesCopiadas = ($options['curriculo'] || $options['periodos'])
+                ? $this->copyEvaluationPreparations($source, $target) : 0;
 
             $this->saveCopyState($target, $source, $options, true);
 
@@ -125,6 +128,7 @@ final class DuplicarAnoLectivoService
                 'copiados' => array_map('count', $maps),
                 'curriculo' => $options['curriculo'],
                 'periodos' => $periodosCopiados,
+                'preparaciones_evaluacion' => $preparacionesCopiadas,
             ], 'Duplicación de año lectivo sin asignaciones, horarios ni calificaciones.');
 
             return $target;
@@ -258,8 +262,10 @@ final class DuplicarAnoLectivoService
                 $created['siee'] = 1;
             }
             if ($options['periodos']) {
-                $created['periodos'] = $this->copyPeriods($source, $target);
+                $created['periodos'] = $this->copyPeriods($source, $target, $actor);
             }
+            $preparacionesCopiadas = ($options['curriculo'] || $options['periodos'])
+                ? $this->copyEvaluationPreparations($source, $target) : 0;
 
             $priorOptions = $state && ! $switching ? (json_decode($state->opciones, true) ?: []) : [];
             $savedOptions = $options;
@@ -274,6 +280,7 @@ final class DuplicarAnoLectivoService
             AuditLogger::tenant($actor, 'UPDATE', 'ano_lectivo', (string) $target->id, null, [
                 'origen_id' => $source->id, 'origen_anterior_id' => $previousSourceId,
                 'opciones' => $options, 'copiados' => $created,
+                'preparaciones_evaluacion' => $preparacionesCopiadas,
             ], $switching ? 'Cambio de origen de copia académica, con verificación de integridad.'
                 : 'Copia posterior de configuración académica sin sobrescribir datos existentes.');
 
@@ -324,9 +331,24 @@ final class DuplicarAnoLectivoService
     private function fingerprint(AnoLectivo $target): string
     {
         $snapshot = ['siee' => $target->fresh()->siee];
+        $preinformes = DB::table('preinformes')->whereIn('periodo_id', Periodo::where('ano_lectivo_id', $target->id)->select('id'))->orderBy('id')->get()->toArray();
+        if ($preinformes !== []) $snapshot['preinformes'] = $preinformes;
         foreach (self::TABLES as $key => $table) {
             $snapshot[$key] = DB::table($table)->where('ano_lectivo_id', $target->id)->orderBy('id')->get()->toArray();
+            if ($key === 'periodos') foreach ($snapshot[$key] as $row) {
+                // New nullable metadata must not invalidate untouched historical copies.
+                if ($row->configuracion_notas === null && (int) $row->version_notas === 0) unset($row->configuracion_notas, $row->version_notas);
+            }
         }
+        $curriculumIds = DB::table('materias_curriculares')->where('ano_lectivo_id', $target->id)->pluck('id');
+        $snapshot['preparaciones_evaluacion'] = DB::table('preparaciones_evaluacion')
+            ->whereIn('materia_curricular_id', $curriculumIds)->orderBy('id')->get()->toArray();
+        $preparationIds = collect($snapshot['preparaciones_evaluacion'])->pluck('id');
+        $snapshot['componentes_preparados'] = DB::table('componentes_preparados')
+            ->whereIn('preparacion_id', $preparationIds)->orderBy('id')->get()->toArray();
+        $snapshot['actividades_preparadas'] = DB::table('actividades_preparadas')
+            ->whereIn('componente_id', collect($snapshot['componentes_preparados'])->pluck('id'))
+            ->orderBy('id')->get()->toArray();
 
         return hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR));
     }
@@ -353,7 +375,11 @@ final class DuplicarAnoLectivoService
         $ids['period_id'] = $ids['periodo_id'];
         foreach (Schema::getTables() as $tableInfo) {
             $table = is_array($tableInfo) ? $tableInfo['name'] : $tableInfo->name;
-            if (in_array($table, $protected, true) || in_array($table, ['anos_lectivos', 'copias_configuracion_anual', 'periodos_sumatorios_legado'], true)) {
+            if (in_array($table, $protected, true) || in_array($table, [
+                'anos_lectivos', 'copias_configuracion_anual', 'periodos_sumatorios_legado',
+                'preparaciones_evaluacion', 'componentes_preparados', 'actividades_preparadas',
+                'preinformes',
+            ], true)) {
                 continue;
             }
             if (Schema::hasColumn($table, 'ano_lectivo_id')
@@ -372,13 +398,22 @@ final class DuplicarAnoLectivoService
     private function clearConfiguration(AnoLectivo $target): void
     {
         $target->update(['siee' => null]);
+        $curriculumIds = DB::table('materias_curriculares')->where('ano_lectivo_id', $target->id)->pluck('id');
+        $preparationIds = DB::table('preparaciones_evaluacion')
+            ->whereIn('materia_curricular_id', $curriculumIds)->pluck('id');
+        $componentIds = DB::table('componentes_preparados')
+            ->whereIn('preparacion_id', $preparationIds)->pluck('id');
+        DB::table('actividades_preparadas')->whereIn('componente_id', $componentIds)->delete();
+        DB::table('componentes_preparados')->whereIn('preparacion_id', $preparationIds)->delete();
+        DB::table('preparaciones_evaluacion')->whereIn('id', $preparationIds)->delete();
+        DB::table('preinformes')->whereIn('periodo_id', Periodo::where('ano_lectivo_id', $target->id)->select('id'))->delete();
         foreach (['curriculo', 'grupos', 'bloques', 'materias', 'grados', 'jornadas', 'niveles',
             'espacios', 'areas', 'escalas', 'metodos', 'modelos', 'periodos'] as $key) {
             DB::table(self::TABLES[$key])->where('ano_lectivo_id', $target->id)->delete();
         }
     }
 
-    private function copyPeriods(AnoLectivo $source, AnoLectivo $target): int
+    private function copyPeriods(AnoLectivo $source, AnoLectivo $target, User $actor): int
     {
         $copied = 0;
         $maxOrder = $target->num_periodos;
@@ -391,6 +426,7 @@ final class DuplicarAnoLectivoService
                 if ($existing->trashed()) {
                     throw ValidationException::withMessages(['opciones' => 'El año destino tiene un período eliminado con el mismo orden. Revísalo antes de copiar.']);
                 }
+                $this->copyPreinformes($period, $existing, $actor);
                 continue;
             }
             $sameCalendarStart = $source->fecha_inicio->format('m-d') === $target->fecha_inicio->format('m-d');
@@ -411,7 +447,7 @@ final class DuplicarAnoLectivoService
                 ->whereDate('fecha_fin', '>=', $start->toDateString())->exists()) {
                 throw ValidationException::withMessages(['opciones' => 'Los períodos copiados se cruzan con los ya configurados en el año destino.']);
             }
-            Periodo::create([
+            $newPeriod = Periodo::create([
                 'ano_lectivo_id' => $target->id,
                 'nombre' => $period->nombre,
                 'orden' => $period->orden,
@@ -420,6 +456,100 @@ final class DuplicarAnoLectivoService
                 'peso' => $period->peso,
                 'estado' => Periodo::ESTADO_PLANIFICADO,
             ]);
+            $this->copyPreinformes($period, $newPeriod, $actor);
+            $copied++;
+        }
+
+        return $copied;
+    }
+
+    private function copyPreinformes(Periodo $source, Periodo $target, User $actor): void
+    {
+        if ($source->configuracion_notas === null || $target->configuracion_notas !== null) return;
+        abort_if($target->estaCerrado(), 422, 'No se pueden copiar preinformes a un período cerrado.');
+        abort_if(\App\Models\Academico\ComponenteEvaluacion::where('periodo_id', $target->id)->exists(), 422, 'El período destino ya tiene una planilla; no se cambió su configuración.');
+        if ($source->configuracion_notas['usar_preinformes'] ?? false) {
+            abort_unless($actor->can('academico.preinformes.gestionar'), 403);
+            app(AcademicPlanAccess::class)->requirePreinformes();
+        }
+        foreach (Preinforme::where('periodo_id', $source->id)->orderBy('orden')->get() as $pre) {
+            $dates = [];
+            foreach (['fecha_inicio', 'fecha_fin'] as $field) {
+                $dates[$field] = null;
+                if ($pre->$field) {
+                    $date = $target->fecha_inicio->copy()->addDays((int) $source->fecha_inicio->diffInDays(\Illuminate\Support\Carbon::parse($pre->$field)));
+                    abort_if($date->gt($target->fecha_fin), 422, 'Las fechas de los preinformes no caben en el período destino.');
+                    $dates[$field] = $date->toDateString();
+                }
+            }
+            Preinforme::create(['periodo_id' => $target->id, 'nombre' => $pre->nombre, 'orden' => $pre->orden, 'peso' => $pre->peso, ...$dates]);
+        }
+        $target->update(['configuracion_notas' => $source->configuracion_notas, 'version_notas' => 1]);
+    }
+
+    /** Copia solo definiciones preparatorias, nunca asignaciones, planillas ni notas. */
+    private function copyEvaluationPreparations(AnoLectivo $source, AnoLectivo $target): int
+    {
+        $copied = 0;
+        $preparations = DB::table('preparaciones_evaluacion as p')
+            ->join('materias_curriculares as c', 'c.id', '=', 'p.materia_curricular_id')
+            ->join('grados as g', 'g.id', '=', 'c.grado_id')
+            ->join('niveles as n', 'n.id', '=', 'g.nivel_id')
+            ->join('materias as m', 'm.id', '=', 'c.materia_id')
+            ->join('periodos as term', 'term.id', '=', 'p.periodo_id')
+            ->where('c.ano_lectivo_id', $source->id)
+            ->select('p.*', 'g.nombre as grado_nombre', 'n.nivel_educativo',
+                'm.nombre as materia_nombre', 'term.orden as periodo_orden')
+            ->orderBy('p.id')->get();
+        foreach ($preparations as $preparation) {
+            $matches = DB::table('materias_curriculares as c')
+                ->join('grados as g', 'g.id', '=', 'c.grado_id')
+                ->join('niveles as n', 'n.id', '=', 'g.nivel_id')
+                ->join('materias as m', 'm.id', '=', 'c.materia_id')
+                ->where('c.ano_lectivo_id', $target->id)
+                ->where('g.nombre', $preparation->grado_nombre)
+                ->where('n.nivel_educativo', $preparation->nivel_educativo)
+                ->where('m.nombre', $preparation->materia_nombre)
+                ->pluck('c.id');
+            $targetPeriod = Periodo::where('ano_lectivo_id', $target->id)
+                ->where('orden', $preparation->periodo_orden)->first();
+            if ($matches->isEmpty() || ! $targetPeriod) {
+                continue; // Sección pendiente: puede copiarse después al completar currículo y períodos.
+            }
+            if ($matches->count() !== 1) {
+                throw ValidationException::withMessages(['opciones' =>
+                    'Hay materias curriculares ambiguas en el año destino. Revisa sus nombres antes de copiar la preparación.']);
+            }
+            $targetCurriculumId = $matches->first();
+            if (DB::table('preparaciones_evaluacion')->where('materia_curricular_id', $targetCurriculumId)
+                ->where('periodo_id', $targetPeriod->id)->exists()) {
+                continue; // Una configuración local existente nunca se sobrescribe.
+            }
+            $sourcePeriod = Periodo::findOrFail($preparation->periodo_id);
+            $targetPreparationId = DB::table('preparaciones_evaluacion')->insertGetId([
+                'materia_curricular_id' => $targetCurriculumId, 'periodo_id' => $targetPeriod->id,
+                'version' => 1, 'created_at' => now(), 'updated_at' => now(),
+            ]);
+            foreach (DB::table('componentes_preparados')->where('preparacion_id', $preparation->id)->orderBy('id')->get() as $component) {
+                $targetComponentId = DB::table('componentes_preparados')->insertGetId([
+                    'preparacion_id' => $targetPreparationId, 'nombre' => $component->nombre,
+                    'modo' => $component->modo, 'peso' => $component->peso,
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+                foreach (DB::table('actividades_preparadas')->where('componente_id', $component->id)->orderBy('id')->get() as $activity) {
+                    $shift = (int) $sourcePeriod->fecha_inicio->diffInDays(\Illuminate\Support\Carbon::parse($activity->fecha));
+                    $date = $targetPeriod->fecha_inicio->copy()->addDays($shift);
+                    if ($date->gt($targetPeriod->fecha_fin)) {
+                        throw ValidationException::withMessages(['opciones' =>
+                            'Una actividad preparada no cabe en las fechas del período destino. Ajusta los períodos antes de copiar.']);
+                    }
+                    DB::table('actividades_preparadas')->insert([
+                        'componente_id' => $targetComponentId, 'nombre' => $activity->nombre,
+                        'fecha' => $date->toDateString(), 'peso' => $activity->peso,
+                        'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                }
+            }
             $copied++;
         }
 

@@ -106,6 +106,7 @@ class AcademicOptionsController extends Controller
             'ano_lectivo_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
             'selected_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
             'compatible_nivel_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
+            'compatible_grupo_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
             'sede_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
             'jornada_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
             'nivel_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
@@ -129,16 +130,19 @@ class AcademicOptionsController extends Controller
                 || $user->can('notas.ver_propias'),
             'grupos', 'bloques', 'espacios' => $user->can('academico.estructura.gestionar')
                 || $user->can('academico.plan_estudios.gestionar') || $user->can('academico.configurar')
-                || $user->hasRole('docente') || $user->hasRole('estudiante'),
-            'materias', 'areas' => $user->can('academico.plan_estudios.gestionar') || $user->can('academico.configurar'),
+                || $user->can('academico.matriculas.gestionar') || $user->can('notas.ver_consolidado_todos')
+                || $user->can('notas.registrar_materia_asignada') || $user->can('notas.ver_propias'),
+            'materias', 'areas' => $user->can('academico.plan_estudios.gestionar') || $user->can('academico.configurar')
+                || $user->can('notas.ver_consolidado_todos') || $user->can('notas.registrar_materia_asignada'),
             default => $user->can('academico.estructura.gestionar')
                 || $user->can('academico.plan_estudios.gestionar') || $user->can('academico.configurar'),
         };
         abort_unless($permitted, 403);
-        $scopeToOwnAcademic = in_array($type, ['grupos', 'bloques', 'espacios'], true)
+        $scopeToOwnAcademic = in_array($type, ['grupos', 'bloques', 'espacios', 'materias', 'areas'], true)
             && ! $user->can('academico.estructura.gestionar')
             && ! $user->can('academico.plan_estudios.gestionar')
-            && ! $user->can('academico.configurar');
+            && ! $user->can('academico.configurar') && ! $user->can('notas.ver_consolidado_todos')
+            && ! ($type === 'grupos' && $user->can('academico.matriculas.gestionar'));
 
         if (! in_array($type, ['sedes', 'docentes', 'estudiantes'], true) && empty($filters['ano_lectivo_token'])) {
             throw ValidationException::withMessages(['ano_lectivo_token' => 'Selecciona un año lectivo.']);
@@ -181,7 +185,7 @@ class AcademicOptionsController extends Controller
                 default => 'activo',
             });
             if ($scopeToOwnAcademic) {
-                $this->scopeToUser($query, $type, $user, $user->hasRole('docente'));
+                $this->scopeToUser($query, $type, $user, $user->can('notas.registrar_materia_asignada'));
             }
         }
 
@@ -212,6 +216,18 @@ class AcademicOptionsController extends Controller
                 throw ValidationException::withMessages(['compatible_nivel_token' => 'El nivel no pertenece a este año lectivo.']);
             }
             $query->where(fn (Builder $byLevel) => $byLevel->whereNull('nivel_id')->orWhere('nivel_id', $level->id));
+        }
+
+        if (isset($filters['compatible_grupo_token'])) {
+            abort_unless($type === 'materias', 422);
+            $groupQuery = Grupo::with('grado')->where('ano_lectivo_id', $year->id)->where('estado', 'activo');
+            if ($scopeToOwnAcademic) {
+                $this->scopeToUser($groupQuery, 'grupos', $user, $user->can('notas.registrar_materia_asignada'));
+            }
+            $group = OpaqueUrlToken::find('grupo', $filters['compatible_grupo_token'],
+                $groupQuery);
+            abort_unless($group, 404);
+            \App\Services\GroupSubjectScope::apply($query, $group);
         }
 
         $selected = isset($filters['selected_token'])
@@ -272,6 +288,13 @@ class AcademicOptionsController extends Controller
                 'grado_token' => OpaqueUrlToken::for('grado', $item->grado_id),
                 'jornada_token' => OpaqueUrlToken::for('jornada', $item->jornada_id),
                 'sede_token' => OpaqueUrlToken::for('sede', $item->sede_id),
+                'sede' => $item->sede ? [
+                    'url_token' => OpaqueUrlToken::for('sede', $item->sede->id), 'nombre' => $item->sede->nombre,
+                ] : null,
+                'jornada' => $item->jornada ? [
+                    'url_token' => OpaqueUrlToken::for('jornada', $item->jornada->id), 'nombre' => $item->jornada->nombre,
+                    'hora_inicio' => $item->jornada->hora_inicio, 'hora_fin' => $item->jornada->hora_fin,
+                ] : null,
                 'grado' => $item->grado ? [
                     'url_token' => OpaqueUrlToken::for('grado', $item->grado->id),
                     'nombre' => $item->grado->nombre,

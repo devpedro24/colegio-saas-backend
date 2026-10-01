@@ -19,6 +19,7 @@ final class AsignacionHorarioService
     public function guardar(Grupo $grupo, Materia $materia, ?int $docenteId, User $actor): AsignacionDocente
     {
         return DB::transaction(function () use ($grupo, $materia, $docenteId, $actor): AsignacionDocente {
+            GroupSubjectScope::assert($grupo, $materia);
             $asignacion = AsignacionDocente::query()
                 ->where('ano_lectivo_id', $grupo->ano_lectivo_id)
                 ->where('grupo_id', $grupo->id)

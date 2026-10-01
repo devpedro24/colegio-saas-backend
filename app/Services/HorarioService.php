@@ -48,6 +48,7 @@ final class HorarioService
             AcademicYearSelection::assertSame($group->jornada?->ano_lectivo_id, $year);
             abort_unless($group->estaActivo() && $subject->estado === 'activo', 422, 'El grupo y la asignatura deben estar activos.');
             abort_unless($subject->nivel_id === null || $subject->nivel_id == $group->grado?->nivel_id, 422, 'La asignatura no corresponde al nivel del grupo.');
+            GroupSubjectScope::assert($group, $subject);
             if ($assignment) {
                 abort_unless($assignment->ano_lectivo_id == $year->id && $assignment->grupo_id == $group->id && $assignment->materia_id == $subject->id, 422, 'La asignación no corresponde a la clase.');
             } else {

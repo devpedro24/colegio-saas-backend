@@ -38,7 +38,8 @@ class SieeController extends Controller
             ->paginate(50, ['id', 'nombre', 'nivel_id', 'area_id', 'estado'], 'materias_page', 1);
         $areas = Area::where('ano_lectivo_id', $id)->where('estado', 'activo')->orderBy('nombre')->orderBy('id')
             ->paginate(50, ['id', 'nombre'], 'areas_page', 1);
-        $configuration = array_replace(SieeConfiguration::DEFAULTS, $year->siee ?? []);
+        $configuration = array_replace(SieeConfiguration::DEFAULTS, $year->siee ?? [],
+            ['redondeo' => SieeConfiguration::RESULT_ROUNDING]);
         $scale = EscalaValorativa::where('ano_lectivo_id', $id)->find($configuration['escala_id']);
         $method = MetodoAprobacion::where('ano_lectivo_id', $id)->find($configuration['metodo_id']);
         unset($configuration['escala_id'], $configuration['metodo_id']);
@@ -48,6 +49,8 @@ class SieeController extends Controller
         return response()->json(['data' => [
             'editable' => ! $year->estaCerrado() && ! $year->periodos()->where('estado', 'cerrado')->exists(),
             'curriculo_editable' => $this->curriculoEditable($year),
+            'tiene_planillas_anteriores' => DB::table('componentes_evaluacion')->whereIn('periodo_id', $year->periodos()->select('id'))
+                ->where('es_directo', false)->whereNull('preinforme_id')->exists(),
             'configuracion' => $configuration,
             'escalas' => EscalaValorativa::where('ano_lectivo_id', $id)->get()->map(fn (EscalaValorativa $item) => [
                 'url_token' => OpaqueUrlToken::for('escala-valorativa', $item->id),
@@ -120,7 +123,7 @@ class SieeController extends Controller
             'modo_area' => ['required', Rule::in([...GradeCalculationService::MODES, 'DISABLED'])],
             'modo_asignatura' => ['required', Rule::in(GradeCalculationService::MODES)],
             'modo_anual' => ['required', Rule::in(GradeCalculationService::MODES)],
-            'redondeo' => ['required', Rule::in(['HALF_UP', 'TRUNCATE'])],
+            'redondeo' => ['required', Rule::in([SieeConfiguration::RESULT_ROUNDING])],
             'precision_calculo' => ['required', 'integer', 'min:4', 'max:12'],
             'recuperacion' => ['required', Rule::in(['REPLACE', 'AVERAGE', 'MAX_PASSING_GRADE', 'MANUAL'])],
             'mostrar_final' => ['required', 'boolean'], 'etiqueta_final' => ['required', 'string', 'max:60'],
@@ -133,6 +136,10 @@ class SieeController extends Controller
                 EscalaValorativa::where('ano_lectivo_id', $id), 'escala_token');
             $method = $this->resolveSelector('metodo-aprobacion', $data['metodo_token'],
                 MetodoAprobacion::where('ano_lectivo_id', $id), 'metodo_token');
+            foreach (['modo_area', 'modo_asignatura', 'modo_anual'] as $field) {
+                abort_if($data[$field] === 'MANUAL' && ($year->siee[$field] ?? null) !== 'MANUAL', 422,
+                    'La captura de resultados manuales todavía no está disponible. Selecciona un cálculo simple o ponderado.');
+            }
             abort_if($year->periodo_sumatorio && $data['modo_anual'] === 'MANUAL', 422,
                 'El período sumatorio necesita un cálculo anual simple o ponderado. Cambia el método anual o desactiva el período sumatorio.');
             abort_if($year->estaCerrado(), 422, 'El año está cerrado; su SIEE es inmutable.');
@@ -178,6 +185,9 @@ class SieeController extends Controller
             $data['grado_id'] = $grade->id;
             $data['materia_id'] = $subject->id;
             $data['area_id'] = $subject->area_id;
+            if (!($year->siee['usar_areas'] ?? false) || ($year->siee['modo_area'] ?? null) !== 'WEIGHTED_AVERAGE') {
+                $data['peso_area'] = null;
+            }
             $key = ['ano_lectivo_id' => $id, 'grado_id' => $data['grado_id'], 'materia_id' => $data['materia_id']];
             $previous = DB::table('materias_curriculares')->where($key)->first();
             DB::table('materias_curriculares')->updateOrInsert($key, [...$data, 'updated_at' => now(), ...($previous ? [] : ['created_at' => now()])]);
@@ -185,6 +195,70 @@ class SieeController extends Controller
         });
 
         return $this->show($id);
+    }
+
+    public function curriculoMasivo(Request $request, int $id): JsonResponse
+    {
+        $rows = $request->input('items');
+        if (is_array($rows)) {
+            foreach ($rows as &$row) {
+                if (is_array($row) && is_string($row['peso_area'] ?? null)) {
+                    $row['peso_area'] = str_replace(',', '.', trim($row['peso_area']));
+                }
+            }
+            unset($row);
+            $request->merge(['items' => $rows]);
+        }
+        $data = $request->validate([
+            'items' => ['required', 'array', 'min:1', 'max:2000'],
+            'items.*' => ['array:grado_token,materia_token,peso_area'],
+            'items.*.grado_token' => ['required', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
+            'items.*.materia_token' => ['required', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
+            'items.*.peso_area' => ['present', 'nullable', 'numeric', 'decimal:0,4', 'min:0', 'max:100'],
+        ]);
+        $changed = DB::transaction(function () use ($id, $data, $request) {
+            $year = AnoLectivo::lockForUpdate()->findOrFail($id);
+            abort_unless($this->curriculoEditable($year), 422,
+                'No se puede cambiar el currículo: el año está cerrado o hay calificaciones en períodos cerrados.');
+            $weighted = ($year->siee['usar_areas'] ?? false) && ($year->siee['modo_area'] ?? null) === 'WEIGHTED_AVERAGE';
+            $grades = Grado::where('ano_lectivo_id', $id)->where('estado', 'activo')->get()
+                ->keyBy(fn ($grade) => OpaqueUrlToken::for('grado', $grade->id));
+            $subjects = Materia::where('ano_lectivo_id', $id)->where('estado', 'activo')->get()
+                ->keyBy(fn ($subject) => OpaqueUrlToken::for('materia', $subject->id));
+            $existing = DB::table('materias_curriculares')->where('ano_lectivo_id', $id)->get()
+                ->keyBy(fn ($row) => $row->grado_id.':'.$row->materia_id);
+            $seen = [];
+            $count = 0;
+            foreach ($data['items'] as $row) {
+                $grade = $grades->get($row['grado_token']);
+                $subject = $subjects->get($row['materia_token']);
+                abort_unless($grade && $subject, 404);
+                abort_unless($subject->nivel_id === null || $subject->nivel_id === $grade->nivel_id, 422,
+                    'La materia '.$subject->nombre.' no corresponde al nivel de '.$grade->nombre.'.');
+                $key = $grade->id.':'.$subject->id;
+                abort_if(isset($seen[$key]), 422, 'No repitas una materia para el mismo grado.');
+                $seen[$key] = true;
+                abort_if($weighted && $row['peso_area'] === null, 422, 'Indica el porcentaje de cada materia seleccionada.');
+                $weight = $weighted ? \App\Support\AcademicDecimal::normalize($row['peso_area']) : null;
+                $previous = $existing->get($key);
+                if ($previous && $previous->area_id === $subject->area_id
+                    && \App\Support\AcademicDecimal::normalize($previous->peso_area) === $weight) {
+                    continue;
+                }
+                $values = ['ano_lectivo_id' => $id, 'grado_id' => $grade->id, 'materia_id' => $subject->id,
+                    'area_id' => $subject->area_id, 'peso_area' => $weight];
+                DB::table('materias_curriculares')->updateOrInsert(
+                    ['ano_lectivo_id' => $id, 'grado_id' => $grade->id, 'materia_id' => $subject->id],
+                    [...$values, 'updated_at' => now(), ...($previous ? [] : ['created_at' => now()])]);
+                AuditLogger::tenant($request->user(), $previous ? 'UPDATE' : 'CREATE', 'materia_curricular',
+                    $id.':'.$key, $previous ? (array) $previous : null, $values);
+                $count++;
+            }
+
+            return $count;
+        });
+
+        return response()->json(['data' => ['guardados' => $changed]]);
     }
 
     private function resolveSelector(string $resource, string $token, Builder $scope, string $field): Model

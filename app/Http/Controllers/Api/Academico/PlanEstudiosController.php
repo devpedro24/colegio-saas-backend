@@ -86,9 +86,13 @@ class PlanEstudiosController extends Controller
 
     public function materias(Request $request): JsonResponse
     {
+        $request->validate(['nivel_general' => ['nullable', 'boolean']]);
+        abort_if($request->boolean('nivel_general') && $request->filled('nivel_id'), 422,
+            'Selecciona un nivel educativo o filtra las materias de Todos los niveles, no ambos.');
         $materias = $this->paginateAcademic(Materia::query()->with(['area:id,nombre', 'nivel:id,nombre'])
             ->when($request->filled('ano_lectivo_id'), fn ($q) => $q->where('ano_lectivo_id', $request->integer('ano_lectivo_id')))
             ->when($request->filled('area_id'), fn ($q) => $q->where('area_id', $request->integer('area_id')))
+            ->when($request->boolean('nivel_general'), fn ($q) => $q->whereNull('nivel_id'))
             ->when($request->filled('nivel_id'), fn ($q) => $q->where('nivel_id', $request->integer('nivel_id')))
             ->when($request->filled('search'), fn ($q) => $q->where('nombre', 'like', '%'.trim((string) $request->query('search')).'%'))
             ->when($request->filled('estado'), fn ($q) => $q->where('estado', $request->query('estado')))
@@ -145,7 +149,7 @@ class PlanEstudiosController extends Controller
     {
         return $request->validate([
             'area_id' => ['nullable', 'integer', Rule::exists('areas', 'id')->whereNull('deleted_at')],
-            'nivel_id' => ['nullable', 'integer', 'exists:niveles,id'],
+            'nivel_id' => [$materia ? 'sometimes' : 'present', 'nullable', 'integer', 'exists:niveles,id'],
             'nombre' => [$materia ? 'sometimes' : 'required', 'string', 'max:120'],
             'codigo' => ['nullable', 'string', 'max:30', Rule::unique('materias', 'codigo')->where('ano_lectivo_id', $yearId)->ignore($materia?->id)],
             'intensidad_horaria' => [$materia ? 'sometimes' : 'required', 'integer', 'min:1', 'max:40'],
