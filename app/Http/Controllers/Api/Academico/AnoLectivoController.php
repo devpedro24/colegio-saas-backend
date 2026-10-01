@@ -8,6 +8,7 @@ use App\Events\TenantDataChanged;
 use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
+use App\Services\AcademicYearReviewService;
 use App\Services\ConfigurationGate;
 use App\Services\DuplicarAnoLectivoService;
 use App\Services\GradeCalculationService;
@@ -20,6 +21,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Gestión de años lectivos del colegio (RN-PA-001..008). Rutas del tenant.
@@ -64,6 +66,14 @@ class AnoLectivoController extends Controller
         }
 
         return response()->json(['data' => $status]);
+    }
+
+    /** Preflight del cierre; nunca modifica resultados ni crea promociones. */
+    public function revisionCierre(Request $request, string $id, AcademicYearReviewService $service): JsonResponse
+    {
+        $this->assertTransitionActor($request);
+
+        return response()->json(['data' => $service->review(AnoLectivo::findOrFail($id))]);
     }
 
     /** Crea un año lectivo (nace en estado 'planificado'). */
@@ -222,6 +232,13 @@ class AnoLectivoController extends Controller
 
         $this->validarFechasSegunCalendario($data);
 
+        if ($ano->periodos()->where(function ($query) use ($data) {
+            $query->whereDate('fecha_inicio', '<', $data['fecha_inicio'])
+                ->orWhereDate('fecha_fin', '>', $data['fecha_fin']);
+        })->exists()) {
+            abort(422, 'Ajusta primero los períodos: sus fechas quedarían fuera del nuevo rango del año lectivo.');
+        }
+
         $prev = $this->snapshot($ano);
 
         $ano->update([
@@ -351,18 +368,37 @@ class AnoLectivoController extends Controller
         return response()->json(['data' => $this->present($ano)]);
     }
 
-    /** Transición: en_curso → cerrado (RN-PA-006, datos inmutables tras el cierre). */
-    public function cerrar(Request $request, string $id): JsonResponse
+    /** Cierre tras revisión de períodos y decisiones de promoción, o confirmación de año vacío. */
+    public function cerrar(Request $request, string $id, ?AcademicYearReviewService $service = null): JsonResponse
     {
         $this->assertTransitionActor($request);
-        $ano = AnoLectivo::findOrFail($id);
+        $service ??= app(AcademicYearReviewService::class);
+        $request->validate(['confirmar_sin_matriculas' => ['sometimes', 'accepted'],
+            'confirmar_promociones' => ['sometimes', 'accepted'],
+            'confirmar_solo_retiradas' => ['sometimes', 'accepted']]);
+        [$ano, $prev, $review] = DB::transaction(function () use ($id, $service, $request): array {
+            $ano = AnoLectivo::query()->lockForUpdate()->findOrFail($id);
+            $periods = $ano->periodos()->lockForUpdate()->get();
+            $review = $service->review($ano, $periods);
+            abort_if(! $review['puede_cerrar'], 422,
+                'No se puede cerrar el año lectivo. Revisa los períodos y la matrícula académica antes de confirmar.');
+            if ($review['sin_matriculas']) {
+                if (! $request->boolean('confirmar_sin_matriculas')) {
+                    throw ValidationException::withMessages(['confirmar_sin_matriculas' =>
+                        'Confirma expresamente el cierre de un año sin matrículas.']);
+                }
+            } elseif ($review['solo_retiradas'] && ! $request->boolean('confirmar_solo_retiradas')) {
+                throw ValidationException::withMessages(['confirmar_solo_retiradas' =>
+                    'Confirma expresamente el cierre de un año con matrículas retiradas y sin matrículas activas.']);
+            } elseif (! $review['solo_retiradas'] && ! $request->boolean('confirmar_promociones')) {
+                throw ValidationException::withMessages(['confirmar_promociones' =>
+                    'Confirma expresamente las decisiones de promoción revisadas.']);
+            }
+            $prev = $this->snapshot($ano);
+            $ano->update(['estado' => AnoLectivo::ESTADO_CERRADO]);
 
-        if ($ano->estado !== AnoLectivo::ESTADO_EN_CURSO) {
-            abort(422, 'Solo un año lectivo en curso puede cerrarse.');
-        }
-
-        $prev = $this->snapshot($ano);
-        $ano->update(['estado' => AnoLectivo::ESTADO_CERRADO]);
+            return [$ano, $prev, $review];
+        });
 
         AuditLogger::tenant(
             $request->user(),
@@ -371,7 +407,7 @@ class AnoLectivoController extends Controller
             (string) $ano->id,
             $prev,
             $this->snapshot($ano),
-            'Cierre del año lectivo (en_curso → cerrado).',
+            'Cierre de año con revisión explícita: '.json_encode($review, JSON_UNESCAPED_UNICODE),
         );
 
         try {

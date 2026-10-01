@@ -118,6 +118,9 @@ class PeriodoController extends Controller
 
         $this->validarOrdenDentroDelLimite($ano, (int) $data['orden']);
         $this->validarFechasSinSolapamiento($ano, $data, $periodo->id);
+        abort_if(\App\Models\Academico\Preinforme::where('periodo_id', $periodo->id)
+            ->where(fn ($q) => $q->where('fecha_inicio', '<', $data['fecha_inicio'])->orWhere('fecha_fin', '>', $data['fecha_fin']))->exists(),
+            422, 'Hay preinformes fuera de las nuevas fechas. Ajusta primero sus fechas antes de modificar el período.');
 
         $prev = $this->snapshot($periodo);
 
