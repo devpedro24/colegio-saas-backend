@@ -52,7 +52,11 @@ final class GradeCalculationService
     public function result(array $node, array $config): array
     {
         $value = $this->evaluate($node);
-        $rounding = ($config['redondeo'] ?? 'HALF_UP') === 'TRUNCATE' ? RoundingMode::Down : RoundingMode::HalfUp;
+        $rounding = match ($config['redondeo'] ?? 'HALF_DOWN') {
+            'HALF_DOWN' => RoundingMode::HalfDown,
+            'TRUNCATE' => RoundingMode::Down,
+            default => RoundingMode::HalfUp,
+        };
         $threshold = BigRational::of((string) $config['nota_minima']);
         $display = (string) $value->toScale((int) $config['decimales'], $rounding);
 
@@ -64,6 +68,39 @@ final class GradeCalculationService
             'calculation_version' => self::VERSION,
             'trace' => $node,
         ];
+    }
+
+    /** Vista previa de la planilla: ignora celdas vacías y normaliza los pesos
+     * registrados. No sustituye el cálculo estricto de boletines/promoción. */
+    public function provisional(array $node, array $config): ?string
+    {
+        try {
+            $value = $this->provisionalValue($node);
+            return $value === null ? null : (string) $this->result(['mode' => 'MANUAL', 'manual' => (string) $value], $config)['display_value'];
+        } catch (ValidationException) {
+            return null;
+        }
+    }
+
+    private function provisionalValue(array $node): ?BigRational
+    {
+        if (($node['mode'] ?? null) === 'MANUAL') return isset($node['manual']) ? BigRational::of((string) $node['manual']) : null;
+        $sum = BigRational::of(0);
+        $totalWeight = BigRational::of(0);
+        $count = 0;
+        foreach ($node['inputs'] ?? [] as $input) {
+            $value = isset($input['node']) ? $this->provisionalValue($input['node'])
+                : (isset($input['value']) ? BigRational::of((string) $input['value']) : null);
+            if ($value === null) continue;
+            $weight = ($node['mode'] ?? null) === 'WEIGHTED_AVERAGE'
+                ? (isset($input['weight']) ? BigRational::of((string) $input['weight']) : null)
+                : BigRational::of(1);
+            if ($weight === null) continue;
+            $sum = $sum->plus($value->multipliedBy($weight));
+            $totalWeight = $totalWeight->plus($weight);
+            $count++;
+        }
+        return $count && ! $totalWeight->isZero() ? $sum->dividedBy($totalWeight) : null;
     }
 
     public function recover(string $original, string $recovery, string $mode, string $passing, ?string $manual = null): BigRational

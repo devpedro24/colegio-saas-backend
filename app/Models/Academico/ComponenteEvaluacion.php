@@ -10,9 +10,9 @@ class ComponenteEvaluacion extends Model
 {
     protected $table = 'componentes_evaluacion';
 
-    protected $fillable = ['asignacion_id', 'periodo_id', 'nombre', 'modo', 'peso'];
+    protected $fillable = ['asignacion_id', 'periodo_id', 'componente_preparado_id', 'nombre', 'modo', 'peso', 'preinforme_id', 'es_directo', 'version'];
 
-    protected $casts = ['peso' => 'decimal:4'];
+    protected $casts = ['peso' => \App\Support\AcademicDecimal::class, 'es_directo' => 'boolean', 'version' => 'integer'];
 
     public function asignacion(): BelongsTo
     {
@@ -26,6 +26,7 @@ class ComponenteEvaluacion extends Model
 
     public function actividades(): HasMany
     {
-        return $this->hasMany(ActividadEvaluacion::class, 'componente_id');
+        // La fecha o el porcentaje pueden cambiar; la posición de la columna no.
+        return $this->hasMany(ActividadEvaluacion::class, 'componente_id')->orderBy('id');
     }
 }

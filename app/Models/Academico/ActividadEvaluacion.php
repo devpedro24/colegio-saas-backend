@@ -9,9 +9,9 @@ class ActividadEvaluacion extends Model
 {
     protected $table = 'actividades_evaluacion';
 
-    protected $fillable = ['componente_id', 'nombre', 'fecha', 'peso'];
+    protected $fillable = ['componente_id', 'nombre', 'fecha', 'peso', 'version'];
 
-    protected $casts = ['peso' => 'decimal:4'];
+    protected $casts = ['peso' => \App\Support\AcademicDecimal::class, 'version' => 'integer'];
 
     public function componente(): BelongsTo
     {

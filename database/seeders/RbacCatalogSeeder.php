@@ -46,7 +46,7 @@ class RbacCatalogSeeder extends Seeder
                 'key' => $perm['key'],
                 'module' => $perm['module'],
                 'action' => $perm['action'],
-                'feature' => self::MODULE_FEATURE[$perm['module']] ?? null,
+                'feature' => $perm['feature'] ?? self::MODULE_FEATURE[$perm['module']] ?? null,
                 'cells' => $perm['cells'],
             ];
         }

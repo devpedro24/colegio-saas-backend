@@ -56,6 +56,8 @@ class Periodo extends Model
         'peso',
         'estado',
         'reapertura_manual',
+        'configuracion_notas',
+        'version_notas',
     ];
 
     /**
@@ -69,6 +71,8 @@ class Periodo extends Model
             'fecha_inicio' => 'date',
             'fecha_fin' => 'date',
             'reapertura_manual' => 'boolean',
+            'configuracion_notas' => 'array',
+            'version_notas' => 'integer',
         ];
     }
 

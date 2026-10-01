@@ -10,5 +10,5 @@ class Calificacion extends Model
 
     protected $fillable = ['actividad_id', 'matricula_id', 'valor', 'observacion', 'updated_by', 'version'];
 
-    protected $casts = ['valor' => 'decimal:8', 'version' => 'integer'];
+    protected $casts = ['valor' => \App\Support\AcademicDecimal::class, 'version' => 'integer'];
 }

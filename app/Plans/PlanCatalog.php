@@ -56,6 +56,7 @@ class PlanCatalog
             ['key' => 'whatsapp', 'category' => 'comunicacion', 'label' => 'plan.f.whatsapp', 'description' => 'plan.f.whatsapp.desc'],
 
             // ---- Academico avanzado ----
+            ['key' => 'preinformes', 'category' => 'academico_avanzado', 'label' => 'plan.f.preinformes', 'description' => 'plan.f.preinformes.desc'],
             ['key' => 'boletines_personalizables', 'category' => 'academico_avanzado', 'label' => 'plan.f.boletines', 'description' => 'plan.f.boletines.desc'],
             ['key' => 'multi_sede', 'category' => 'academico_avanzado', 'label' => 'plan.f.multiSede', 'description' => 'plan.f.multiSede.desc'],
             ['key' => 'firma_electronica', 'category' => 'academico_avanzado', 'label' => 'plan.f.firmaElectronica', 'description' => 'plan.f.firmaElectronica.desc'],
@@ -112,7 +113,7 @@ class PlanCatalog
 
         $estandar = array_merge($esencial, [
             'multi_pasarela', 'pagos_sin_friccion', 'app_acudientes',
-            'boletines_personalizables', 'multi_sede', 'firma_electronica',
+            'boletines_personalizables', 'multi_sede', 'firma_electronica', 'preinformes',
             'carne_qr', 'reportes_financieros',
         ]);
 

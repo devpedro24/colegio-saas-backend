@@ -10,6 +10,7 @@ use App\Models\Academico\Calificacion;
 use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
+use App\Models\Academico\RecuperacionAcademica;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
 use Brick\Math\BigDecimal;
@@ -27,6 +28,20 @@ final class GradebookService
     public function canManageEnrollment(User $user): bool
     {
         return $user->can('academico.matriculas.gestionar');
+    }
+
+    public function requiresReason(User $actor, AsignacionDocente $assignment): bool
+    {
+        // El docente asignado registra notas ordinarias sin justificar cada lote.
+        // La edición delegada de una planilla ajena sí pide un motivo auditado.
+        return $assignment->docente_id !== $actor->id;
+    }
+
+    public function provisionalFromResult(array $result, array $config): ?string
+    {
+        if (($result['estado'] ?? null) === 'calculado') return null;
+        return isset($result['trace']) ? \App\Support\AcademicDecimal::normalize(
+            app(GradeCalculationService::class)->provisional($result['trace'], $config)) : null;
     }
 
     public function authorizeAssignment(User $user, AsignacionDocente $assignment, bool $write = false): void
@@ -53,7 +68,8 @@ final class GradebookService
     {
         $this->authorizeAssignment($actor, $assignment, write: true);
         DB::transaction(function () use ($actor, $assignment, $periodId, $rows) {
-            $this->writable($assignment, $periodId);
+            $period = $this->writable($assignment, $periodId);
+            if ($period->configuracion_notas['usar_preinformes'] ?? false) app(AcademicPlanAccess::class)->requirePreinformes();
             $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));
             $activities = DB::table('actividades_evaluacion as a')->join('componentes_evaluacion as c', 'c.id', '=', 'a.componente_id')
                 ->where('c.asignacion_id', $assignment->id)->where('c.periodo_id', $periodId)->pluck('a.id')->all();
@@ -84,12 +100,38 @@ final class GradebookService
         $components = ComponenteEvaluacion::with('actividades')->where('asignacion_id', $assignment->id)->where('periodo_id', $period->id)->get();
         $grades = Calificacion::where('matricula_id', $enrollment->id)->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get()->keyBy('actividad_id');
 
-        return $this->resultFromLoaded($components, $grades, $config);
+        return $this->resultFromLoaded($components, $grades, $this->periodConfig($config, $period));
+    }
+
+    public function periodConfig(array $config, Periodo $period): array
+    {
+        $config['_periodo'] = $period->configuracion_notas;
+        if ($period->configuracion_notas['usar_preinformes'] ?? false) {
+            $config['_preinformes'] = \App\Models\Academico\Preinforme::where('periodo_id', $period->id)->orderBy('orden')->get();
+        }
+        return $config;
     }
 
     /** Pure calculation over already authorized, scoped data. No per-student queries. */
     public function resultFromLoaded(Collection $components, Collection $grades, array $config): array
     {
+        if ($config['_periodo']['usar_preinformes'] ?? false) {
+            $inputs = $config['_preinformes']->map(function ($pre) use ($components, $grades) {
+                $component = $components->firstWhere('preinforme_id', $pre->id);
+                return ['reference' => 'preinforme:'.$pre->id, 'label' => $pre->nombre, 'weight' => $pre->peso,
+                    'node' => ['mode' => $component?->modo ?? 'SIMPLE_AVERAGE', 'inputs' => $component
+                        ? $component->actividades->map(fn ($activity) => ['reference' => 'actividad:'.$activity->id,
+                            'weight' => $activity->peso, 'value' => $grades->get($activity->id)?->valor])->all() : []]];
+            })->all();
+            return $this->calculate(['mode' => $config['_periodo']['modo'], 'inputs' => $inputs], $config);
+        }
+        if ($components->count() === 1 && $components->first()->es_directo) {
+            $component = $components->first();
+            return $this->calculate(['mode' => $component->modo, 'inputs' => $component->actividades->map(fn ($activity) => [
+                'reference' => 'actividad:'.$activity->id, 'label' => $activity->nombre,
+                'weight' => $activity->peso, 'value' => $grades->get($activity->id)?->valor,
+            ])->all()], $config);
+        }
         $inputs = $components->map(fn ($component) => [
             'reference' => 'componente:'.$component->id, 'label' => $component->nombre, 'weight' => $component->peso,
             'node' => ['mode' => $component->modo, 'inputs' => $component->actividades->map(fn ($activity) => [
@@ -110,7 +152,7 @@ final class GradebookService
         }
     }
 
-    public function report(Matricula $enrollment): array
+    public function report(Matricula $enrollment, bool $applyAnnualRecoveries = true): array
     {
         $year = AnoLectivo::findOrFail($enrollment->ano_lectivo_id);
         $config = app(SieeConfiguration::class)->resolve($year);
@@ -123,10 +165,22 @@ final class GradebookService
         $grades = Calificacion::where('matricula_id', $enrollment->id)
             ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->modelKeys()))->get()->keyBy('actividad_id');
         $componentsByPeriod = $components->groupBy(fn ($c) => $c->asignacion_id.':'.$c->periodo_id);
-        $rows = $subjects->map(function ($assignment) use ($periods, $config, $curriculum, $year, $componentsByPeriod, $grades) {
-            $results = $periods->map(fn ($period) => ['periodo_id' => $period->id,
-                ...$this->resultFromLoaded($componentsByPeriod->get($assignment->id.':'.$period->id, collect()), $grades, $config)])->all();
+        $recoveries = RecuperacionAcademica::where('matricula_id', $enrollment->id)
+            ->where('ano_lectivo_id', $year->id)->whereIn('asignacion_id', $subjects->modelKeys())
+            ->whereIn('estado', ['aprobada', 'no_aprobada'])->get()
+            ->keyBy(fn ($item) => $item->asignacion_id.':'.$item->alcance);
+        $periodConfigs = $periods->mapWithKeys(fn ($period) => [$period->id => $this->periodConfig($config, $period)]);
+        $rows = $subjects->map(function ($assignment) use ($periods, $periodConfigs, $config, $curriculum, $year, $componentsByPeriod, $grades, $recoveries, $applyAnnualRecoveries) {
+            $results = $periods->map(function ($period) use ($assignment, $componentsByPeriod, $grades, $periodConfigs, $config, $recoveries) {
+                $original = $this->resultFromLoaded($componentsByPeriod->get($assignment->id.':'.$period->id, collect()), $grades, $periodConfigs[$period->id]);
+                $recovery = $recoveries->get($assignment->id.':periodo:'.$period->id);
+
+                return ['periodo_id' => $period->id, ...$this->applyRecovery($original, $recovery, $config)];
+            })->all();
             $annual = $this->annual($results, $periods, $year, $config);
+            if ($applyAnnualRecoveries) {
+                $annual = $this->applyRecovery($annual, $recoveries->get($assignment->id.':anual'), $config);
+            }
             $entry = $curriculum->get($assignment->materia_id);
 
             return ['materia_id' => $assignment->materia_id, 'nombre' => $assignment->materia->nombre,
@@ -138,7 +192,7 @@ final class GradebookService
         $missingSubjects = $curriculum->except($subjects->pluck('materia_id')->all());
         $subjectNames = DB::table('materias')->whereIn('id', $missingSubjects->keys())->pluck('nombre', 'id');
         foreach ($missingSubjects as $entry) {
-            $pending = ['estado' => 'pendiente', 'motivo' => 'La asignatura aún no tiene docente asignado.'];
+            $pending = ['estado' => 'pendiente', 'motivo' => 'La asignatura aún no tiene asignación para este grupo.'];
             $rows->push([
                 'materia_id' => $entry->materia_id,
                 'nombre' => $subjectNames->get($entry->materia_id),
@@ -169,7 +223,7 @@ final class GradebookService
             'ano' => $year->nombre, 'configuracion' => $config, 'periodos' => $periods->map->only(['id', 'nombre', 'peso', 'estado']),
             'periodo_sumatorio' => $year->periodo_sumatorio ? ['orden' => $year->num_periodos + 1, 'nombre' => 'P'.($year->num_periodos + 1), 'modo' => $config['modo_anual']] : null,
             'asignaturas' => $rows->values(), 'areas' => $areas,
-            'advertencias' => $curriculum->keys()->diff($subjects->pluck('materia_id'))->isNotEmpty() ? ['Hay asignaturas del currículo sin docente asignado; este informe no está completo.'] : [],
+            'advertencias' => $curriculum->keys()->diff($subjects->pluck('materia_id'))->isNotEmpty() ? ['Hay asignaturas del currículo sin asignación para este grupo; este informe no está completo.'] : [],
         ];
     }
 
@@ -181,5 +235,25 @@ final class GradebookService
         $inputs = $periods->map(fn ($period, $index) => ['reference' => 'periodo:'.$period->id, 'weight' => $period->peso, 'value' => $results[$index]['exact_value'] ?? null])->all();
 
         return $this->calculate(['mode' => $config['modo_anual'], 'inputs' => $inputs], $config);
+    }
+
+    private function applyRecovery(array $original, ?RecuperacionAcademica $recovery, array $config): array
+    {
+        if (! $recovery) {
+            return $original;
+        }
+        if (($original['exact_value'] ?? null) !== $recovery->valor_original_exacto) {
+            return ['estado' => 'pendiente',
+                'motivo' => 'La nota original cambió después de la recuperación; requiere revisión.',
+                'resultado_original' => $original];
+        }
+        $effective = app(GradeCalculationService::class)->result(
+            ['mode' => 'MANUAL', 'manual' => $recovery->valor_efectivo_exacto], $config);
+
+        return ['estado' => 'calculado', ...$effective,
+            'origen' => 'recuperacion', 'resultado_original' => $original,
+            'nota_recuperacion' => $recovery->nota_recuperacion,
+            'politica_recuperacion' => $recovery->politica,
+            'recuperacion_token' => \App\Support\OpaqueUrlToken::for('recuperacion-academica', $recovery->id)];
     }
 }
