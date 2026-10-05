@@ -72,6 +72,116 @@ class AcademicModulesTest extends TestCase
     use \Tests\Support\FlexibleGradingTests;
     use \Tests\Support\AcademicWorkflowTests;
 
+    public function test_visual_assessment_maps_exact_fraction_and_hides_numeric_result(): void
+    {
+        $choices = new \Illuminate\Database\Eloquent\Collection([
+            new \App\Models\Academico\EscalaOpcion(['escala_id' => 1, 'nombre' => 'Bien',
+                'valor_equivalente' => '4.00', 'orden' => 1, 'aprueba' => true]),
+            new \App\Models\Academico\EscalaOpcion(['escala_id' => 1, 'nombre' => 'En proceso',
+                'valor_equivalente' => '2.50', 'orden' => 2, 'aprueba' => false]),
+        ]);
+        foreach ($choices as $index => $choice) {
+            $choice->id = $index + 1;
+        }
+        $raw = ['estado' => 'calculado', 'exact_value' => '13/4', 'raw_value' => '3.25',
+            'display_value' => '3.2', 'aprobado' => true, 'trace' => ['value' => '13/4']];
+        $decorated = app(\App\Services\EscalaVisualService::class)->decorate($raw, $choices);
+        $public = \App\Support\EvaluationOpaquePresenter::result($decorated, true);
+
+        $this->assertSame('En proceso', $public['valoracion']['nombre']);
+        $this->assertFalse($public['aprobado']);
+        foreach (['exact_value', 'raw_value', 'display_value', 'trace'] as $field) {
+            $this->assertArrayNotHasKey($field, $public);
+        }
+    }
+
+    public function test_visual_categories_can_be_configured_and_given_a_private_image(): void
+    {
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.configurar', 'web'));
+        $numeric = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id,
+            'nombre' => 'Numérica', 'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS,
+            'escala_id' => $numeric->id, 'metodo_id' => $method->id]]);
+        $visual = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id,
+            'nivel_educativo' => 'preescolar', 'nombre' => 'Caritas', 'tipo' => 'imagenes']);
+        $request = Request::create('/', 'PUT', ['opciones' => [
+            ['nombre' => 'Muy bien', 'valor_equivalente' => '5', 'emoji' => '😄', 'aprueba' => true],
+            ['nombre' => 'Necesita apoyo', 'valor_equivalente' => '2', 'emoji' => '😟', 'aprueba' => false],
+        ]]);
+        $request->setUserResolver(fn () => $this->rector);
+        $options = app(\App\Http\Controllers\Api\Academico\EscalaOpcionController::class)
+            ->save($request, $visual->id)->getData(true)['data'];
+        $this->assertCount(2, $options);
+        $this->assertSame(['Muy bien', 'Necesita apoyo'], array_column($options, 'nombre'));
+        $this->assertSame('5.00', $visual->opciones()->orderBy('orden')->first()->valor_equivalente);
+
+        Storage::fake('tenant');
+        $file = UploadedFile::fake()->image('carita.png', 128, 128);
+        $upload = Request::create('/', 'POST', [], [], ['imagen' => $file]);
+        $upload->setUserResolver(fn () => $this->rector);
+        $saved = app(\App\Http\Controllers\Api\Academico\EscalaOpcionController::class)
+            ->upload($upload, $visual->id, $visual->opciones()->orderBy('orden')->first()->id)
+            ->getData(true)['data'];
+        $this->assertNotNull($saved['imagen_url']);
+        $this->assertTrue(Storage::disk('tenant')->exists($visual->opciones()->orderBy('orden')->first()->fresh()->imagen_path));
+    }
+
+    public function test_preschool_grade_saves_choice_and_numeric_equivalent_but_reports_face(): void
+    {
+        $numeric = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id,
+            'nombre' => 'Numérica', 'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS, 'modo_asignatura' => 'SIMPLE_AVERAGE',
+            'escala_id' => $numeric->id, 'metodo_id' => $method->id]]);
+        $visual = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id,
+            'nivel_educativo' => 'preescolar', 'nombre' => 'Caritas', 'tipo' => 'imagenes']);
+        $choice = \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'Bien', 'orden' => 1, 'valor_equivalente' => '4.00', 'emoji' => '🙂', 'aprueba' => true]);
+        $needsSupport = \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'En proceso', 'orden' => 2, 'valor_equivalente' => '3.20', 'emoji' => '😐', 'aprueba' => false]);
+        $level = Nivel::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Preescolar',
+            'nivel_educativo' => 'preescolar', 'estado' => 'activo']);
+        $grade = Grado::create(['ano_lectivo_id' => $this->year->id, 'nivel_id' => $level->id,
+            'nombre' => 'Transición', 'codigo' => 'TR', 'estado' => 'activo']);
+        $group = Grupo::create(['ano_lectivo_id' => $this->year->id, 'grado_id' => $grade->id,
+            'nombre' => 'A', 'jornada_id' => $this->group->jornada_id, 'sede_id' => $this->group->sede_id,
+            'estado' => 'activo']);
+        $assignment = AsignacionDocente::create(['ano_lectivo_id' => $this->year->id,
+            'grupo_id' => $group->id, 'materia_id' => $this->subject->id, 'docente_id' => $this->teacher->id]);
+        $student = User::create(['name' => 'Estudiante', 'email' => 'preescolar@example.invalid',
+            'password' => 'ExamplePassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primero', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31', 'estado' => 'abierto']);
+        $component = ComponenteEvaluacion::create(['asignacion_id' => $assignment->id,
+            'periodo_id' => $period->id, 'nombre' => 'Actividades', 'modo' => 'SIMPLE_AVERAGE']);
+        $activity = ActividadEvaluacion::create(['componente_id' => $component->id,
+            'nombre' => 'Exploración', 'fecha' => '2026-02-01']);
+        app(GradebookService::class)->saveGrades($this->teacher, $assignment, $period->id, [[
+            'actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+            'valor' => null, 'escala_opcion_token' => OpaqueUrlToken::for('escala-opcion', $choice->id),
+            'version' => 0,
+        ]]);
+        $saved = Calificacion::where('actividad_id', $activity->id)->where('matricula_id', $enrollment->id)->firstOrFail();
+        $this->assertSame($choice->id, $saved->escala_opcion_id);
+        $this->assertSame('4', (string) $saved->valor);
+        $public = \App\Support\EvaluationOpaquePresenter::report(app(GradebookService::class)->report($enrollment));
+        $this->assertSame('Bien', $public['asignaturas'][0]['periodos'][0]['valoracion']['nombre']);
+        $this->assertArrayNotHasKey('display_value', $public['asignaturas'][0]['periodos'][0]);
+        $this->assertSame([], app(GradebookService::class)->failedEnrollmentIds(collect([$enrollment])));
+        app(GradebookService::class)->saveGrades($this->teacher, $assignment, $period->id, [[
+            'actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+            'valor' => null, 'escala_opcion_token' => OpaqueUrlToken::for('escala-opcion', $needsSupport->id),
+            'version' => 1,
+        ]]);
+        $this->assertTrue(app(GradebookService::class)->report($enrollment)['asignaturas'][0]['periodos'][0]['aprobado'] === false);
+        $this->assertSame([$enrollment->id], app(GradebookService::class)->failedEnrollmentIds(collect([$enrollment])));
+    }
+
     public function test_period_dates_open_the_current_period_and_close_elapsed_periods(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-06-30 12:00:00', 'America/Bogota'));
@@ -2249,6 +2359,58 @@ class AcademicModulesTest extends TestCase
         return [$period, $enrollment, $activity];
     }
 
+    public function test_bulletin_catalog_marks_only_calculated_failing_results_for_recovery(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        [$period, $failed, $firstActivity] = $this->gradeFixture();
+        $secondActivity = ActividadEvaluacion::create(['componente_id' => $firstActivity->componente_id,
+            'nombre' => 'Taller 2', 'fecha' => '2026-02-06']);
+        $newEnrollment = function (string $name): Matricula {
+            $student = User::create(['name' => $name, 'email' => strtolower($name).'@test.invalid',
+                'password' => 'Student123456', 'role' => 'estudiante', 'status' => 'active']);
+            $student->assignRole('estudiante');
+
+            return Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+                'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        };
+        $passing = $newEnrollment('Aprobado');
+        $mixed = $newEnrollment('Promedio aprobado');
+        $pending = $newEnrollment('Pendiente');
+        $rows = [];
+        foreach ([[$failed, '2', '2'], [$passing, '4', '4'], [$mixed, '2', '5']] as [$enrollment, $first, $second]) {
+            foreach ([[$firstActivity, $first], [$secondActivity, $second]] as [$activity, $value]) {
+                $rows[] = ['actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+                    'valor' => $value, 'version' => 0];
+            }
+        }
+        app(GradebookService::class)->saveGrades($this->teacher, $this->assignment, $period->id, $rows);
+
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $url = 'http://localhost/api/evaluacion/catalogo?opaque=1&vista=boletines'
+            .'&ano_lectivo_token='.OpaqueUrlToken::for('ano-lectivo', $this->year->id)
+            .'&matriculas_per_page=2';
+        $pageOne = collect($this->getJson($url)->assertOk()->json('data.matriculas'))
+            ->keyBy('estudiante.name');
+        $this->assertFalse($pageOne['Pendiente']['tiene_resultados_reprobados']);
+        $this->assertFalse($pageOne['Promedio aprobado']['tiene_resultados_reprobados']);
+        $pageTwo = collect($this->getJson($url.'&matriculas_page=2')->assertOk()->json('data.matriculas'))
+            ->keyBy('estudiante.name');
+        $this->assertFalse($pageTwo['Aprobado']['tiene_resultados_reprobados']);
+        $this->assertTrue($pageTwo['Estudiante']['tiene_resultados_reprobados']);
+        $this->assertArrayNotHasKey('id', $pageTwo['Estudiante']);
+
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        $this->rector->givePermissionTo(Permission::findOrCreate('notas.gestionar_nivelaciones', 'web'));
+        $recovery = app(AcademicRecoveryService::class)->create($this->rector, $failed, $this->assignment, $period);
+        app(AcademicRecoveryService::class)->record($this->rector, $recovery, '4', null, 1, 'Nivelación aprobada');
+        $afterRecovery = collect($this->getJson($url.'&matriculas_page=2')->assertOk()->json('data.matriculas'))
+            ->keyBy('estudiante.name');
+        $this->assertFalse($afterRecovery['Estudiante']['tiene_resultados_reprobados']);
+        $this->getJson('http://localhost/api/evaluacion/boletines/'.OpaqueUrlToken::for('matricula', $failed->id).'?opaque=1')
+            ->assertOk()->assertJsonPath('data.asignaturas.0.periodos.0.origen', 'recuperacion');
+    }
+
     public function test_promotion_needs_complete_grades_and_explicit_current_approval_to_close_year(): void
     {
         [$period, $enrollment, $activity] = $this->gradeFixture();
@@ -2385,6 +2547,26 @@ class AcademicModulesTest extends TestCase
         $this->assertSame('promedio_general', $proposal['ambito']);
         $this->assertFalse($proposal['promedio_cumple']);
         $this->assertSame('reprobado', $proposal['resultado']);
+    }
+
+    public function test_general_average_promotion_agrees_with_the_published_passing_grade(): void
+    {
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        $this->year->update(['num_periodos' => 1]);
+        app(GradebookService::class)->saveGrades($this->teacher, $this->assignment, $period->id, [[
+            'actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+            'valor' => '2.974', 'version' => 0, 'motivo' => 'Evaluación registrada',
+        ]]);
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        MetodoAprobacion::where('ano_lectivo_id', $this->year->id)
+            ->update(['ambito' => MetodoAprobacion::AMBITO_PROMEDIO_GENERAL]);
+        $service = app(AcademicPromotionService::class);
+        $service->savePolicy($this->rector, $this->year, 0, [], '3.0', 0);
+
+        $proposal = $service->proposal($this->year->fresh(), $enrollment);
+        $this->assertSame('3.0', $proposal['promedio']);
+        $this->assertTrue($proposal['promedio_cumple']);
+        $this->assertSame('promovido', $proposal['resultado']);
     }
 
     public function test_period_recovery_keeps_original_grade_and_can_be_cancelled_or_reopened(): void
@@ -2538,6 +2720,39 @@ class AcademicModulesTest extends TestCase
             'matricula_token' => $enrollmentToken, 'asignacion_token' => $assignmentToken,
             'periodo_token' => $periodToken,
         ])->assertForbidden();
+    }
+
+    public function test_open_period_shows_provisional_recovery_that_disappears_when_grade_passes(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        $this->rector->givePermissionTo(Permission::findOrCreate('notas.gestionar_nivelaciones', 'web'));
+        $book = app(GradebookService::class);
+        $book->saveGrades($this->teacher, $this->assignment, $period->id, [[
+            'actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+            'valor' => '2', 'version' => 0, 'motivo' => 'Evaluación del período',
+        ]]);
+        $base = 'http://localhost/api/evaluacion/recuperaciones';
+        $enrollmentToken = OpaqueUrlToken::for('matricula', $enrollment->id);
+        $assignmentToken = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
+        $periodToken = OpaqueUrlToken::for('periodo', $period->id);
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+
+        $this->getJson("{$base}?opaque=1&matricula_token={$enrollmentToken}")
+            ->assertOk()->assertJsonPath('candidatos.0.asignacion_token', $assignmentToken)
+            ->assertJsonPath('candidatos.0.puede_abrir', false);
+        $this->postJson("{$base}?opaque=1", [
+            'matricula_token' => $enrollmentToken, 'asignacion_token' => $assignmentToken,
+            'periodo_token' => $periodToken,
+        ])->assertStatus(422);
+
+        $book->saveGrades($this->teacher, $this->assignment, $period->id, [[
+            'actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+            'valor' => '3', 'version' => 1, 'motivo' => 'Corrección de la evaluación',
+        ]]);
+        $this->getJson("{$base}?opaque=1&matricula_token={$enrollmentToken}")
+            ->assertOk()->assertJsonPath('candidatos', []);
     }
 
     public function test_gradebook_reads_grades_once_per_page_and_preserves_calculated_results(): void
@@ -2736,7 +2951,7 @@ class AcademicModulesTest extends TestCase
         $book->saveGrades($this->teacher, $this->assignment, $period->id, [$row]);
         $result = $book->subjectResult($this->assignment, $enrollment, $period, app(SieeConfiguration::class)->resolve($this->year));
         $this->assertSame('3.0', $result['display_value']);
-        $this->assertFalse($result['aprobado']); // Se compara la nota sin redondear.
+        $this->assertTrue($result['aprobado']); // La aprobación coincide con la nota publicada: 3.0.
         $this->assertDatabaseHas('audit_logs', ['recurso' => 'calificacion', 'accion' => 'CREATE']);
         try {
             $book->saveGrades($this->teacher, $this->assignment, $period->id, [[...$row, 'valor' => '4']]);
@@ -3126,8 +3341,47 @@ class AcademicModulesTest extends TestCase
         $this->assertCount(12, $sheet['matriculas']);
         $this->assertCount(12, $sheet['resultados']);
         $this->assertSame(12, $sheet['pagination']['matriculas']['total']);
-        $this->assertSame(20, $sheet['pagination']['matriculas']['per_page']);
+        $this->assertSame(12, $sheet['pagination']['matriculas']['per_page']);
         $this->assertCount(1, $sheet['calificaciones']);
+    }
+
+    public function test_gradebook_and_bulletin_rosters_return_every_student_sorted_by_surname_without_pages(): void
+    {
+        [$period] = $this->gradeFixture();
+        foreach (['Mariana Luisa Andrade Ortiz', 'Sofía Elena Andrade Anzuate'] as $index => $name) {
+            $student = User::create(['name' => $name, 'email' => "andrade{$index}@test.test",
+                'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+            Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+                'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        }
+        for ($i = 1; $i <= 51; $i++) {
+            $student = User::create(['name' => sprintf('Alumno %02d Zeta %02d', $i, $i),
+                'email' => "roster{$i}@test.test", 'password' => 'StudentPassword123',
+                'role' => 'estudiante', 'status' => 'active']);
+            Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+                'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        }
+
+        $request = Request::create('/api/evaluacion/planillas/'.$this->assignment->id.'/'.$period->id.'?page=2&per_page=5');
+        $request->setUserResolver(fn () => $this->rector);
+        $sheet = app(EvaluacionController::class)->planilla($request, $this->assignment->id, $period->id)->getData(true)['data'];
+        $this->assertCount(54, $sheet['matriculas']);
+        $this->assertCount(54, $sheet['resultados']);
+        $this->assertSame(1, $sheet['pagination']['matriculas']['last_page']);
+        $this->assertSame('Andrade Anzuate Sofía Elena', $sheet['matriculas'][0]['nombre_lista']);
+        $this->assertSame('Andrade Ortiz Mariana Luisa', $sheet['matriculas'][1]['nombre_lista']);
+
+        $request = Request::create('/api/evaluacion/catalogo?vista=boletines&ano_lectivo_id='.$this->year->id.'&matriculas_page=2&matriculas_per_page=5');
+        $request->setUserResolver(fn () => $this->rector);
+        $catalog = app(EvaluacionController::class)->catalogo($request)->getData(true)['data'];
+        $this->assertCount(54, $catalog['matriculas']);
+        $this->assertSame(54, $catalog['pagination']['matriculas']['total']);
+        $this->assertSame(1, $catalog['pagination']['matriculas']['last_page']);
+        $this->assertSame('Andrade Anzuate Sofía Elena', $catalog['matriculas'][0]['nombre_lista']);
+        $this->assertSame('Andrade Ortiz Mariana Luisa', $catalog['matriculas'][1]['nombre_lista']);
+        $namedEnrollment = Matricula::with(['estudiante', 'grupo.grado'])->findOrFail($catalog['matriculas'][0]['id']);
+        $report = \App\Support\EvaluationOpaquePresenter::report(app(GradebookService::class)->report($namedEnrollment));
+        $this->assertSame('Andrade Anzuate Sofía Elena', $report['estudiante']['nombre_lista']);
     }
 
     public function test_curriculum_weight_can_change_after_empty_period_closes_but_not_after_closed_grades(): void

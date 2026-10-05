@@ -74,8 +74,19 @@ class EvaluacionController extends Controller
         $selectedEnrollment = $this->selectedByToken($enrollmentQuery, 'matricula', $request->query('matricula_token'));
         $assignments = $this->paginateAcademic($assignmentQuery->orderByDesc('id'), $request,
             ['*'], 'asignaciones_page', 'asignaciones_per_page');
-        $enrollments = $this->paginateAcademic($enrollmentQuery->orderByDesc('id'), $request,
-            ['*'], 'matriculas_page', 'matriculas_per_page');
+        // El boletín muestra el listado completo del año seleccionado, en el
+        // mismo orden de apellidos que la planilla. Matrículas conserva su paginación.
+        if ($view === 'boletines' && $yearId) {
+            $roster = $enrollmentQuery->get()->sort(fn (Matricula $a, Matricula $b) =>
+                strcmp(StudentRosterName::sortKey($a->estudiante->name), StudentRosterName::sortKey($b->estudiante->name))
+                ?: ($a->id <=> $b->id))->values();
+            $enrollments = new LengthAwarePaginator($roster, $roster->count(), max(1, $roster->count()), 1);
+        } else {
+            $enrollments = $this->paginateAcademic($enrollmentQuery->orderByDesc('id'), $request,
+                ['*'], 'matriculas_page', 'matriculas_per_page');
+        }
+        $failedEnrollments = $view === 'boletines' && $manage
+            ? array_fill_keys($this->book->failedEnrollmentIds($enrollments->getCollection()), true) : [];
         $availableStudents = $canEnroll && ($enrollmentView || $view === null) ? User::role('estudiante')->where('status', 'active')
             ->when($yearId, fn ($q) => $q->whereNotIn('id', Matricula::where('ano_lectivo_id', $yearId)
                 ->where('estado', 'activa')->select('estudiante_id')))
@@ -101,7 +112,11 @@ class EvaluacionController extends Controller
                 'periodos' => Periodo::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
                     ->orderBy('orden')->get()->map(PublicEval::period(...)),
                 'asignaciones' => $assignments->getCollection()->map(PublicEval::assignment(...)),
-                'matriculas' => $enrollments->getCollection()->map(PublicEval::enrollment(...)),
+                'matriculas' => $enrollments->getCollection()->map(fn (Matricula $enrollment) => [
+                    ...PublicEval::enrollment($enrollment),
+                    'nombre_lista' => StudentRosterName::display($enrollment->estudiante->name),
+                    'tiene_resultados_reprobados' => isset($failedEnrollments[$enrollment->id]),
+                ]),
                 'pagination' => ['asignaciones' => $this->paginationMeta($assignments), 'matriculas' => $this->paginationMeta($enrollments)],
                 'selected_asignacion' => $selectedAssignment ? PublicEval::assignment($selectedAssignment) : null,
                 'selected_matricula' => $selectedEnrollment ? PublicEval::enrollment($selectedEnrollment) : null,
@@ -121,7 +136,9 @@ class EvaluacionController extends Controller
             'asignaciones' => $assignments->getCollection()
                 ->map(fn (AsignacionDocente $assignment) => [...$assignment->toArray(), 'url_token' => OpaqueUrlToken::for('asignacion-docente', $assignment->id)]),
             'matriculas' => $enrollments->getCollection()
-                ->map(fn (Matricula $enrollment) => [...$enrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $enrollment->id)]),
+                ->map(fn (Matricula $enrollment) => [...$enrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $enrollment->id),
+                    'nombre_lista' => StudentRosterName::display($enrollment->estudiante->name),
+                    'tiene_resultados_reprobados' => isset($failedEnrollments[$enrollment->id])]),
             'pagination' => ['asignaciones' => $this->paginationMeta($assignments), 'matriculas' => $this->paginationMeta($enrollments)],
             'selected_asignacion' => $selectedAssignment ? [...$selectedAssignment->toArray(), 'url_token' => OpaqueUrlToken::for('asignacion-docente', $selectedAssignment->id)] : null,
             'selected_matricula' => $selectedEnrollment ? [...$selectedEnrollment->toArray(), 'url_token' => OpaqueUrlToken::for('matricula', $selectedEnrollment->id)] : null,
@@ -183,18 +200,17 @@ class EvaluacionController extends Controller
         $period = Periodo::where('ano_lectivo_id', $assignment->ano_lectivo_id)->findOrFail($periodo);
         $year = AnoLectivo::findOrFail($assignment->ano_lectivo_id);
         $config = app(SieeConfiguration::class)->resolve($year);
+        $visualService = app(\App\Services\EscalaVisualService::class);
+        $visualScale = $visualService->forGroup($assignment->grupo);
         $components = ComponenteEvaluacion::with('actividades')->where('asignacion_id', $asignacion)->where('periodo_id', $periodo)->orderBy('id')->get();
-        // El modelo de usuario aún no separa nombres y apellidos. Ordenar el
-        // grupo completo ANTES de paginar evita números de lista basados en IDs.
+        // El modelo de usuario aún no separa nombres y apellidos.
         $roster = Matricula::with('estudiante:id,name')
             ->where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')->get()
             ->sort(fn (Matricula $a, Matricula $b) =>
                 strcmp(StudentRosterName::sortKey($a->estudiante->name), StudentRosterName::sortKey($b->estudiante->name))
                 ?: ($a->id <=> $b->id))->values();
-        $perPage = $roster->count() <= 20 ? 20 : $this->resolvePerPage($request);
-        $page = $roster->count() <= 20 ? 1 : $this->resolvePage($request);
-        $enrollmentPage = new LengthAwarePaginator($roster->forPage($page, $perPage)->values(), $roster->count(), $perPage, $page);
-        $enrollments = $enrollmentPage->getCollection();
+        $enrollmentPage = new LengthAwarePaginator($roster, $roster->count(), max(1, $roster->count()), 1);
+        $enrollments = $roster;
         $grades = Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))
             ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get();
         $gradesByEnrollment = $grades->groupBy('matricula_id');
@@ -202,6 +218,11 @@ class EvaluacionController extends Controller
         $results = $enrollments->mapWithKeys(fn (Matricula $enrollment) => [$enrollment->id =>
             $this->book->resultFromLoaded($components,
                 $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $periodConfig)]);
+        $presentResult = function (array $raw, ?string $provisional = null) use ($visualScale, $visualService): array {
+            $presentable = $visualScale ? $visualService->decorate($raw, $visualScale->opciones, $provisional) : $raw;
+            return [...PublicEval::result($presentable, $visualScale !== null),
+                'provisional' => $visualScale ? null : $provisional];
+        };
 
         if ($request->boolean('opaque')) {
             return response()->json(['data' => [
@@ -217,26 +238,26 @@ class EvaluacionController extends Controller
                 'estructura_anterior' => $components->where('es_directo', false)->whereNull('preinforme_id')->isNotEmpty(),
                 'periodo' => PublicEval::period($period),
                 'configuracion' => PublicEval::config($config),
+                'escala_visual' => $visualService->present($visualScale),
                 'componentes' => $components->map(PublicEval::component(...)),
                 'matriculas' => $enrollments->map(fn (Matricula $enrollment) => [
                     ...PublicEval::enrollment($enrollment),
                     'nombre_lista' => StudentRosterName::display($enrollment->estudiante->name),
                 ]),
                 'pagination' => ['matriculas' => $this->paginationMeta($enrollmentPage)],
-                'calificaciones' => $grades->map(PublicEval::grade(...)),
+                'calificaciones' => $grades->map(fn (Calificacion $grade) => PublicEval::grade($grade, $visualScale !== null)),
                 'resultados' => $enrollments->map(fn (Matricula $enrollment) => [
                     'matricula_token' => PublicEval::token('matricula', $enrollment->id),
-                    ...PublicEval::result($results->get($enrollment->id)),
-                    'provisional' => $this->book->provisionalFromResult($results->get($enrollment->id), $config),
-                    'secciones' => $components->map(function ($component) use ($gradesByEnrollment, $enrollment, $config) {
+                    ...$presentResult($results->get($enrollment->id),
+                        $this->book->provisionalFromResult($results->get($enrollment->id), $config)),
+                    'secciones' => $components->map(function ($component) use ($gradesByEnrollment, $enrollment, $config, $presentResult) {
                         $result = $this->book->calculate(['mode' => $component->modo,
                             'inputs' => $component->actividades->map(fn ($activity) => [
                                 'weight' => $activity->peso,
                                 'value' => $gradesByEnrollment->get($enrollment->id, collect())->firstWhere('actividad_id', $activity->id)?->valor,
                             ])->all()], $config);
                         return ['componente_token' => PublicEval::token('componente-evaluacion', $component->id),
-                            ...PublicEval::result($result),
-                            'provisional' => $this->book->provisionalFromResult($result, $config)];
+                            ...$presentResult($result, $this->book->provisionalFromResult($result, $config))];
                     }),
                 ]),
             ]]);
@@ -341,6 +362,7 @@ class EvaluacionController extends Controller
             'notas' => ['required', 'array', 'min:1', 'max:1000'],
             'notas.*.actividad_id' => ['required', 'integer'], 'notas.*.matricula_id' => ['required', 'integer'],
             'notas.*.valor' => ['present', 'nullable', 'numeric', 'decimal:0,8'], 'notas.*.version' => ['required', 'integer', 'min:0'],
+            'notas.*.escala_opcion_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
             'notas.*.observacion' => ['nullable', 'string', 'max:1000'],
             'notas.*.motivo' => [$this->book->requiresReason($request->user(), AsignacionDocente::findOrFail($asignacion)) ? 'required' : 'nullable', 'string', 'min:3', 'max:500'],
         ]);

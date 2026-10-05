@@ -92,7 +92,8 @@ final class AcademicRecoveryService
             $recovery->fill([
                 'nota_recuperacion' => $grade, 'nota_manual' => $manual,
                 'valor_efectivo_exacto' => (string) $effective->simplified(),
-                'estado' => $effective->isGreaterThanOrEqualTo((string) $config['nota_minima']) ? 'aprobada' : 'no_aprobada',
+                'estado' => $this->calculator->result(['mode' => 'MANUAL', 'manual' => (string) $effective], $config)['aprobado']
+                    ? 'aprobada' : 'no_aprobada',
                 'motivo' => $reason, 'resolved_by' => $actor->id,
                 'version' => $recovery->version + 1,
             ])->save();

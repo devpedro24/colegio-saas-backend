@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\Academico\AcademicOptionsController;
 use App\Http\Controllers\Api\Academico\BloqueHorarioController;
 use App\Http\Controllers\Api\Academico\DatosInstitucionalesController;
 use App\Http\Controllers\Api\Academico\EscalaValorativaController;
+use App\Http\Controllers\Api\Academico\EscalaOpcionController;
 use App\Http\Controllers\Api\Academico\EspacioFisicoController;
 use App\Http\Controllers\Api\Academico\EvaluacionController;
 use App\Http\Controllers\Api\Academico\EventoController;
@@ -56,6 +57,10 @@ use Illuminate\Support\Facades\Route;
 
 Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
 Route::get('/catalogos-academicos', AcademicOptionsController::class);
+Route::get('/config/escalas/{escala}/opciones/{opcion}/imagen', [EscalaOpcionController::class, 'image'])->middleware([
+    ResolveAcademicRouteIdentifier::class.':escala,escala-valorativa',
+    ResolveAcademicRouteIdentifier::class.':opcion,escala-opcion',
+]);
 Route::get('/preinformes', [\App\Http\Controllers\Api\Academico\PreinformeController::class, 'index']);
 Route::put('/preinformes/{periodo}', [\App\Http\Controllers\Api\Academico\PreinformeController::class, 'save']);
 Route::put('/evaluacion/planillas/{asignacion}/{periodo}/actividades', [\App\Http\Controllers\Api\Academico\PlanillaActividadesController::class, 'save'])->middleware([
@@ -111,6 +116,11 @@ Route::middleware('can:academico.configurar')->prefix('config')->group(function 
     Route::post('/escalas', [EscalaValorativaController::class, 'store']);
     Route::put('/escalas/{id}', [EscalaValorativaController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,escala-valorativa');
     Route::delete('/escalas/{id}', [EscalaValorativaController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,escala-valorativa');
+    Route::put('/escalas/{escala}/opciones', [EscalaOpcionController::class, 'save'])->middleware(ResolveAcademicRouteIdentifier::class.':escala,escala-valorativa');
+    Route::post('/escalas/{escala}/opciones/{opcion}/imagen', [EscalaOpcionController::class, 'upload'])->middleware([
+        ResolveAcademicRouteIdentifier::class.':escala,escala-valorativa',
+        ResolveAcademicRouteIdentifier::class.':opcion,escala-opcion', 'throttle:school-uploads',
+    ]);
 
     Route::get('/metodos-aprobacion', [MetodoAprobacionController::class, 'index']);
     Route::post('/metodos-aprobacion', [MetodoAprobacionController::class, 'store']);

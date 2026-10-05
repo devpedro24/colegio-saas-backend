@@ -11,6 +11,7 @@ use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\EscalaValorativa;
+use App\Models\Academico\EscalaOpcion;
 use App\Models\Academico\EspacioFisico;
 use App\Models\Academico\Evento;
 use App\Models\Academico\Grado;
@@ -44,6 +45,7 @@ final class ResolveAcademicRouteIdentifier
         'bloque-horario' => BloqueHorario::class,
         'componente-evaluacion' => ComponenteEvaluacion::class,
         'escala-valorativa' => EscalaValorativa::class,
+        'escala-opcion' => EscalaOpcion::class,
         'espacio-fisico' => EspacioFisico::class,
         'evento' => Evento::class,
         'grado' => Grado::class,

@@ -29,7 +29,7 @@ class EscalaValorativaController extends Controller
         $yearId = $request->boolean('opaque')
             ? ConfigOpaqueData::year($request)->id
             : ($request->filled('ano_lectivo_id') ? (int) $request->query('ano_lectivo_id') : null);
-        $escalas = EscalaValorativa::query()
+        $escalas = EscalaValorativa::with('opciones')
             ->when($yearId !== null, fn ($q) => $q->where('ano_lectivo_id', $yearId))
             ->orderByDesc('ano_lectivo_id')
             ->orderBy('nivel_educativo')
@@ -50,6 +50,10 @@ class EscalaValorativaController extends Controller
 
         $prev = $existente?->only(array_keys($data));
 
+        if ($existente && ($existente->tipo !== $data['tipo'] || $existente->nivel_educativo !== ($data['nivel_educativo'] ?? null))
+            && \Illuminate\Support\Facades\DB::table('calificaciones')->whereIn('escala_opcion_id', $existente->opciones()->pluck('id'))->exists()) {
+            abort(422, 'La escala ya tiene valoraciones; no puedes cambiar su tipo ni nivel educativo.');
+        }
         $escala = EscalaValorativa::query()->updateOrCreate(
             [
                 'ano_lectivo_id' => $data['ano_lectivo_id'],
@@ -87,6 +91,11 @@ class EscalaValorativaController extends Controller
         }
 
         $prev = $escala->only(array_keys($data));
+        if (($escala->tipo !== $data['tipo'] || $escala->nivel_educativo !== ($data['nivel_educativo'] ?? null)
+            || $escala->ano_lectivo_id !== $data['ano_lectivo_id'])
+            && \Illuminate\Support\Facades\DB::table('calificaciones')->whereIn('escala_opcion_id', $escala->opciones()->pluck('id'))->exists()) {
+            abort(422, 'La escala ya tiene valoraciones; no puedes cambiar su tipo, nivel educativo ni año lectivo.');
+        }
         $escala->update($data);
 
         AuditLogger::tenant(
@@ -130,6 +139,10 @@ class EscalaValorativaController extends Controller
 
         if ($data['tipo'] === EscalaValorativa::TIPO_NUMERICA) {
             $data['decimales'] = SieeConfiguration::RESULT_DECIMALS;
+        } else {
+            $data['valor_min'] = null;
+            $data['valor_max'] = null;
+            $data['decimales'] = null;
         }
 
         return $data;
@@ -141,6 +154,9 @@ class EscalaValorativaController extends Controller
         $escala = EscalaValorativa::query()->findOrFail($id);
         $prev = $escala->only(['ano_lectivo_id', 'nivel_educativo', 'nombre', 'tipo', 'valor_min', 'valor_max', 'decimales']);
 
+        abort_if(\Illuminate\Support\Facades\DB::table('calificaciones')->whereIn('escala_opcion_id', $escala->opciones()->pluck('id'))->exists(),
+            422, 'No se puede eliminar una escala con valoraciones registradas.');
+        $escala->opciones()->delete();
         $escala->delete();
 
         AuditLogger::tenant(
@@ -161,9 +177,10 @@ class EscalaValorativaController extends Controller
 
     private function present(EscalaValorativa $escala): EscalaValorativa|array
     {
-        return request()->boolean('opaque')
-            ? ConfigOpaqueData::present($escala, 'escala-valorativa',
-                ['nombre', 'nivel_educativo', 'tipo', 'valor_min', 'valor_max', 'decimales'])
-            : $escala;
+        if (! request()->boolean('opaque')) return $escala->loadMissing('opciones');
+
+        return [...ConfigOpaqueData::present($escala, 'escala-valorativa',
+            ['nombre', 'nivel_educativo', 'tipo', 'valor_min', 'valor_max', 'decimales']),
+            'opciones' => $escala->opciones->map(EscalaOpcionController::present(...))->all()];
     }
 }

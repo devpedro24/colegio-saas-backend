@@ -11,6 +11,7 @@ use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\RecuperacionAcademica;
+use App\Models\Academico\Grupo;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
 use Brick\Math\BigDecimal;
@@ -71,6 +72,10 @@ final class GradebookService
             $period = $this->writable($assignment, $periodId);
             if ($period->configuracion_notas['usar_preinformes'] ?? false) app(AcademicPlanAccess::class)->requirePreinformes();
             $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));
+            $visualScale = app(EscalaVisualService::class)->forGroup(Grupo::findOrFail($assignment->grupo_id));
+            $visualChoices = $visualScale?->opciones->mapWithKeys(fn ($choice) => [
+                \App\Support\OpaqueUrlToken::for('escala-opcion', $choice->id) => $choice,
+            ]);
             $activities = DB::table('actividades_evaluacion as a')->join('componentes_evaluacion as c', 'c.id', '=', 'a.componente_id')
                 ->where('c.asignacion_id', $assignment->id)->where('c.periodo_id', $periodId)->pluck('a.id')->all();
             $enrollments = Matricula::where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')->pluck('id')->all();
@@ -80,15 +85,28 @@ final class GradebookService
                 abort_if(isset($seen[$key]), 422, 'La misma nota aparece más de una vez.');
                 $seen[$key] = true;
                 abort_unless(in_array($row['actividad_id'], $activities) && in_array($row['matricula_id'], $enrollments), 422, 'La actividad y el estudiante deben pertenecer a esta asignación.');
-                if ($row['valor'] !== null) {
-                    $value = BigDecimal::of((string) $row['valor']);
+                $choiceToken = $row['escala_opcion_token'] ?? null;
+                if ($visualScale) {
+                    abort_if($row['valor'] !== null, 422, 'En esta planilla selecciona una carita, no una nota numérica.');
+                    $choice = $choiceToken ? $visualChoices->get($choiceToken) : null;
+                    abort_if($choiceToken && ! $choice, 422, 'La categoría no pertenece a la escala del grupo.');
+                    $gradeValue = $choice?->valor_equivalente;
+                } else {
+                    abort_if($choiceToken, 422, 'Esta planilla usa notas numéricas.');
+                    $choice = null;
+                    $gradeValue = $row['valor'];
+                }
+                if ($gradeValue !== null) {
+                    $value = BigDecimal::of((string) $gradeValue);
                     abort_if($value->isLessThan($config['valor_min']) || $value->isGreaterThan($config['valor_max']), 422, 'La nota está fuera de la escala configurada.');
                 }
                 $grade = Calificacion::where('actividad_id', $row['actividad_id'])->where('matricula_id', $row['matricula_id'])->first();
                 abort_unless(($grade?->version ?? 0) === (int) $row['version'], 409, 'Otra persona modificó una nota. Recarga la planilla antes de guardar.');
                 $previous = $grade?->toArray();
                 $grade ??= new Calificacion(['actividad_id' => $row['actividad_id'], 'matricula_id' => $row['matricula_id']]);
-                $grade->fill(['valor' => $row['valor'], 'observacion' => $row['observacion'] ?? null, 'updated_by' => $actor->id, 'version' => ($grade->version ?? 0) + 1])->save();
+                $grade->fill(['valor' => $gradeValue, 'escala_opcion_id' => $choice?->id,
+                    'observacion' => $row['observacion'] ?? null, 'updated_by' => $actor->id,
+                    'version' => ($grade->version ?? 0) + 1])->save();
                 AuditLogger::tenant($actor, $previous ? 'UPDATE' : 'CREATE', 'calificacion', (string) $grade->id, $previous, $grade->toArray(), $row['motivo'] ?? null);
             }
         });
@@ -218,13 +236,96 @@ final class GradebookService
             }
         }
 
-        return ['tipo' => 'VISTA_PREVIA', 'generado_en' => now()->toIso8601String(), 'institucion' => tenant('name'),
+        $report = ['tipo' => 'VISTA_PREVIA', 'generado_en' => now()->toIso8601String(), 'institucion' => tenant('name'),
             'estudiante' => $enrollment->estudiante->only('id', 'name'), 'grupo' => $enrollment->grupo->nombre, 'grado' => $enrollment->grupo->grado->nombre,
             'ano' => $year->nombre, 'configuracion' => $config, 'periodos' => $periods->map->only(['id', 'nombre', 'peso', 'estado']),
             'periodo_sumatorio' => $year->periodo_sumatorio ? ['orden' => $year->num_periodos + 1, 'nombre' => 'P'.($year->num_periodos + 1), 'modo' => $config['modo_anual']] : null,
             'asignaturas' => $rows->values(), 'areas' => $areas,
             'advertencias' => $curriculum->keys()->diff($subjects->pluck('materia_id'))->isNotEmpty() ? ['Hay asignaturas del currículo sin asignación para este grupo; este informe no está completo.'] : [],
         ];
+        $visualScale = app(EscalaVisualService::class)->forGroup($enrollment->grupo);
+        if ($visualScale) {
+            $visual = app(EscalaVisualService::class);
+            $report['escala_visual'] = $visual->present($visualScale);
+            $decorateItem = function (array $item) use ($visual, $visualScale): array {
+                $item['periodos'] = array_map(
+                    fn (array $periodResult) => $visual->decorate($periodResult, $visualScale->opciones),
+                    $item['periodos'],
+                );
+                $item['anual'] = $visual->decorate($item['anual'], $visualScale->opciones);
+
+                return $item;
+            };
+            $report['asignaturas'] = $report['asignaturas']->map($decorateItem);
+            $report['areas'] = array_map($decorateItem, $report['areas']);
+        }
+
+        return $report;
+    }
+
+    /** Failure flags for one catalog page, using the bulletin's calculations with shared group reads. */
+    public function failedEnrollmentIds(Collection $enrollments): array
+    {
+        $failed = [];
+        foreach ($enrollments->groupBy(fn (Matricula $row) => $row->ano_lectivo_id.':'.$row->grupo_id) as $groupRows) {
+            $first = $groupRows->first();
+            $year = AnoLectivo::findOrFail($first->ano_lectivo_id);
+            $config = app(SieeConfiguration::class)->resolve($year);
+            $periods = Periodo::where('ano_lectivo_id', $year->id)->orderBy('orden')->get();
+            $assignments = AsignacionDocente::where('ano_lectivo_id', $year->id)
+                ->where('grupo_id', $first->grupo_id)->get();
+            if ($assignments->isEmpty()) {
+                continue;
+            }
+            $components = ComponenteEvaluacion::with('actividades')
+                ->whereIn('asignacion_id', $assignments->modelKeys())
+                ->whereIn('periodo_id', $periods->modelKeys())->get()
+                ->groupBy(fn (ComponenteEvaluacion $item) => $item->asignacion_id.':'.$item->periodo_id);
+            $activityIds = $components->flatten(1)->flatMap(fn (ComponenteEvaluacion $item) => $item->actividades->modelKeys());
+            $grades = Calificacion::whereIn('matricula_id', $groupRows->pluck('id'))
+                ->whereIn('actividad_id', $activityIds)->get()->groupBy('matricula_id');
+            $recoveries = RecuperacionAcademica::whereIn('matricula_id', $groupRows->pluck('id'))
+                ->where('ano_lectivo_id', $year->id)
+                ->whereIn('asignacion_id', $assignments->modelKeys())
+                ->whereIn('estado', ['aprobada', 'no_aprobada'])->get()->groupBy('matricula_id');
+            $periodConfigs = $periods->mapWithKeys(fn (Periodo $period) => [
+                $period->id => $this->periodConfig($config, $period),
+            ]);
+            $visualScale = app(EscalaVisualService::class)->forGroup($first->grupo);
+            $visual = app(EscalaVisualService::class);
+
+            foreach ($groupRows as $enrollment) {
+                $studentGrades = ($grades->get($enrollment->id) ?? collect())->keyBy('actividad_id');
+                $studentRecoveries = ($recoveries->get($enrollment->id) ?? collect())
+                    ->keyBy(fn (RecuperacionAcademica $item) => $item->asignacion_id.':'.$item->alcance);
+                foreach ($assignments as $assignment) {
+                    $results = [];
+                    foreach ($periods as $period) {
+                        $original = $this->resultFromLoaded(
+                            $components->get($assignment->id.':'.$period->id, collect()),
+                            $studentGrades, $periodConfigs[$period->id],
+                        );
+                        $result = $this->applyRecovery($original,
+                            $studentRecoveries->get($assignment->id.':periodo:'.$period->id), $config);
+                        $results[] = ['periodo_id' => $period->id, ...$result];
+                        $shown = $visualScale ? $visual->decorate($result, $visualScale->opciones) : $result;
+                        if ($shown['estado'] === 'calculado' && ! $shown['aprobado']) {
+                            $failed[$enrollment->id] = true;
+                            break 2;
+                        }
+                    }
+                    $annual = $this->applyRecovery($this->annual($results, $periods, $year, $config),
+                        $studentRecoveries->get($assignment->id.':anual'), $config);
+                    $shownAnnual = $visualScale ? $visual->decorate($annual, $visualScale->opciones) : $annual;
+                    if ($shownAnnual['estado'] === 'calculado' && ! $shownAnnual['aprobado']) {
+                        $failed[$enrollment->id] = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        return array_keys($failed);
     }
 
     private function annual(array $results, $periods, AnoLectivo $year, array $config): array

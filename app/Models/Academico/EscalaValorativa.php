@@ -6,6 +6,7 @@ namespace App\Models\Academico;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
@@ -58,5 +59,10 @@ class EscalaValorativa extends Model
     public function anoLectivo(): BelongsTo
     {
         return $this->belongsTo(\App\Models\Academico\AnoLectivo::class, 'ano_lectivo_id');
+    }
+
+    public function opciones(): HasMany
+    {
+        return $this->hasMany(EscalaOpcion::class, 'escala_id')->orderBy('orden');
     }
 }

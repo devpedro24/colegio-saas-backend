@@ -160,13 +160,14 @@ final class RecuperacionAcademicaController extends Controller
             foreach ($subject['periodos'] as $result) {
                 $period = $periods->get($result['periodo_id']);
                 $scope = $assignment->id.':periodo:'.$result['periodo_id'];
-                if ($period && $period['estado'] === Periodo::ESTADO_CERRADO
+                if ($period && in_array($period['estado'], [Periodo::ESTADO_ABIERTO, Periodo::ESTADO_CERRADO], true)
                     && $result['estado'] === 'calculado' && ! $result['aprobado']
                     && ! isset($existing[$scope])) {
                     $candidates[] = ['asignacion_token' => OpaqueUrlToken::for('asignacion-docente', $assignment->id),
                         'periodo_token' => OpaqueUrlToken::for('periodo', $result['periodo_id']),
                         'materia' => $subject['nombre'], 'periodo' => $period['nombre'],
-                        'valor_original' => $result['display_value'], 'tipo' => 'nivelacion'];
+                        'valor_original' => $result['display_value'], 'tipo' => 'nivelacion',
+                        'puede_abrir' => $period['estado'] === Periodo::ESTADO_CERRADO];
                 }
             }
             $scope = $assignment->id.':anual';
@@ -175,7 +176,7 @@ final class RecuperacionAcademicaController extends Controller
                 $candidates[] = ['asignacion_token' => OpaqueUrlToken::for('asignacion-docente', $assignment->id),
                     'periodo_token' => null, 'materia' => $subject['nombre'],
                     'periodo' => null, 'valor_original' => $subject['anual']['display_value'],
-                    'tipo' => 'habilitacion'];
+                    'tipo' => 'habilitacion', 'puede_abrir' => true];
             }
         }
 

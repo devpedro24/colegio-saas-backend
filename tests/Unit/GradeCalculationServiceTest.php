@@ -50,6 +50,20 @@ class GradeCalculationServiceTest extends TestCase
         $this->assertSame('63/20', $exact['exact_value']);
     }
 
+    public function test_passing_threshold_uses_the_published_grade_without_changing_the_exact_value(): void
+    {
+        $service = new GradeCalculationService;
+        $config = ['nota_minima' => '3.00', 'decimales' => 1, 'precision_calculo' => 8, 'redondeo' => 'HALF_DOWN'];
+        foreach (['2.94' => ['2.9', false], '2.95' => ['2.9', false],
+            '2.974' => ['3.0', true], '3.00' => ['3.0', true]] as $value => [$display, $passing]) {
+            $result = $service->result(['mode' => 'MANUAL', 'manual' => (string) $value], $config);
+            $this->assertSame($display, $result['display_value']);
+            $this->assertSame($passing, $result['aprobado']);
+        }
+        $this->assertSame('1487/500', $service->result(
+            ['mode' => 'MANUAL', 'manual' => '2.974'], $config)['exact_value']);
+    }
+
     public function test_weights_must_total_one_hundred_and_missing_values_are_not_zero(): void
     {
         $this->expectException(ValidationException::class);

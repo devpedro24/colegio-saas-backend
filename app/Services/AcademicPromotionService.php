@@ -118,17 +118,19 @@ final class AcademicPromotionService
                 ])->all()];
         })->sortBy('id')->values()->all();
         $average = $sum->dividedBy($units->count());
-        $averageOk = $policy->promedio_minimo === null
-            || $average->isGreaterThanOrEqualTo($policy->promedio_minimo);
-        $generalOk = $method->ambito !== MetodoAprobacion::AMBITO_PROMEDIO_GENERAL
-            || $average->isGreaterThanOrEqualTo((string) $config['nota_minima']);
-        $promoted = $failed->count() <= $policy->max_reprobadas
-            && $mandatoryFailed->isEmpty() && $averageOk && $generalOk;
         $rounding = match ($config['redondeo'] ?? 'HALF_DOWN') {
             'HALF_DOWN' => RoundingMode::HalfDown,
             'TRUNCATE' => RoundingMode::Down,
             default => RoundingMode::HalfUp,
         };
+        $displayAverage = (string) $average->toScale((int) $config['decimales'], $rounding);
+        $publishedAverage = BigRational::of($displayAverage);
+        $averageOk = $policy->promedio_minimo === null
+            || $publishedAverage->isGreaterThanOrEqualTo($policy->promedio_minimo);
+        $generalOk = $method->ambito !== MetodoAprobacion::AMBITO_PROMEDIO_GENERAL
+            || $publishedAverage->isGreaterThanOrEqualTo((string) $config['nota_minima']);
+        $promoted = $failed->count() <= $policy->max_reprobadas
+            && $mandatoryFailed->isEmpty() && $averageOk && $generalOk;
         $snapshot = [
             'ano_lectivo_id' => $year->id, 'matricula_id' => $enrollment->id,
             'politica_version' => $policy->version, 'ambito' => $method->ambito,
@@ -147,7 +149,7 @@ final class AcademicPromotionService
             'ambito' => $method->ambito, 'reprobadas' => $failed->pluck($scope.'_id')->all(),
             'obligatorias_reprobadas' => $mandatoryFailed->pluck('materia_id')->all(),
             'promedio_exacto' => (string) $average->simplified(),
-            'promedio' => (string) $average->toScale((int) $config['decimales'], $rounding),
+            'promedio' => $displayAverage,
             'promedio_cumple' => $averageOk && $generalOk,
             'huella' => hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)),
             'insumos' => $snapshot];

@@ -64,7 +64,9 @@ final class GradeCalculationService
             'raw_value' => (string) $value->toScale((int) ($config['precision_calculo'] ?? 8), RoundingMode::HalfUp),
             'exact_value' => (string) $value->simplified(),
             'display_value' => $display,
-            'aprobado' => $value->isGreaterThanOrEqualTo($threshold),
+            // La decisión académica debe coincidir con la nota definitiva publicada.
+            // Se conserva el valor exacto para cálculos posteriores y auditoría.
+            'aprobado' => BigRational::of($display)->isGreaterThanOrEqualTo($threshold),
             'calculation_version' => self::VERSION,
             'trace' => $node,
         ];

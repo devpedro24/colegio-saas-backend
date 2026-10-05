@@ -23,7 +23,7 @@ final class AcademicTokenIndex
         'recuperaciones_academicas' => ['recuperacion-academica'],
         'promociones_academicas' => ['promocion-academica'],
         'preinformes' => ['preinforme'],
-        'escalas_valorativas' => ['escala-valorativa'], 'metodos_aprobacion' => ['metodo-aprobacion'],
+        'escalas_valorativas' => ['escala-valorativa'], 'escala_opciones' => ['escala-opcion'], 'metodos_aprobacion' => ['metodo-aprobacion'],
         'modelos_pedagogicos' => ['modelo-pedagogico'], 'users' => ['usuario', 'docente'],
     ];
 

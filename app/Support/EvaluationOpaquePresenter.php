@@ -96,11 +96,13 @@ final class EvaluationOpaquePresenter
             'nombre' => $activity->nombre, 'fecha' => $activity->fecha, 'peso' => $activity->peso, 'version' => $activity->version];
     }
 
-    public static function grade(Calificacion $grade): array
+    public static function grade(Calificacion $grade, bool $visual = false): array
     {
         return ['matricula_token' => self::token('matricula', $grade->matricula_id),
             'actividad_token' => self::token('actividad-evaluacion', $grade->actividad_id),
-            'valor' => $grade->valor, 'observacion' => $grade->observacion,
+            'valor' => $visual ? null : $grade->valor,
+            'escala_opcion_token' => self::token('escala-opcion', $grade->escala_opcion_id),
+            'observacion' => $grade->observacion,
             'version' => $grade->version];
     }
 
@@ -115,8 +117,15 @@ final class EvaluationOpaquePresenter
             'metodo_token' => self::token('metodo-aprobacion', $methodId)];
     }
 
-    public static function result(array $result): array
+    public static function result(array $result, bool $visual = false): array
     {
+        if ($visual) {
+            unset($result['raw_value'], $result['exact_value'], $result['display_value'], $result['trace']);
+            if (isset($result['resultado_original']) && is_array($result['resultado_original'])) {
+                $result['resultado_original'] = self::result($result['resultado_original'], true);
+            }
+            return $result;
+        }
         // Preserve the engine's rounding and exact arithmetic; only remove
         // presentation padding at the public decimal boundary.
         foreach (['raw_value', 'display_value'] as $field) {
@@ -137,12 +146,15 @@ final class EvaluationOpaquePresenter
     public static function report(array $report): array
     {
         $student = $report['estudiante'];
+        $visual = isset($report['escala_visual']);
         $public = [
             'tipo' => $report['tipo'], 'generado_en' => $report['generado_en'],
             'institucion' => $report['institucion'],
-            'estudiante' => ['url_token' => self::token('usuario', $student['id']), 'name' => $student['name']],
+            'estudiante' => ['url_token' => self::token('usuario', $student['id']), 'name' => $student['name'],
+                'nombre_lista' => StudentRosterName::display($student['name'])],
             'grupo' => $report['grupo'], 'grado' => $report['grado'], 'ano' => $report['ano'],
             'configuracion' => self::config($report['configuracion']),
+            'escala_visual' => $report['escala_visual'] ?? null,
             'periodos' => collect($report['periodos'])->map(fn ($period) => [
                 'url_token' => self::token('periodo', $period['id']),
                 'nombre' => $period['nombre'], 'peso' => $period['peso'], 'estado' => $period['estado'],
@@ -152,13 +164,13 @@ final class EvaluationOpaquePresenter
                 'materia_token' => self::token('materia', $subject['materia_id']),
                 'nombre' => $subject['nombre'], 'area_token' => self::token('area', $subject['area_id']),
                 'peso_area' => $subject['peso_area'],
-                'periodos' => array_map(self::resultWithPeriod(...), $subject['periodos']),
-                'anual' => self::result($subject['anual']),
+                'periodos' => array_map(fn ($item) => self::resultWithPeriod($item, $visual), $subject['periodos']),
+                'anual' => self::result($subject['anual'], $visual),
             ])->all(),
             'areas' => collect($report['areas'])->map(fn ($area) => [
                 'area_token' => self::token('area', $area['area_id']), 'nombre' => $area['nombre'],
-                'periodos' => array_map(self::resultWithPeriod(...), $area['periodos']),
-                'anual' => self::result($area['anual']),
+                'periodos' => array_map(fn ($item) => self::resultWithPeriod($item, $visual), $area['periodos']),
+                'anual' => self::result($area['anual'], $visual),
             ])->all(),
             'advertencias' => $report['advertencias'],
         ];
@@ -166,12 +178,12 @@ final class EvaluationOpaquePresenter
         return $public;
     }
 
-    private static function resultWithPeriod(array $result): array
+    private static function resultWithPeriod(array $result, bool $visual = false): array
     {
         $periodId = $result['periodo_id'];
         unset($result['periodo_id']);
 
-        return ['periodo_token' => self::token('periodo', $periodId), ...self::result($result)];
+        return ['periodo_token' => self::token('periodo', $periodId), ...self::result($result, $visual)];
     }
 
     private static function trace(array $trace): array
