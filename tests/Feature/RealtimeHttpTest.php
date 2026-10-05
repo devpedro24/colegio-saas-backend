@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Events\ApplicationChanged;
 use App\Events\PlatformDataChanged;
 use App\Jobs\SynchronizeTenantPermissions;
+use App\Http\Middleware\EnsureOnboardingComplete;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\TenantProvisioner;
@@ -49,6 +50,12 @@ class RealtimeHttpTest extends TestCase
         $this->withToken($token)->postJson('http://'.$tenant->slug.'.localhost/api/broadcasting/auth', $channel)
             ->assertOk()->assertJsonStructure(['auth']);
         $this->getJson('http://'.$tenant->slug.'.localhost/api/onboarding/status')->assertOk();
+        $this->getJson('http://'.$tenant->slug.'.localhost/api/me')->assertOk();
+        // Esta prueba cubre lecturas autenticadas aun si la cuenta de provisionamiento
+        // todavia no completa el onboarding institucional.
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->getJson('http://'.$tenant->slug.'.localhost/api/estructura/sedes?opaque=1')->assertOk();
+        $this->getJson('http://'.$tenant->slug.'.localhost/api/evaluacion/catalogo?vista=matriculas&opaque=1')->assertOk();
         Event::assertNotDispatched(ApplicationChanged::class);
         $this->postJson('http://'.$tenant->slug.'.localhost/api/broadcasting/auth', [...$channel, 'channel_name' => 'private-tenant.another'])
             ->assertForbidden();

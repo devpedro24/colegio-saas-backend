@@ -19,8 +19,14 @@ if (($input['action'] ?? '') === 'channel') {
         ->authorizeChannel($input['channel_name'], $input['socket_id']);
 } elseif (($input['action'] ?? '') === 'publish') {
     config(['queue.default' => 'sync']); // Isolated transport test: no real job or database writes.
-    App\Events\ApplicationChanged::dispatch('smoke', $input['resources'] ?? ['all']);
-    echo json_encode(['published' => true]);
+    $count = $input['count'] ?? 1;
+    if (! is_int($count) || $count < 1 || $count > 50) {
+        throw new RuntimeException('Invalid isolated broadcast count.');
+    }
+    for ($i = 0; $i < $count; $i++) {
+        App\Events\ApplicationChanged::dispatch('smoke', $input['resources'] ?? ['all']);
+    }
+    echo json_encode(['published' => $count]);
 } else {
     throw new RuntimeException('Unknown probe action.');
 }
