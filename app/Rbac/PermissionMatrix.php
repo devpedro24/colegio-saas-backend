@@ -105,10 +105,26 @@ class PermissionMatrix
             ['key' => 'notas.coordinar_cierre_periodo', 'module' => 'Notas y Consolidados', 'action' => 'Coordinar cierre de periodo', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar']],
             ['key' => 'notas.gestionar_nivelaciones', 'module' => 'Notas y Consolidados', 'action' => 'Gestionar nivelaciones / habilitaciones', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar']],
 
+            // ---- Aula (plan Estándar/Premium, revocable por matriz) ----
+            ['key' => 'aula.ver_todas', 'module' => 'Aula', 'action' => 'Consultar aulas de todos los grupos', 'feature' => 'aula', 'cells' => ['rector' => 'ver', 'coord_academico' => self::CONFIGURABLE_ON, 'coord_combinado' => self::CONFIGURABLE_ON]],
+            ['key' => 'aula.ver_asignadas', 'module' => 'Aula', 'action' => 'Consultar aulas de materias asignadas', 'feature' => 'aula', 'cells' => ['docente' => 'ver', 'director_grupo' => 'ver']],
+            ['key' => 'aula.ver_propias', 'module' => 'Aula', 'action' => 'Consultar aulas de matrícula propia', 'feature' => 'aula', 'cells' => ['estudiante' => 'ver']],
+            ['key' => 'aula.recursos.gestionar', 'module' => 'Aula', 'action' => 'Crear, editar y publicar recursos en aulas autorizadas', 'feature' => 'aula', 'cells' => ['rector' => 'editar', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'aula.entregas.calificar', 'module' => 'Aula', 'action' => 'Revisar y calificar entregas de aulas autorizadas', 'feature' => 'aula', 'cells' => ['rector' => 'editar', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'aula.entregas.enviar', 'module' => 'Aula', 'action' => 'Enviar tareas propias', 'feature' => 'aula', 'cells' => ['estudiante' => 'editar']],
+            ['key' => 'aula.evaluaciones.gestionar', 'module' => 'Aula', 'action' => 'Crear y publicar cuestionarios en aulas autorizadas', 'feature' => 'aula', 'cells' => ['rector' => 'editar', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'aula.evaluaciones.responder', 'module' => 'Aula', 'action' => 'Responder cuestionarios propios', 'feature' => 'aula', 'cells' => ['estudiante' => 'editar']],
+            ['key' => 'aula.intentos.reactivar', 'module' => 'Aula', 'action' => 'Reactivar intentos de evaluación bloqueados', 'feature' => 'aula', 'cells' => ['rector' => 'editar', 'docente' => self::CONFIGURABLE_ON, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'aula.configurar', 'module' => 'Aula', 'action' => 'Configurar políticas institucionales del Aula', 'feature' => 'aula', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+
             // ---- Asistencia ----
             ['key' => 'asistencia.registrar_clases', 'module' => 'Asistencia', 'action' => 'Registrar asistencia en sus clases', 'cells' => ['rector' => 'editar', 'docente' => 'editar', 'director_grupo' => 'editar']],
             ['key' => 'asistencia.consultar_grupo', 'module' => 'Asistencia', 'action' => 'Consultar asistencia del grupo dirigido', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_combinado' => 'ver', 'director_grupo' => 'ver']],
             ['key' => 'asistencia.consultar_propia', 'module' => 'Asistencia', 'action' => 'Consultar asistencia propia / del estudiante', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_convivencia' => 'ver', 'coord_combinado' => 'ver', 'secretaria' => 'ver', 'estudiante' => 'ver']],
+            ['key' => 'asistencia.configurar_politica', 'module' => 'Asistencia', 'action' => 'Configurar umbrales de inasistencia', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'asistencia.justificar_propia', 'module' => 'Asistencia', 'action' => 'Presentar justificación de inasistencias propias', 'cells' => ['estudiante' => 'c']],
+            ['key' => 'asistencia.correccion.solicitar', 'module' => 'Asistencia', 'action' => 'Solicitar corrección de inasistencias de sus clases', 'cells' => ['rector' => 'c', 'docente' => 'c', 'director_grupo' => 'c', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'asistencia.correccion.aprobar', 'module' => 'Asistencia', 'action' => 'Aprobar o rechazar correcciones de inasistencia', 'cells' => ['rector' => 'aprobar', 'secretaria' => self::CONFIGURABLE, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
 
             // ---- Convivencia y Observador ----
             ['key' => 'observador.registrar_academico', 'module' => 'Convivencia y Observador', 'action' => 'Registrar observacion academica en su materia', 'cells' => ['rector' => 'editar', 'docente' => 'editar', 'director_grupo' => 'editar']],

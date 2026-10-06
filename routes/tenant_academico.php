@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\Academico\AnoLectivoController;
 use App\Http\Controllers\Api\Academico\AsistenciaController;
+use App\Http\Controllers\Api\Academico\AsistenciaCorreccionController;
+use App\Http\Controllers\Api\Academico\AulaController;
+use App\Http\Controllers\Api\Academico\AulaArchivoController;
+use App\Http\Controllers\Api\Academico\AulaCuestionarioController;
 use App\Http\Controllers\Api\Academico\AcademicOptionsController;
 use App\Http\Controllers\Api\Academico\BloqueHorarioController;
 use App\Http\Controllers\Api\Academico\DatosInstitucionalesController;
@@ -68,6 +72,40 @@ Route::put('/evaluacion/planillas/{asignacion}/{periodo}/actividades', [\App\Htt
     ResolveAcademicRouteIdentifier::class.':asignacion,asignacion-docente',
     ResolveAcademicRouteIdentifier::class.':periodo,periodo',
 ]);
+Route::prefix('aula')->controller(AulaController::class)->group(function () {
+    Route::get('/catalogo', 'catalogo');
+    Route::post('/', 'crear');
+    Route::get('/{aulaToken}', 'ver');
+    Route::post('/{aulaToken}/secciones', 'crearSeccion');
+    Route::put('/secciones/{token}', 'editarSeccion');
+    Route::post('/secciones/{sectionToken}/recursos', 'crearRecurso');
+    Route::get('/recursos/{token}', 'verRecurso');
+    Route::put('/recursos/{token}', 'editarRecurso');
+    Route::post('/recursos/{token}/entregas', 'entregar');
+    Route::get('/recursos/{resourceToken}/entregas', 'entregas');
+    Route::put('/entregas/{token}/calificar', 'calificar');
+});
+Route::prefix('aula')->controller(AulaCuestionarioController::class)->group(function () {
+    Route::put('/recursos/{token}/preguntas', 'guardarPreguntas');
+    Route::get('/recursos/{token}/mi-intento', 'miIntento');
+    Route::post('/recursos/{token}/intentos', 'iniciar');
+    Route::get('/recursos/{resourceToken}/intentos', 'intentos');
+    Route::get('/intentos/{token}', 'verIntento');
+    Route::put('/intentos/{token}/respuestas', 'guardarRespuestas');
+    Route::put('/intentos/{token}/pagina', 'cambiarPagina');
+    Route::post('/intentos/{token}/finalizar', 'finalizar');
+    Route::post('/intentos/{token}/incidentes', 'incidente');
+    Route::post('/intentos/{token}/reactivar', 'reactivar');
+    Route::put('/intentos/{token}/calificar', 'calificar');
+});
+Route::prefix('aula')->controller(AulaArchivoController::class)->group(function () {
+    Route::post('/{token}/portada', 'subirPortada')->middleware('throttle:school-uploads');
+    Route::get('/{token}/portada', 'descargarPortada');
+    Route::post('/recursos/{token}/adjuntos', 'subirRecurso')->middleware('throttle:school-uploads');
+    Route::post('/entregas/{token}/adjuntos', 'subirEntrega')->middleware('throttle:school-uploads');
+    Route::get('/adjuntos/{token}/imagen', 'verImagen');
+    Route::get('/adjuntos/{token}', 'descargar');
+});
 
 // Años lectivos y periodos: permiso 'academico.anos.gestionar'.
 Route::middleware('can:academico.anos.gestionar')->group(function () {
@@ -76,6 +114,8 @@ Route::middleware('can:academico.anos.gestionar')->group(function () {
     Route::post('/anos-lectivos/{id}/duplicar', [AnoLectivoController::class, 'duplicar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
     Route::post('/anos-lectivos/{id}/copiar-configuracion', [AnoLectivoController::class, 'copiarConfiguracion'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
     Route::get('/anos-lectivos/{id}/estado-copia', [AnoLectivoController::class, 'estadoCopia'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
+    Route::get('/anos-lectivos/{id}/resumen-duplicacion', [AnoLectivoController::class, 'resumenDuplicacion'])
+        ->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
     Route::get('/anos-lectivos/{id}', [AnoLectivoController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
     Route::put('/anos-lectivos/{id}', [AnoLectivoController::class, 'update'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
     Route::delete('/anos-lectivos/{id}', [AnoLectivoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
@@ -112,6 +152,8 @@ Route::middleware('can:academico.configurar')->prefix('config')->group(function 
 
     Route::get('/datos-institucionales', [DatosInstitucionalesController::class, 'show']);
     Route::put('/datos-institucionales', [DatosInstitucionalesController::class, 'update']);
+    Route::get('/zona-horaria', [DatosInstitucionalesController::class, 'zonaHoraria']);
+    Route::put('/zona-horaria', [DatosInstitucionalesController::class, 'guardarZonaHoraria']);
 
     Route::get('/escalas', [EscalaValorativaController::class, 'index']);
     Route::post('/escalas', [EscalaValorativaController::class, 'store']);
@@ -209,11 +251,17 @@ Route::post('/archivos', [StorageController::class, 'store'])
 
 Route::get('/horarios', [HorarioController::class, 'index'])->middleware(ResolveAcademicInputIdentifiers::class);
 Route::get('/asistencias', [AsistenciaController::class, 'index']);
+Route::get('/asistencias/planilla', [AsistenciaController::class, 'sheet']);
 Route::put('/asistencias', [AsistenciaController::class, 'save']);
 Route::get('/asistencias/politica/{ano}', [AsistenciaController::class, 'policy'])
     ->middleware(ResolveAcademicRouteIdentifier::class.':ano,ano-lectivo');
 Route::put('/asistencias/politica/{ano}', [AsistenciaController::class, 'savePolicy'])
     ->middleware(ResolveAcademicRouteIdentifier::class.':ano,ano-lectivo');
+Route::get('/asistencias/mis-faltas', [AsistenciaCorreccionController::class, 'ownAbsences']);
+Route::get('/asistencias/solicitudes', [AsistenciaCorreccionController::class, 'index']);
+Route::post('/asistencias/solicitudes', [AsistenciaCorreccionController::class, 'store']);
+Route::put('/asistencias/solicitudes/{token}/revision-docente', [AsistenciaCorreccionController::class, 'review']);
+Route::put('/asistencias/solicitudes/{token}/resolucion', [AsistenciaCorreccionController::class, 'resolve']);
 Route::middleware(ResolveAcademicInputIdentifiers::class)->prefix('evaluacion')->controller(EvaluacionController::class)->group(function () {
     Route::get('/catalogo', 'catalogo');
     Route::post('/matriculas', 'matricular');
