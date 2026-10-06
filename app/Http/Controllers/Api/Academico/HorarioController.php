@@ -247,6 +247,35 @@ class HorarioController extends Controller
             ? ScheduleOpaquePresenter::assignment($assignment) : $assignment], $wasCreated ? 201 : 200);
     }
 
+    /** Un docente para todas las materias del currículo de un grupo, sin recrear asignaciones ni notas. */
+    public function asignarGrupo(Request $request, AsignacionHorarioService $service): JsonResponse
+    {
+        $data = $request->validate([
+            'ano_lectivo_id' => ['required', 'integer', 'exists:anos_lectivos,id'],
+            'grupo_id' => ['required', 'integer', 'exists:grupos,id'],
+            'docente_id' => ['required', 'integer', 'exists:users,id'],
+        ]);
+        $count = DB::transaction(function () use ($data, $request, $service): int {
+            $year = AnoLectivo::lockForUpdate()->findOrFail($data['ano_lectivo_id']);
+            abort_if($year->estaCerrado(), 422, 'El año lectivo está cerrado.');
+            $group = Grupo::with('grado')->findOrFail($data['grupo_id']);
+            abort_unless($group->ano_lectivo_id === $year->id && $group->grado?->ano_lectivo_id === $year->id
+                && $group->estaActivo(), 422, 'El grupo debe estar activo y pertenecer al año seleccionado.');
+            $subjectIds = DB::table('materias_curriculares')->where('ano_lectivo_id', $year->id)
+                ->where('grado_id', $group->grado_id)->pluck('materia_id');
+            $subjects = Materia::where('ano_lectivo_id', $year->id)->where('estado', 'activo')
+                ->whereIn('id', $subjectIds)->get();
+            abort_if($subjects->isEmpty(), 422, 'Configura primero el currículo de este grado.');
+            foreach ($subjects as $subject) {
+                $service->guardar($group, $subject, $data['docente_id'], $request->user());
+            }
+
+            return $subjects->count();
+        });
+
+        return response()->json(['data' => ['asignaturas_actualizadas' => $count]]);
+    }
+
     public function editarAsignacion(Request $request, int $id, AsignacionHorarioService $service, HorarioService $horarios): JsonResponse
     {
         $data = $request->validate([
@@ -269,6 +298,8 @@ class HorarioController extends Controller
 
             $changed = $assignment->grupo_id != $group->id || $assignment->materia_id != $subject->id;
             if ($changed) {
+                abort_if(DB::table('asistencia_clases')->where('asignacion_id', $id)->exists(), 422,
+                    'La asignación tiene asistencias históricas. Crea una asignación para el nuevo grupo o asignatura.');
                 abort_if(ComponenteEvaluacion::where('asignacion_id', $id)->exists(), 422,
                     'La asignación tiene evaluaciones asociadas. No se puede cambiar su grupo o asignatura.');
                 abort_if(AsignacionDocente::where('ano_lectivo_id', $year->id)->where('grupo_id', $group->id)
@@ -311,6 +342,8 @@ class HorarioController extends Controller
             $year = AnoLectivo::lockForUpdate()->findOrFail($assignment->ano_lectivo_id);
             abort_if($year->estaCerrado(), 422, 'El año lectivo está cerrado.');
             abort_if(ComponenteEvaluacion::where('asignacion_id', $id)->exists(), 422, 'La asignación tiene evaluación asociada y debe conservarse.');
+            abort_if(DB::table('asistencia_clases')->where('asignacion_id', $id)->exists(), 422,
+                'La asignación tiene asistencias históricas y debe conservarse.');
             abort_if(SesionHorario::where('grupo_id', $assignment->grupo_id)
                 ->where('materia_id', $assignment->materia_id)->exists(), 422, 'La asignación tiene clases programadas. Elimínalas antes de borrar la asignación.');
             AuditLogger::tenant($request->user(), 'DELETE', 'asignacion_docente', (string) $id, $assignment->toArray());

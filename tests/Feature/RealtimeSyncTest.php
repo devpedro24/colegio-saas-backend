@@ -137,7 +137,7 @@ class RealtimeSyncTest extends TestCase
     public function test_all_current_action_modules_have_an_invalidation_topic(): void
     {
         foreach (['anos-lectivos' => 'academic', 'periodos' => 'academic', 'estructura' => 'structure',
-            'plan-estudios' => 'curriculum', 'horarios' => 'schedule', 'evaluacion' => 'evaluation',
+            'plan-estudios' => 'curriculum', 'horarios' => 'schedule', 'asistencias' => 'attendance', 'evaluacion' => 'evaluation',
             'siee' => 'academic-config', 'eventos' => 'events', 'onboarding' => 'institution',
             'usuarios' => 'users', 'rbac' => 'rbac', 'colegios' => 'schools', 'plans' => 'plans',
             'account' => 'account', 'storage' => 'storage', 'future-module' => 'all'] as $path => $resource) {

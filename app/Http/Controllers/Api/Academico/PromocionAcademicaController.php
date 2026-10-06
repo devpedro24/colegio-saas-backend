@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Grado;
+use App\Models\Academico\Grupo;
 use App\Models\Academico\Materia;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\PoliticaPromocion;
@@ -29,9 +30,14 @@ final class PromocionAcademicaController extends Controller
     {
         $this->authorizeReviewer($request);
         $year = AnoLectivo::findOrFail($ano);
+        $group = $request->filled('grupo_token')
+            ? OpaqueUrlToken::find('grupo', $request->query('grupo_token'), Grupo::where('ano_lectivo_id', $year->id))
+            : null;
+        abort_if($request->filled('grupo_token') && ! $group, 404);
         $policy = PoliticaPromocion::where('ano_lectivo_id', $year->id)->first();
         $page = $this->paginateAcademic(Matricula::with(['estudiante:id,name', 'grupo.grado'])
-            ->where('ano_lectivo_id', $year->id)->where('estado', 'activa')->orderBy('id'), $request);
+            ->where('ano_lectivo_id', $year->id)->where('estado', 'activa')
+            ->when($group, fn ($q) => $q->where('grupo_id', $group->id))->orderBy('id'), $request);
         $decisions = PromocionAcademica::where('ano_lectivo_id', $year->id)
             ->whereIn('matricula_id', $page->getCollection()->modelKeys())
             ->get()->keyBy('matricula_id');
@@ -76,6 +82,11 @@ final class PromocionAcademicaController extends Controller
             'grados' => Grado::where('ano_lectivo_id', $year->id)->where('estado', 'activo')
                 ->orderBy('nombre')->get(['id', 'nombre'])->map(fn (Grado $item) => [
                     'token' => OpaqueUrlToken::for('grado', $item->id), 'nombre' => $item->nombre,
+                ]),
+            'grupos' => Grupo::with('grado:id,nombre')->where('ano_lectivo_id', $year->id)
+                ->orderBy('grado_id')->orderBy('nombre')->get()->map(fn (Grupo $item) => [
+                    'token' => OpaqueUrlToken::for('grupo', $item->id),
+                    'nombre' => $item->grado->nombre.' / ('.$item->nombre.')',
                 ]),
         ]);
     }

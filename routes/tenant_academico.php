@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\Academico\AnoLectivoController;
+use App\Http\Controllers\Api\Academico\AsistenciaController;
 use App\Http\Controllers\Api\Academico\AcademicOptionsController;
 use App\Http\Controllers\Api\Academico\BloqueHorarioController;
 use App\Http\Controllers\Api\Academico\DatosInstitucionalesController;
@@ -207,6 +208,12 @@ Route::post('/archivos', [StorageController::class, 'store'])
     ->middleware(['can:archivos.subir', 'throttle:school-uploads']);
 
 Route::get('/horarios', [HorarioController::class, 'index'])->middleware(ResolveAcademicInputIdentifiers::class);
+Route::get('/asistencias', [AsistenciaController::class, 'index']);
+Route::put('/asistencias', [AsistenciaController::class, 'save']);
+Route::get('/asistencias/politica/{ano}', [AsistenciaController::class, 'policy'])
+    ->middleware(ResolveAcademicRouteIdentifier::class.':ano,ano-lectivo');
+Route::put('/asistencias/politica/{ano}', [AsistenciaController::class, 'savePolicy'])
+    ->middleware(ResolveAcademicRouteIdentifier::class.':ano,ano-lectivo');
 Route::middleware(ResolveAcademicInputIdentifiers::class)->prefix('evaluacion')->controller(EvaluacionController::class)->group(function () {
     Route::get('/catalogo', 'catalogo');
     Route::post('/matriculas', 'matricular');
@@ -255,6 +262,7 @@ Route::middleware(ResolveAcademicInputIdentifiers::class)->group(function () {
 });
 Route::middleware(['can:academico.plan_estudios.gestionar', ResolveAcademicInputIdentifiers::class])->group(function () {
     Route::post('/asignaciones', [HorarioController::class, 'asignar']);
+    Route::post('/asignaciones/grupo', [HorarioController::class, 'asignarGrupo']);
     Route::put('/asignaciones/{id}', [HorarioController::class, 'editarAsignacion'])->middleware(ResolveAcademicRouteIdentifier::class.':id,asignacion-docente');
     Route::delete('/asignaciones/{id}', [HorarioController::class, 'desasignar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,asignacion-docente');
     Route::post('/horarios', [HorarioController::class, 'guardar']);

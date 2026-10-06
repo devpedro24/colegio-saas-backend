@@ -133,6 +133,9 @@ final class HorarioService
             $previous = $session?->toArray();
             $oldAssignment = $session?->asignacion_id ? AsignacionDocente::find($session->asignacion_id) : null;
             $changedPair = $session && ($session->grupo_id != $group->id || $session->materia_id != $subject->id);
+            if ($changedPair && DB::table('asistencia_clases')->where('sesion_horario_id', $session->id)->exists()) {
+                throw ValidationException::withMessages(['grupo_id' => 'La franja tiene asistencias históricas. Conserva esta clase y crea otra para el nuevo grupo o asignatura.']);
+            }
             $oldIsLastClass = $changedPair && $oldAssignment && ! SesionHorario::where('asignacion_id', $oldAssignment->id)
                 ->whereKeyNot($session->id)->exists();
             if ($oldIsLastClass && ComponenteEvaluacion::where('asignacion_id', $oldAssignment->id)->exists()) {

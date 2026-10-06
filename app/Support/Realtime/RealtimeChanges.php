@@ -72,6 +72,7 @@ final class RealtimeChanges
             'estructura' => 'structure',
             'plan-estudios' => 'curriculum',
             'horarios', 'asignaciones' => 'schedule',
+            'asistencias' => 'attendance',
             'evaluacion' => 'evaluation',
             'siee', 'config' => 'academic-config',
             'eventos' => 'events',

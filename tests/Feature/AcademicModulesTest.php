@@ -1631,6 +1631,185 @@ class AcademicModulesTest extends TestCase
         $this->assertSame($this->assignment->id, $miercoles->fresh()->asignacion_id);
     }
 
+    public function test_attendance_snapshots_survive_schedule_and_teacher_changes_without_leaking_old_access(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        Plan::updateOrCreate(['key' => 'esencial'], ['name' => 'Esencial', 'features' => ['academico', 'asistencia']]);
+        $teacherRole = Role::findByName('docente', 'web');
+        $teacherRole->givePermissionTo(Permission::findOrCreate('asistencia.registrar_clases', 'web'));
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        $first = app(HorarioService::class)->guardar([
+            'asignacion_id' => $this->assignment->id, 'dia' => 'lunes', 'bloque_horario_id' => $this->block->id,
+        ], $this->rector);
+        $second = app(HorarioService::class)->guardar([
+            'asignacion_id' => $this->assignment->id, 'dia' => 'lunes',
+            'hora_inicio' => '09:00', 'hora_fin' => '10:00',
+        ], $this->rector);
+        app(GradebookService::class)->saveGrades($this->teacher, $this->assignment, $period->id, [[
+            'matricula_id' => $enrollment->id, 'actividad_id' => $activity->id,
+            'valor' => '4', 'version' => 0,
+        ]]);
+        $newTeacher = User::create(['name' => 'Docente segundo', 'email' => 'new-teacher@test.test',
+            'password' => 'TeacherPassword123', 'role' => 'docente', 'status' => 'active']);
+        $newTeacher->assignRole('docente');
+        $url = 'http://localhost/api/asistencias?opaque=1';
+        $assignmentToken = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
+        $studentToken = OpaqueUrlToken::for('matricula', $enrollment->id);
+        $this->withHeader('X-Tenant', $this->school->id)->withToken($this->teacher->createToken('web')->plainTextToken);
+        $view = $this->getJson($url.'&asignacion_token='.$assignmentToken.'&fecha=2026-02-02')
+            ->assertOk()->assertJsonCount(2, 'data.clases')->json('data');
+        $this->assertSame([$studentToken], array_column($view['clases'][0]['estudiantes'], 'matricula_token'));
+        foreach ([[$first, 'ausente'], [$second, 'presente']] as [$session, $state]) {
+            $this->putJson($url, ['asignacion_token' => $assignmentToken,
+                'sesion_token' => OpaqueUrlToken::for('sesion-horario', $session->id),
+                'fecha' => '2026-02-02', 'version' => 0, 'marcas' => [[
+                    'matricula_token' => $studentToken, 'estado' => $state,
+                ]]])->assertOk();
+        }
+        $this->assertSame(2, DB::table('asistencia_clases')->count());
+        $this->assertSame(1, DB::table('asistencia_marcas')->where('estado', 'ausente')->count());
+
+        app(HorarioService::class)->guardar([
+            'grupo_id' => $this->group->id, 'materia_id' => $this->subject->id,
+            'dia' => 'martes', 'hora_inicio' => '10:00', 'hora_fin' => '11:00',
+        ], $this->rector, $first);
+        app(\App\Services\AsignacionHorarioService::class)->guardar(
+            $this->group, $this->subject, $newTeacher->id, $this->rector);
+        $snapshot = DB::table('asistencia_clases')->where('sesion_horario_id', $first->id)->first();
+        $this->assertSame('08:00', substr($snapshot->hora_inicio, 0, 5));
+        $this->assertSame($this->teacher->id, $snapshot->docente_programado_id);
+        $this->assertSame($this->assignment->id, $snapshot->asignacion_id);
+        $this->assertDatabaseHas('calificaciones', ['actividad_id' => $activity->id,
+            'matricula_id' => $enrollment->id, 'valor' => '4']);
+
+        $this->getJson($url.'&asignacion_token='.$assignmentToken.'&fecha=2026-02-02')->assertForbidden();
+        $this->putJson($url, ['asignacion_token' => $assignmentToken,
+            'sesion_token' => OpaqueUrlToken::for('sesion-horario', $first->id), 'fecha' => '2026-02-02',
+            'version' => 1, 'marcas' => [['matricula_token' => $studentToken, 'estado' => 'presente']]])->assertForbidden();
+        $this->app['auth']->forgetGuards();
+        $this->withToken($newTeacher->createToken('web')->plainTextToken);
+        $this->getJson($url.'&asignacion_token='.$assignmentToken.'&fecha=2026-02-02')
+            ->assertOk()->assertJsonPath('data.clases.0.hora_inicio', '08:00')
+            ->assertJsonPath('data.clases.0.version', 1)
+            ->assertJsonPath('data.clases.0.estudiantes.0.estado', 'ausente');
+        $this->putJson($url, ['asignacion_token' => $assignmentToken,
+            'sesion_token' => OpaqueUrlToken::for('sesion-horario', $first->id), 'fecha' => '2026-02-02',
+            'version' => 1, 'marcas' => [['matricula_token' => $studentToken, 'estado' => 'tarde']]])
+            ->assertOk()->assertJsonPath('data.version', 2);
+        $this->putJson($url, ['asignacion_token' => $assignmentToken,
+            'sesion_token' => OpaqueUrlToken::for('sesion-horario', $first->id), 'fecha' => '2026-02-02',
+            'version' => 1, 'marcas' => [['matricula_token' => $studentToken, 'estado' => 'ausente']]])
+            ->assertStatus(409);
+        $this->assertDatabaseHas('asistencia_marcas', ['asistencia_clase_id' => $snapshot->id,
+            'matricula_id' => $enrollment->id, 'estado' => 'tarde']);
+        $period->update(['estado' => 'cerrado']);
+        $this->putJson($url, ['asignacion_token' => $assignmentToken,
+            'sesion_token' => OpaqueUrlToken::for('sesion-horario', $first->id), 'fecha' => '2026-02-02',
+            'version' => 2, 'marcas' => [['matricula_token' => $studentToken, 'estado' => 'ausente']]])->assertUnprocessable();
+    }
+
+    public function test_one_teacher_can_take_over_every_curriculum_subject_of_a_group_without_recreating_grades(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        app(GradebookService::class)->saveGrades($this->teacher, $this->assignment, $period->id, [[
+            'matricula_id' => $enrollment->id, 'actividad_id' => $activity->id, 'valor' => '4', 'version' => 0,
+        ]]);
+        $second = $this->subject->replicate();
+        $second->fill(['nombre' => 'Matemáticas'])->save();
+        DB::table('materias_curriculares')->insert(['ano_lectivo_id' => $this->year->id,
+            'grado_id' => $this->group->grado_id, 'materia_id' => $second->id,
+            'area_id' => $second->area_id, 'created_at' => now(), 'updated_at' => now()]);
+        $newTeacher = User::create(['name' => 'Docente integral', 'email' => 'integral@test.test',
+            'password' => 'TeacherPassword123', 'role' => 'docente', 'status' => 'active']);
+        $newTeacher->assignRole('docente');
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.plan_estudios.gestionar', 'web'));
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $url = 'http://localhost/api/asignaciones/grupo?opaque=1';
+        $this->postJson($url, [
+            'ano_lectivo_token' => OpaqueUrlToken::for('ano-lectivo', $this->year->id),
+            'grupo_token' => OpaqueUrlToken::for('grupo', $this->group->id),
+            'docente_token' => OpaqueUrlToken::for('usuario', $newTeacher->id),
+        ])->assertOk()->assertJsonPath('data.asignaturas_actualizadas', 2);
+        $this->assertSame(2, AsignacionDocente::where('grupo_id', $this->group->id)
+            ->where('docente_id', $newTeacher->id)->count());
+        $this->assertSame($this->assignment->id, AsignacionDocente::where('grupo_id', $this->group->id)
+            ->where('materia_id', $this->subject->id)->firstOrFail()->id);
+        $this->assertDatabaseHas('calificaciones', ['matricula_id' => $enrollment->id,
+            'actividad_id' => $activity->id, 'valor' => '4']);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->teacher->createToken('web')->plainTextToken);
+        $this->getJson('http://localhost/api/evaluacion/catalogo?opaque=1&vista=planillas')
+            ->assertOk()->assertJsonCount(0, 'data.asignaciones');
+        $this->app['auth']->forgetGuards();
+        $this->withToken($newTeacher->createToken('web')->plainTextToken);
+        $this->getJson('http://localhost/api/evaluacion/catalogo?opaque=1&vista=planillas')
+            ->assertOk()->assertJsonCount(2, 'data.asignaciones');
+    }
+
+    public function test_attendance_policy_supports_count_and_percentage_without_changing_grades(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        Plan::updateOrCreate(['key' => 'esencial'], ['name' => 'Esencial', 'features' => ['academico', 'asistencia']]);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.configurar', 'web'));
+        $this->rector->givePermissionTo(Permission::findOrCreate('asistencia.consultar_grupo', 'web'));
+        $this->rector->givePermissionTo(Permission::findOrCreate('asistencia.registrar_clases', 'web'));
+        [$period, $enrollment] = $this->gradeFixture();
+        $first = app(HorarioService::class)->guardar([
+            'asignacion_id' => $this->assignment->id, 'dia' => 'lunes', 'bloque_horario_id' => $this->block->id,
+        ], $this->rector);
+        $second = app(HorarioService::class)->guardar([
+            'asignacion_id' => $this->assignment->id, 'dia' => 'lunes',
+            'hora_inicio' => '09:00', 'hora_fin' => '10:00',
+        ], $this->rector);
+        $yearToken = OpaqueUrlToken::for('ano-lectivo', $this->year->id);
+        $assignmentToken = OpaqueUrlToken::for('asignacion-docente', $this->assignment->id);
+        $enrollmentToken = OpaqueUrlToken::for('matricula', $enrollment->id);
+        $policyUrl = "http://localhost/api/asistencias/politica/{$yearToken}?opaque=1";
+        $attendanceUrl = 'http://localhost/api/asistencias?opaque=1';
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('web')->plainTextToken);
+        $this->putJson($policyUrl, ['max_faltas' => 0, 'max_porcentaje' => 60,
+            'combinacion' => 'cualquiera', 'ambito' => 'periodo',
+            'tardes_por_falta' => 0, 'version' => 0])->assertOk()->assertJsonPath('data.version', 1);
+        foreach ([[$first, 'ausente'], [$second, 'presente']] as [$session, $state]) {
+            $this->putJson($attendanceUrl, ['asignacion_token' => $assignmentToken,
+                'sesion_token' => OpaqueUrlToken::for('sesion-horario', $session->id),
+                'fecha' => '2026-02-02', 'version' => 0,
+                'marcas' => [['matricula_token' => $enrollmentToken, 'estado' => $state]]])->assertOk();
+        }
+        $view = $this->getJson($attendanceUrl.'&asignacion_token='.$assignmentToken.'&fecha=2026-02-02')
+            ->assertOk()->json('data.clases.0.estudiantes.0.resumen');
+        $this->assertSame(2, $view['registradas']);
+        $this->assertSame(1, $view['faltas_equivalentes']);
+        $this->assertSame(50, $view['porcentaje']);
+        $this->assertTrue($view['alerta']);
+        $this->putJson($policyUrl, ['max_faltas' => 0, 'max_porcentaje' => 60,
+            'combinacion' => 'ambos', 'ambito' => 'periodo',
+            'tardes_por_falta' => 0, 'version' => 1])->assertOk();
+        $this->getJson($attendanceUrl.'&asignacion_token='.$assignmentToken.'&fecha=2026-02-02')
+            ->assertOk()->assertJsonPath('data.clases.0.estudiantes.0.resumen.alerta', false);
+        $third = app(HorarioService::class)->guardar([
+            'asignacion_id' => $this->assignment->id, 'dia' => 'lunes',
+            'hora_inicio' => '10:00', 'hora_fin' => '11:00',
+        ], $this->rector);
+        $this->putJson($attendanceUrl, ['asignacion_token' => $assignmentToken,
+            'sesion_token' => OpaqueUrlToken::for('sesion-horario', $third->id),
+            'fecha' => '2026-02-02', 'version' => 0,
+            'marcas' => [['matricula_token' => $enrollmentToken, 'estado' => 'presente']]])->assertOk();
+        $this->putJson($policyUrl, ['max_faltas' => null, 'max_porcentaje' => '33.33',
+            'combinacion' => 'cualquiera', 'ambito' => 'periodo',
+            'tardes_por_falta' => 0, 'version' => 2])->assertOk();
+        $this->getJson($attendanceUrl.'&asignacion_token='.$assignmentToken.'&fecha=2026-02-02')
+            ->assertOk()->assertJsonPath('data.clases.0.estudiantes.0.resumen.porcentaje', 33.33)
+            ->assertJsonPath('data.clases.0.estudiantes.0.resumen.alerta', true);
+        $this->putJson($policyUrl, ['max_faltas' => 0, 'max_porcentaje' => 60,
+            'combinacion' => 'ambos', 'ambito' => 'periodo',
+            'tardes_por_falta' => 0, 'version' => 1])->assertStatus(409);
+        $this->assertDatabaseCount('calificaciones', 0);
+    }
+
     public function test_schedule_migration_backfills_legacy_assignment_fields(): void
     {
         $class = (new HorarioService)->guardar([
@@ -2458,6 +2637,43 @@ class AcademicModulesTest extends TestCase
             'recurso_id' => (string) $decision->id, 'accion' => 'CREATE']);
     }
 
+    public function test_isolated_cycle_preserves_original_grade_through_recovery_and_year_closure(): void
+    {
+        [$period, $enrollment, $activity] = $this->gradeFixture();
+        $this->rector->givePermissionTo(Permission::findOrCreate('notas.gestionar_nivelaciones', 'web'));
+        $this->year->update(['num_periodos' => 1]);
+        $period->update(['fecha_fin' => '2026-12-31']);
+        $target = Grado::create(['ano_lectivo_id' => $this->year->id,
+            'nivel_id' => $this->group->grado->nivel_id, 'nombre' => 'Segundo',
+            'codigo' => '02', 'estado' => 'activo']);
+        $promotion = app(AcademicPromotionService::class);
+        $promotion->savePolicy($this->rector, $this->year, 0, [], null, 0);
+        app(GradebookService::class)->saveGrades($this->teacher, $this->assignment, $period->id, [[
+            'actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+            'valor' => '2', 'version' => 0, 'motivo' => 'Evaluación del período',
+        ]]);
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        $this->assertSame('reprobado', $promotion->proposal($this->year->fresh(), $enrollment)['resultado']);
+        $recovery = app(AcademicRecoveryService::class)->create($this->rector, $enrollment,
+            $this->assignment, $period, 'Plan de nivelación');
+        app(AcademicRecoveryService::class)->record($this->teacher, $recovery, '4', null, 1,
+            'Nivelación aprobada');
+        $report = app(GradebookService::class)->report($enrollment);
+        $this->assertSame('2', $report['asignaturas'][0]['periodos'][0]['resultado_original']['exact_value']);
+        $this->assertSame('4', $report['asignaturas'][0]['periodos'][0]['exact_value']);
+        $this->assertSame('2', Calificacion::firstOrFail()->valor);
+        $proposal = $promotion->proposal($this->year->fresh(), $enrollment);
+        $this->assertSame('promovido', $proposal['resultado']);
+        $promotion->approve($this->rector, $this->year, $enrollment, $proposal['huella'],
+            'promovido', $target, 'Resultados revisados tras nivelación', 0);
+        $request = Request::create('/', 'POST', ['confirmar_promociones' => true]);
+        $request->setUserResolver(fn () => $this->rector);
+        app(AnoLectivoController::class)->cerrar($request, (string) $this->year->id);
+        $this->assertSame(AnoLectivo::ESTADO_CERRADO, $this->year->fresh()->estado);
+        $this->assertSame('2', Calificacion::firstOrFail()->valor);
+        $this->assertSame('4', app(GradebookService::class)->report($enrollment)['asignaturas'][0]['anual']['exact_value']);
+    }
+
     public function test_promotion_rejects_stale_proposal_and_policy_change_invalidates_decision(): void
     {
         [$period, $enrollment, $activity] = $this->gradeFixture();
@@ -2513,6 +2729,12 @@ class AcademicModulesTest extends TestCase
             ->assertJsonPath('politica.materias_obligatorias.0', $subjectToken)
             ->assertJsonMissingPath('data.0.matricula_id')
             ->assertJsonMissingPath('politica.ano_lectivo_id');
+        $otherGroup = $this->group->replicate();
+        $otherGroup->fill(['nombre' => 'B'])->save();
+        $groupToken = OpaqueUrlToken::for('grupo', $otherGroup->id);
+        $this->getJson($url.'?opaque=1&grupo_token='.$groupToken)->assertOk()
+            ->assertJsonPath('meta.total', 0)->assertJsonPath('grupos.1.token', $groupToken);
+        $this->getJson($url.'?opaque=1&grupo_token='.$enrollmentToken)->assertNotFound();
         $this->getJson("http://localhost/api/anos-lectivos/{$enrollmentToken}/promociones?opaque=1")
             ->assertNotFound();
         $this->putJson($url.'/politica?opaque=1', [
