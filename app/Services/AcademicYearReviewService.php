@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\AsistenciaSolicitud;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\PoliticaPromocion;
 use App\Models\Academico\PromocionAcademica;
 use App\Models\Academico\RecuperacionAcademica;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 /** Diagnóstico de solo lectura: no promueve ni modifica matrículas o notas. */
@@ -71,6 +73,10 @@ final class AcademicYearReviewService
         if ($enrollments > 0 && RecuperacionAcademica::where('ano_lectivo_id', $year->id)
             ->where('estado', 'pendiente')->exists()) {
             $issues[] = 'recovery_pending';
+        }
+        if (Schema::hasTable('asistencia_solicitudes') && AsistenciaSolicitud::where('ano_lectivo_id', $year->id)
+            ->whereIn('estado', ['revision_docente', 'pendiente_aprobacion'])->exists()) {
+            $issues[] = 'attendance_request_pending';
         }
         if ($active->isNotEmpty()) {
             $policy = PoliticaPromocion::where('ano_lectivo_id', $year->id)->first();

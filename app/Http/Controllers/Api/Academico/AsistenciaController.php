@@ -15,10 +15,12 @@ use App\Models\User;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use App\Support\StudentRosterName;
+use App\Services\AttendanceSheetService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 /** Una asistencia por fecha y franja explícita; las instantáneas nunca siguen las ediciones del horario. */
@@ -82,7 +84,7 @@ final class AsistenciaController extends Controller
     {
         $this->plan();
         $actor = $request->user();
-        abort_unless($actor->can('academico.configurar')
+        abort_unless($actor->can('asistencia.configurar_politica')
             && ($actor->hasAnyRole(['rector', 'coord_academico', 'coord_combinado'])
                 || $actor->esSuperadminPlataforma()), 403);
         $data = $request->validate([
@@ -133,24 +135,41 @@ final class AsistenciaController extends Controller
             'asignacion_token' => ['nullable', 'string'],
             'fecha' => ['nullable', 'date_format:Y-m-d'],
         ]);
-        $year = isset($data['ano_lectivo_token'])
-            ? OpaqueUrlToken::find('ano-lectivo', $data['ano_lectivo_token'], AnoLectivo::query()) : null;
-        abort_if(isset($data['ano_lectivo_token']) && ! $year, 404);
         if (empty($data['asignacion_token']) || empty($data['fecha'])) {
-            $assignments = AsignacionDocente::with(['materia:id,nombre', 'grupo.grado:id,nombre'])
-                ->when($year, fn ($q) => $q->where('ano_lectivo_id', $year->id))
+            $years = AnoLectivo::query()->orderByDesc('fecha_inicio')->orderByDesc('id')->get(['id', 'nombre', 'estado']);
+            $year = isset($data['ano_lectivo_token'])
+                ? OpaqueUrlToken::find('ano-lectivo', $data['ano_lectivo_token'], AnoLectivo::query())
+                : ($years->firstWhere('estado', 'en_curso') ?? $years->firstWhere('estado', 'planificado') ?? $years->first());
+            abort_if(isset($data['ano_lectivo_token']) && ! $year, 404);
+            $assignments = AsignacionDocente::with(['materia:id,nombre', 'grupo.grado:id,nombre',
+                'anoLectivo:id,nombre'])
+                ->where('ano_lectivo_id', $year?->id ?? 0)
                 ->when(! $this->broad($actor), fn ($q) => $q->where('docente_id', $actor->id))
                 ->orderBy('grupo_id')->orderBy('materia_id')->limit(500)->get();
 
-            return response()->json(['data' => ['asignaciones' => $assignments->map(fn (AsignacionDocente $row) => [
+            return response()->json(['data' => [
+                'anos' => $years->map(fn (AnoLectivo $item) => [
+                    'token' => OpaqueUrlToken::for('ano-lectivo', $item->id),
+                    'nombre' => $item->nombre, 'estado' => $item->estado,
+                ])->values()->all(),
+                'ano_lectivo_token' => $year ? OpaqueUrlToken::for('ano-lectivo', $year->id) : null,
+                'asignaciones' => $assignments->map(fn (AsignacionDocente $row) => [
                 'token' => OpaqueUrlToken::for('asignacion-docente', $row->id),
                 'nombre' => $row->grupo->grado->nombre.' / ('.$row->grupo->nombre.') · '.$row->materia->nombre,
                 'ano_lectivo_token' => OpaqueUrlToken::for('ano-lectivo', $row->ano_lectivo_id),
-            ])]]);
+                'ano_lectivo_nombre' => $row->anoLectivo?->nombre,
+                'grupo_token' => OpaqueUrlToken::for('grupo', $row->grupo_id),
+                'grupo_nombre' => $row->grupo->grado->nombre.' / ('.$row->grupo->nombre.')',
+                'materia_token' => OpaqueUrlToken::for('materia', $row->materia_id),
+                'materia_nombre' => $row->materia->nombre,
+            ])->values()->all()]]);
         }
 
         $result = [];
         $assignment = $this->assignment($actor, $data['asignacion_token'], false);
+        $year = isset($data['ano_lectivo_token'])
+            ? OpaqueUrlToken::find('ano-lectivo', $data['ano_lectivo_token'], AnoLectivo::query()) : null;
+        abort_if(isset($data['ano_lectivo_token']) && ! $year, 404);
         abort_if($year && $year->id !== $assignment->ano_lectivo_id, 422);
         [$date, $period] = $this->dateAndPeriod($assignment, $data['fecha']);
         $weekday = self::DAYS[$date->dayOfWeekIso];
@@ -169,7 +188,8 @@ final class AsistenciaController extends Controller
             ->join('asistencia_clases as c', 'c.id', '=', 'm.asistencia_clase_id')
             ->where('c.asignacion_id', $assignment->id)->where('c.fecha', '<=', $data['fecha'])
             ->when(($policy?->ambito ?? 'periodo') === 'periodo', fn ($q) => $q->where('c.periodo_id', $period->id))
-            ->selectRaw("m.matricula_id, count(*) as total, sum(case when m.estado = 'ausente' then 1 else 0 end) as faltas, sum(case when m.estado = 'tarde' then 1 else 0 end) as tardes")
+            ->where('m.estado', '!=', 'sin_marcar')
+            ->selectRaw("m.matricula_id, count(*) as total, sum(case when m.estado = 'ausente' then 1 else 0 end) as faltas, sum(case when m.estado = 'tarde' then 1 else 0 end) as tardes, sum(case when m.estado = 'justificada' then 1 else 0 end) as justificadas")
             ->groupBy('m.matricula_id')->get()->keyBy('matricula_id');
         $summary = function (int $enrollmentId) use ($summaryRows, $policy): array {
             $row = $summaryRows->get($enrollmentId);
@@ -179,11 +199,13 @@ final class AsistenciaController extends Controller
             $equivalent = $absent + ($policy && $policy->tardes_por_falta > 0
                 ? intdiv($late, $policy->tardes_por_falta) : 0);
             $percentageExact = $total > 0 ? 100 * $equivalent / $total : 0;
-            $byCount = $policy?->max_faltas !== null && $equivalent > $policy->max_faltas;
+            $byCount = $policy?->max_faltas !== null && $equivalent > 0
+                && $equivalent >= $policy->max_faltas;
             $byPercentage = $policy?->max_porcentaje !== null
-                && $percentageExact > (float) $policy->max_porcentaje;
+                && $equivalent > 0 && $percentageExact >= (float) $policy->max_porcentaje;
 
             return ['registradas' => $total, 'ausentes' => $absent, 'tardes' => $late,
+                'justificadas' => (int) ($row?->justificadas ?? 0),
                 'faltas_equivalentes' => $equivalent, 'porcentaje' => round($percentageExact, 2),
                 'alerta' => $policy?->combinacion === 'ambos'
                     ? $byCount && $byPercentage : $byCount || $byPercentage];
@@ -218,11 +240,39 @@ final class AsistenciaController extends Controller
                     || substr((string) ($session?->bloque?->hora_inicio ?? $session?->hora_inicio), 0, 5) !== substr((string) $record->hora_inicio, 0, 5)),
                 'editable' => $this->mayWrite($actor, $assignment) && $period->estado === 'abierto'
                     && $assignment->anoLectivo?->estado === 'en_curso',
-                'estudiantes' => $students->sortBy(fn ($student) => StudentRosterName::sortKey($student['nombre']))->values(),
+                'estudiantes' => $students->sortBy(fn ($student) => Str::lower(Str::ascii($student['nombre'])))->values(),
             ];
         })->sortBy('hora_inicio')->values();
 
         return response()->json(['data' => $result]);
+    }
+
+    public function sheet(Request $request, AttendanceSheetService $sheet): JsonResponse
+    {
+        $this->plan();
+        $actor = $request->user();
+        $data = $request->validate([
+            'asignacion_token' => ['required', 'string'],
+            'periodo_token' => ['nullable', 'string'],
+        ]);
+        $assignment = $this->assignment($actor, $data['asignacion_token'], false);
+        $periods = Periodo::where('ano_lectivo_id', $assignment->ano_lectivo_id)
+            ->orderBy('orden')->get();
+        $period = ! empty($data['periodo_token'])
+            ? OpaqueUrlToken::find('periodo', $data['periodo_token'],
+                Periodo::where('ano_lectivo_id', $assignment->ano_lectivo_id))
+            : ($periods->firstWhere('estado', 'abierto') ?? $periods->last());
+        abort_unless($period, 404, 'No hay un período académico disponible para esta asignación.');
+
+        return response()->json(['data' => [
+            'periodos' => $periods->map(fn (Periodo $item) => [
+                'token' => OpaqueUrlToken::for('periodo', $item->id),
+                'nombre' => $item->nombre, 'estado' => $item->estado,
+            ])->values()->all(),
+            'periodo' => ['token' => OpaqueUrlToken::for('periodo', $period->id),
+                'nombre' => $period->nombre, 'estado' => $period->estado],
+            ...$sheet->build($assignment, $period, $this->mayWrite($actor, $assignment)),
+        ]]);
     }
 
     public function save(Request $request): JsonResponse
@@ -235,13 +285,15 @@ final class AsistenciaController extends Controller
             'version' => ['required', 'integer', 'min:0'],
             'marcas' => ['required', 'array', 'min:1', 'max:100'],
             'marcas.*.matricula_token' => ['required', 'string', 'distinct'],
-            'marcas.*.estado' => ['required', Rule::in(['presente', 'ausente', 'tarde'])],
+            'marcas.*.estado' => ['required', Rule::in(['sin_marcar', 'presente', 'ausente', 'tarde', 'justificada'])],
         ]);
         $actor = $request->user();
         $assignment = $this->assignment($actor, $data['asignacion_token'], true);
         $result = DB::transaction(function () use ($actor, $assignment, $data) {
             $year = AnoLectivo::lockForUpdate()->findOrFail($assignment->ano_lectivo_id);
             [$date, $period] = $this->dateAndPeriod($assignment, $data['fecha']);
+            abort_if($data['fecha'] > CarbonImmutable::now('America/Bogota')->toDateString(), 422,
+                'No se puede registrar asistencia de una fecha futura.');
             $period = Periodo::lockForUpdate()->findOrFail($period->id);
             abort_unless($year->estado === 'en_curso' && $period->estado === 'abierto', 422,
                 'Solo se registra asistencia en un período abierto del año en curso.');
@@ -289,9 +341,16 @@ final class AsistenciaController extends Controller
             foreach ($data['marcas'] as $item) {
                 $enrollmentId = $ids[$item['matricula_token']];
                 $before = $existing->get($enrollmentId);
+                abort_unless($item['estado'] !== 'justificada' || $before?->estado === 'justificada', 422,
+                    'Una justificación solo se registra mediante aprobación.');
+                abort_unless($before?->estado !== 'justificada' || $item['estado'] === 'justificada', 422,
+                    'Una justificación aprobada no se cambia desde la planilla.');
                 if ($before?->estado === $item['estado']) {
                     continue;
                 }
+                abort_unless(! $before || ! in_array($before->estado, ['ausente', 'tarde'], true)
+                    || $item['estado'] === 'ausente', 422,
+                    'Una inasistencia registrada solo se retira mediante solicitud y aprobación.');
                 $changed = true;
                 if ($before) {
                     DB::table('asistencia_marcas')->where('id', $before->id)->update([
