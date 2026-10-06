@@ -74,13 +74,18 @@ class EvaluacionController extends Controller
         $selectedEnrollment = $this->selectedByToken($enrollmentQuery, 'matricula', $request->query('matricula_token'));
         $assignments = $this->paginateAcademic($assignmentQuery->orderByDesc('id'), $request,
             ['*'], 'asignaciones_page', 'asignaciones_per_page');
-        // El boletín muestra el listado completo del año seleccionado, en el
-        // mismo orden de apellidos que la planilla. Matrículas conserva su paginación.
+        // El grupo cabe completo en la vista; sin grupo se pagina en el servidor.
+        // Se ordena por los mismos apellidos que la planilla antes de cortar la página.
         if ($view === 'boletines' && $yearId) {
             $roster = $enrollmentQuery->get()->sort(fn (Matricula $a, Matricula $b) =>
                 strcmp(StudentRosterName::sortKey($a->estudiante->name), StudentRosterName::sortKey($b->estudiante->name))
                 ?: ($a->id <=> $b->id))->values();
-            $enrollments = new LengthAwarePaginator($roster, $roster->count(), max(1, $roster->count()), 1);
+            $pageSize = $groupId ? max(1, $roster->count()) : $this->resolvePerPage($request, 'matriculas_per_page');
+            $page = $groupId ? 1 : $this->resolvePage($request, 'matriculas_page');
+            $enrollments = new LengthAwarePaginator(
+                $roster->forPage($page, $pageSize)->values(), $roster->count(), $pageSize, $page,
+                ['pageName' => 'matriculas_page'],
+            );
         } else {
             $enrollments = $this->paginateAcademic($enrollmentQuery->orderByDesc('id'), $request,
                 ['*'], 'matriculas_page', 'matriculas_per_page');

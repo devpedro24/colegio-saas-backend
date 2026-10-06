@@ -36,18 +36,18 @@ final class EscalaVisualService
     {
         $exact = $result['exact_value'] ?? null;
         if ($exact !== null) {
-            $choice = $this->nearest((string) $exact, $options);
+            $choice = $this->nearestChoice((string) $exact, $options);
             $result['valoracion'] = EscalaOpcionController::present($choice);
             $result['aprobado'] = $choice->aprueba;
         }
         if ($provisional !== null) {
-            $result['valoracion_provisional'] = EscalaOpcionController::present($this->nearest($provisional, $options));
+            $result['valoracion_provisional'] = EscalaOpcionController::present($this->nearestChoice($provisional, $options));
         }
 
         return $result;
     }
 
-    private function nearest(string $value, Collection $options): \App\Models\Academico\EscalaOpcion
+    public function nearestChoice(string $value, Collection $options): \App\Models\Academico\EscalaOpcion
     {
         // El motor conserva resultados exactos como fracciones (p. ej. 13/4).
         // Convertirlos a decimal aquí puede fallar o cambiar un empate.

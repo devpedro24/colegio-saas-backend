@@ -35,7 +35,14 @@ class EscalaValorativaController extends Controller
             ->orderBy('nivel_educativo')
             ->get();
 
-        return response()->json(['data' => $escalas->map(fn ($escala) => $this->present($escala))]);
+        $opcionesUsadas = $request->boolean('opaque')
+            ? \Illuminate\Support\Facades\DB::table('calificaciones')
+                ->whereIn('escala_opcion_id', $escalas->flatMap(fn ($escala) => $escala->opciones->pluck('id'))->all())
+                ->distinct()->pluck('escala_opcion_id')->flip()
+            : collect();
+
+        return response()->json(['data' => $escalas->map(fn ($escala) => $this->present($escala,
+            $escala->opciones->contains(fn ($opcion) => $opcionesUsadas->has($opcion->id))))]);
     }
 
     /** Crea o actualiza (upsert) la escala de un ano lectivo (y nivel opcional). */
@@ -175,12 +182,14 @@ class EscalaValorativaController extends Controller
         return response()->json(['data' => null]);
     }
 
-    private function present(EscalaValorativa $escala): EscalaValorativa|array
+    private function present(EscalaValorativa $escala, ?bool $opcionesBloqueadas = null): EscalaValorativa|array
     {
         if (! request()->boolean('opaque')) return $escala->loadMissing('opciones');
 
         return [...ConfigOpaqueData::present($escala, 'escala-valorativa',
             ['nombre', 'nivel_educativo', 'tipo', 'valor_min', 'valor_max', 'decimales']),
+            'opciones_bloqueadas' => $opcionesBloqueadas ?? \Illuminate\Support\Facades\DB::table('calificaciones')
+                ->whereIn('escala_opcion_id', $escala->opciones->pluck('id'))->exists(),
             'opciones' => $escala->opciones->map(EscalaOpcionController::present(...))->all()];
     }
 }

@@ -5,6 +5,7 @@
 /public/storage
 /storage/*.key
 /storage/pail
+/storage/tenant*/
 /vendor
 /database/database.sqlite
 /database/tenant_*

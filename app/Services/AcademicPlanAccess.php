@@ -19,4 +19,16 @@ final class AcademicPlanAccess
     {
         abort_unless($this->preinformes(), 403, 'El plan del colegio no incluye preinformes. Están disponibles desde Estándar o en un plan personalizado que los incluya.');
     }
+
+    public function aula(): bool
+    {
+        $planKey = tenant()?->fresh()?->plan;
+
+        return $planKey && in_array('aula', Plan::where('key', $planKey)->value('features') ?? [], true);
+    }
+
+    public function requireAula(): void
+    {
+        abort_unless($this->aula(), 403, 'El plan del colegio no incluye Aula.');
+    }
 }

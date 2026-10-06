@@ -23,6 +23,11 @@ final class AcademicTokenIndex
         'recuperaciones_academicas' => ['recuperacion-academica'],
         'promociones_academicas' => ['promocion-academica'],
         'preinformes' => ['preinforme'],
+        'asistencia_solicitudes' => ['asistencia-solicitud'],
+        'aulas' => ['aula'], 'aula_secciones' => ['aula-seccion'],
+        'aula_recursos' => ['aula-recurso'], 'aula_entregas' => ['aula-entrega'],
+        'aula_intentos' => ['aula-intento'], 'aula_preguntas' => ['aula-pregunta'],
+        'aula_adjuntos' => ['aula-adjunto'],
         'escalas_valorativas' => ['escala-valorativa'], 'escala_opciones' => ['escala-opcion'], 'metodos_aprobacion' => ['metodo-aprobacion'],
         'modelos_pedagogicos' => ['modelo-pedagogico'], 'users' => ['usuario', 'docente'],
     ];
