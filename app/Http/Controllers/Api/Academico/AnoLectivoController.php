@@ -68,6 +68,25 @@ class AnoLectivoController extends Controller
         return response()->json(['data' => $status]);
     }
 
+    /** Vista previa de contenidos reutilizables, sin leer ni copiar actividad estudiantil. */
+    public function resumenDuplicacion(string $id): JsonResponse
+    {
+        $year = AnoLectivo::findOrFail($id);
+        $aulas = DB::table('aulas')->where('ano_lectivo_id', $year->id)->pluck('id');
+        $sections = DB::table('aula_secciones')->whereIn('aula_id', $aulas)->pluck('id');
+        $resources = DB::table('aula_recursos')->whereIn('seccion_id', $sections)->pluck('id');
+
+        return response()->json(['data' => [
+            'politica_asistencia' => DB::table('asistencia_politicas')
+                ->where('ano_lectivo_id', $year->id)->exists(),
+            'aulas' => $aulas->count(), 'secciones' => $sections->count(),
+            'recursos' => $resources->count(),
+            'adjuntos_apoyo' => DB::table('aula_adjuntos')->whereIn('recurso_id', $resources)->count(),
+            'preguntas' => DB::table('aula_preguntas')->whereIn('recurso_id', $resources)->count(),
+            'notas_y_entregas' => 'no_se_copian',
+        ]]);
+    }
+
     /** Preflight del cierre; nunca modifica resultados ni crea promociones. */
     public function revisionCierre(Request $request, string $id, AcademicYearReviewService $service): JsonResponse
     {

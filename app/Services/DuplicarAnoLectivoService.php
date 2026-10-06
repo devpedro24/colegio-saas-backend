@@ -6,6 +6,10 @@ namespace App\Services;
 
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Area;
+use App\Models\Academico\Aula;
+use App\Models\Academico\AulaPregunta;
+use App\Models\Academico\AulaRecurso;
+use App\Models\Academico\AulaSeccion;
 use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\EscalaValorativa;
 use App\Models\Academico\EspacioFisico;
@@ -36,7 +40,7 @@ final class DuplicarAnoLectivoService
 
     public const OPTIONS = [
         'jornadas', 'niveles', 'grados', 'grupos', 'bloques', 'espacios',
-        'areas', 'materias', 'escalas', 'metodos', 'modelos', 'siee', 'curriculo', 'periodos',
+        'areas', 'materias', 'escalas', 'metodos', 'modelos', 'siee', 'curriculo', 'periodos', 'asistencia', 'aulas',
     ];
 
     /** @param array<string, mixed> $yearData
@@ -118,8 +122,11 @@ final class DuplicarAnoLectivoService
             $periodosCopiados = $options['periodos'] ? $this->copyPeriods($source, $target, $actor) : 0;
             $preparacionesCopiadas = ($options['curriculo'] || $options['periodos'])
                 ? $this->copyEvaluationPreparations($source, $target) : 0;
+            $asistenciaCopiada = $options['asistencia']
+                ? $this->copyAttendancePolicy($source, $target) : 0;
+            $aulasCopiadas = $options['aulas'] ? $this->copyAulas($source, $target, $maps) : 0;
 
-            $this->saveCopyState($target, $source, $options, true);
+            $this->saveCopyState($target, $source, $options, ! $options['aulas']);
 
             AuditLogger::tenant($actor, 'CREATE', 'ano_lectivo', (string) $target->id, null, [
                 'origen_id' => $source->id,
@@ -129,6 +136,8 @@ final class DuplicarAnoLectivoService
                 'curriculo' => $options['curriculo'],
                 'periodos' => $periodosCopiados,
                 'preparaciones_evaluacion' => $preparacionesCopiadas,
+                'politica_asistencia' => $asistenciaCopiada,
+                'aulas' => $aulasCopiadas,
             ], 'Duplicación de año lectivo sin asignaciones, horarios ni calificaciones.');
 
             return $target;
@@ -266,6 +275,9 @@ final class DuplicarAnoLectivoService
             }
             $preparacionesCopiadas = ($options['curriculo'] || $options['periodos'])
                 ? $this->copyEvaluationPreparations($source, $target) : 0;
+            $created['asistencia'] = $options['asistencia']
+                ? $this->copyAttendancePolicy($source, $target) : 0;
+            $created['aulas'] = $options['aulas'] ? $this->copyAulas($source, $target, $maps) : 0;
 
             $priorOptions = $state && ! $switching ? (json_decode($state->opciones, true) ?: []) : [];
             $savedOptions = $options;
@@ -275,7 +287,7 @@ final class DuplicarAnoLectivoService
                 }
             }
             $this->saveCopyState($target->fresh(), $source, $savedOptions,
-                $state ? ((bool) $state->reemplazable && $unchanged) : ! $hadConfiguration);
+                ! $savedOptions['aulas'] && ($state ? ((bool) $state->reemplazable && $unchanged) : ! $hadConfiguration));
 
             AuditLogger::tenant($actor, 'UPDATE', 'ano_lectivo', (string) $target->id, null, [
                 'origen_id' => $source->id, 'origen_anterior_id' => $previousSourceId,
@@ -311,6 +323,9 @@ final class DuplicarAnoLectivoService
                 ->exists();
         }
         $filled['siee'] = $target->siee !== null;
+        $filled['asistencia'] = DB::table('asistencia_politicas')
+            ->where('ano_lectivo_id', $target->id)->exists();
+        $filled['aulas'] = DB::table('aulas')->where('ano_lectivo_id', $target->id)->exists();
 
         return $filled;
     }
@@ -331,6 +346,14 @@ final class DuplicarAnoLectivoService
     private function fingerprint(AnoLectivo $target): string
     {
         $snapshot = ['siee' => $target->fresh()->siee];
+        $attendancePolicy = DB::table('asistencia_politicas')->where('ano_lectivo_id', $target->id)->first();
+        if ($attendancePolicy) $snapshot['asistencia_politica'] = $attendancePolicy;
+        $aulaIds = DB::table('aulas')->where('ano_lectivo_id', $target->id)->pluck('id');
+        $snapshot['aulas'] = DB::table('aulas')->whereIn('id', $aulaIds)->orderBy('id')->get()->toArray();
+        $sectionIds = DB::table('aula_secciones')->whereIn('aula_id', $aulaIds)->pluck('id');
+        $snapshot['aula_secciones'] = DB::table('aula_secciones')->whereIn('id', $sectionIds)->orderBy('id')->get()->toArray();
+        $resourceIds = DB::table('aula_recursos')->whereIn('seccion_id', $sectionIds)->pluck('id');
+        $snapshot['aula_recursos'] = DB::table('aula_recursos')->whereIn('id', $resourceIds)->orderBy('id')->get()->toArray();
         $preinformes = DB::table('preinformes')->whereIn('periodo_id', Periodo::where('ano_lectivo_id', $target->id)->select('id'))->orderBy('id')->get()->toArray();
         if ($preinformes !== []) $snapshot['preinformes'] = $preinformes;
         foreach (self::TABLES as $key => $table) {
@@ -378,7 +401,7 @@ final class DuplicarAnoLectivoService
             if (in_array($table, $protected, true) || in_array($table, [
                 'anos_lectivos', 'copias_configuracion_anual', 'periodos_sumatorios_legado',
                 'preparaciones_evaluacion', 'componentes_preparados', 'actividades_preparadas',
-                'preinformes',
+                'preinformes', 'asistencia_politicas',
             ], true)) {
                 continue;
             }
@@ -397,6 +420,7 @@ final class DuplicarAnoLectivoService
 
     private function clearConfiguration(AnoLectivo $target): void
     {
+        DB::table('asistencia_politicas')->where('ano_lectivo_id', $target->id)->delete();
         $target->update(['siee' => null]);
         $curriculumIds = DB::table('materias_curriculares')->where('ano_lectivo_id', $target->id)->pluck('id');
         $preparationIds = DB::table('preparaciones_evaluacion')
@@ -411,6 +435,91 @@ final class DuplicarAnoLectivoService
             'espacios', 'areas', 'escalas', 'metodos', 'modelos', 'periodos'] as $key) {
             DB::table(self::TABLES[$key])->where('ano_lectivo_id', $target->id)->delete();
         }
+    }
+
+    /** Una política anual nueva, nunca marcas, alertas ni solicitudes históricas. */
+    private function copyAttendancePolicy(AnoLectivo $source, AnoLectivo $target): int
+    {
+        $policy = DB::table('asistencia_politicas')->where('ano_lectivo_id', $source->id)->first();
+        if (! $policy || DB::table('asistencia_politicas')->where('ano_lectivo_id', $target->id)->exists()) {
+            return 0;
+        }
+
+        DB::table('asistencia_politicas')->insert([
+            'ano_lectivo_id' => $target->id,
+            'max_faltas' => $policy->max_faltas,
+            'max_porcentaje' => $policy->max_porcentaje,
+            'combinacion' => $policy->combinacion,
+            'ambito' => $policy->ambito,
+            'tardes_por_falta' => $policy->tardes_por_falta,
+            'version' => 1,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        return 1;
+    }
+
+    /** Reutiliza materiales; nunca copia matrículas, entregas, intentos ni calificaciones. */
+    private function copyAulas(AnoLectivo $source, AnoLectivo $target, array $maps): int
+    {
+        app(AcademicPlanAccess::class)->requireAula();
+        $copied = 0;
+        foreach (Aula::where('ano_lectivo_id', $source->id)->with('secciones.recursos')->get() as $oldAula) {
+            $group = $maps['grupos'][$oldAula->grupo_id] ?? null;
+            $subject = $maps['materias'][$oldAula->materia_id] ?? null;
+            if (! $group || ! $subject) {
+                throw ValidationException::withMessages(['opciones' => 'Un aula no tiene grupo o asignatura equivalente en el destino.']);
+            }
+            $targetGroup = Grupo::findOrFail($group);
+            abort_unless(DB::table('materias_curriculares')->where('ano_lectivo_id', $target->id)
+                ->where('grado_id', $targetGroup->grado_id)->where('materia_id', $subject)->exists(), 422,
+                'El currículo destino no incluye una asignatura del aula.');
+            $newAula = Aula::firstOrCreate(['grupo_id' => $group, 'materia_id' => $subject],
+                ['ano_lectivo_id' => $target->id, 'portada_token' => $oldAula->portada_token]);
+            // Un aula que ya existe en destino puede tener trabajo propio: no insertamos
+            // secciones adicionales de forma silenciosa en ella ni alteramos sus materiales.
+            if (! $newAula->wasRecentlyCreated) continue;
+            $copied++;
+            foreach ($oldAula->secciones as $oldSection) {
+                $oldPeriod = Periodo::findOrFail($oldSection->periodo_id);
+                $newPeriod = Periodo::where('ano_lectivo_id', $target->id)->where('orden', $oldPeriod->orden)->first();
+                if (! $newPeriod) throw ValidationException::withMessages(['opciones' => 'Falta un período equivalente para el aula.']);
+                $newPre = null;
+                if ($oldSection->preinforme_id) {
+                    $oldPre = Preinforme::findOrFail($oldSection->preinforme_id);
+                    $newPre = Preinforme::where('periodo_id', $newPeriod->id)->where('orden', $oldPre->orden)->first();
+                    if (! $newPre) throw ValidationException::withMessages(['opciones' => 'Falta un preinforme equivalente para el aula.']);
+                }
+                $newSection = AulaSeccion::firstOrCreate(['aula_id' => $newAula->id, 'seccion_origen_id' => $oldSection->id],
+                    ['periodo_id' => $newPeriod->id, 'preinforme_id' => $newPre?->id, 'titulo' => $oldSection->titulo,
+                        'orden' => $oldSection->orden, 'visible_estudiantes' => false, 'autor_id' => $oldSection->autor_id]);
+                foreach ($oldSection->recursos as $oldResource) {
+                    if (AulaRecurso::where('seccion_id', $newSection->id)->where('recurso_origen_id', $oldResource->id)->exists()) continue;
+                    $config = $oldResource->configuracion ?? [];
+                    if ($oldResource->llevar_planilla) $config['vinculo_anterior_requiere_revision'] = true;
+                    $newResource = AulaRecurso::create(['seccion_id' => $newSection->id, 'tipo' => $oldResource->tipo,
+                        'titulo' => $oldResource->titulo, 'contenido' => $oldResource->contenido, 'configuracion' => $config,
+                        'estado' => $oldResource->estado, 'visible_estudiantes' => false,
+                        'calificable' => $oldResource->calificable, 'llevar_planilla' => false, 'actividad_id' => null,
+                        'peso' => $oldResource->peso, 'disponible_desde' => null, 'disponible_hasta' => null,
+                        'fecha_limite' => null, 'zona_publicacion' => null, 'orden' => $oldResource->orden,
+                        'autor_id' => $oldResource->autor_id, 'recurso_origen_id' => $oldResource->id, 'version' => 1]);
+                    foreach ($oldResource->preguntas as $question) {
+                        AulaPregunta::create(['recurso_id' => $newResource->id, 'tipo' => $question->tipo,
+                            'enunciado' => $question->enunciado, 'opciones' => $question->opciones,
+                            'respuesta_correcta' => $question->respuesta_correcta, 'puntos' => $question->puntos,
+                            'orden' => $question->orden]);
+                    }
+                    foreach (DB::table('aula_adjuntos')->where('recurso_id', $oldResource->id)->whereNull('entrega_id')->get() as $file) {
+                        DB::table('aula_adjuntos')->insert(['recurso_id' => $newResource->id, 'entrega_id' => null,
+                            'archivo_token' => $file->archivo_token, 'nombre' => $file->nombre,
+                            'autor_id' => $file->autor_id, 'created_at' => now(), 'updated_at' => now()]);
+                    }
+                }
+            }
+        }
+
+        return $copied;
     }
 
     private function copyPeriods(AnoLectivo $source, AnoLectivo $target, User $actor): int
@@ -564,6 +673,9 @@ final class DuplicarAnoLectivoService
         $resolved = array_fill_keys(self::OPTIONS, false);
         foreach ($resolved as $key => $_) {
             $resolved[$key] = (bool) ($options[$key] ?? false);
+        }
+        if ($resolved['aulas']) {
+            $resolved['grupos'] = $resolved['materias'] = $resolved['curriculo'] = $resolved['periodos'] = true;
         }
         if ($resolved['curriculo']) {
             $resolved['grados'] = $resolved['materias'] = $resolved['escalas'] = $resolved['metodos'] = $resolved['siee'] = true;
