@@ -11,6 +11,9 @@ use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+use DateTimeImmutable;
+use DateTimeZone;
 
 /**
  * Datos institucionales del colegio (bloque 1) — BD del tenant.
@@ -21,6 +24,36 @@ use Illuminate\Http\Request;
  */
 class DatosInstitucionalesController extends Controller
 {
+    /** Zona del colegio, compartida por los módulos; no depende del plan Aula. */
+    public function zonaHoraria(): JsonResponse
+    {
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $zones = collect(DateTimeZone::listIdentifiers())->map(function (string $id) use ($now): array {
+            $offset = (new DateTimeZone($id))->getOffset($now);
+            $sign = $offset < 0 ? '-' : '+';
+            $minutes = abs($offset) / 60;
+
+            return ['id' => $id, 'offset' => sprintf('UTC%s%02d:%02d', $sign, intdiv((int) $minutes, 60), (int) $minutes % 60),
+                'offset_minutos' => (int) $minutes * ($offset < 0 ? -1 : 1)];
+        })->sortBy([['offset_minutos', 'asc'], ['id', 'asc']])->values()
+            ->map(fn (array $zone) => ['id' => $zone['id'], 'offset' => $zone['offset']]);
+
+        return response()->json(['data' => ['zona_horaria' => tenant()->colegioPrincipal()->fresh()->zonaHorariaInstitucional(),
+            'zonas' => $zones]]);
+    }
+
+    public function guardarZonaHoraria(Request $request): JsonResponse
+    {
+        $data = $request->validate(['zona_horaria' => ['required', 'string', Rule::in(DateTimeZone::listIdentifiers())]]);
+        $colegio = tenant()->colegioPrincipal()->fresh();
+        $before = $colegio->zonaHorariaInstitucional();
+        $colegio->update(['timezone' => $data['zona_horaria']]);
+        AuditLogger::tenant($request->user(), 'UPDATE', 'config.zona_horaria', (string) $colegio->id,
+            ['zona_horaria' => $before], ['zona_horaria' => $data['zona_horaria']]);
+
+        return response()->json(['data' => ['zona_horaria' => $data['zona_horaria']]]);
+    }
+
     /** Devuelve la ficha institucional (singleton); null si aun no se ha creado. */
     public function show(): JsonResponse
     {

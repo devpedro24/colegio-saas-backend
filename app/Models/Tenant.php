@@ -103,6 +103,19 @@ class Tenant extends BaseTenant implements TenantWithDatabase
         return $this->belongsTo(Tenant::class, 'parent_id', 'id');
     }
 
+    /** La zona horaria es una preferencia del colegio, compartida por sus sedes. */
+    public function colegioPrincipal(): self
+    {
+        return $this->tipo === self::TIPO_SEDE && $this->parent_id
+            ? ($this->parent ?? $this)
+            : $this;
+    }
+
+    public function zonaHorariaInstitucional(): string
+    {
+        return $this->colegioPrincipal()->timezone ?: 'America/Bogota';
+    }
+
     /** Sedes de este colegio (tenants hijos). */
     public function sedes(): HasMany
     {
