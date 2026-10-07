@@ -7,24 +7,36 @@ namespace App\Services;
 use App\Models\Academico\DatosInstitucionales;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Support\Storage\StorageService;
 use Illuminate\Support\Facades\Storage;
 
 final class TenantOnboarding
 {
     public static function logoPath(): string
     {
-        return (string) tenant()->getKey().'/branding/logo.png';
+        return StorageService::tenantFolder(tenant()).'/branding/logo.png';
+    }
+
+    public static function logoReadPath(): string
+    {
+        $path = self::logoPath();
+        if (Storage::disk('tenant')->exists($path)) return $path;
+
+        // Existing colleges remain readable until their files are reorganized.
+        $legacy = (string) tenant()->getKey().'/branding/logo.png';
+        return Storage::disk('tenant')->exists($legacy) ? $legacy : $path;
     }
 
     public static function logoUrl(?DatosInstitucionales $institution = null): ?string
     {
-        if (! Storage::disk('tenant')->exists(self::logoPath())) {
+        $path = self::logoReadPath();
+        if (! Storage::disk('tenant')->exists($path)) {
             return null;
         }
 
         $institution ??= DatosInstitucionales::query()->first();
         $version = substr($institution?->logo_version
-            ?: hash_file('sha256', Storage::disk('tenant')->path(self::logoPath())), 0, 12);
+            ?: hash_file('sha256', Storage::disk('tenant')->path($path)), 0, 12);
 
         return '/api/branding/logo?v='.$version;
     }
@@ -36,7 +48,7 @@ final class TenantOnboarding
 
     private static function complete(?DatosInstitucionales $datos): bool
     {
-        if ($datos === null || ! Storage::disk('tenant')->exists(self::logoPath())) {
+        if ($datos === null || ! Storage::disk('tenant')->exists(self::logoReadPath())) {
             return false;
         }
 

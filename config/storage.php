@@ -31,6 +31,14 @@ return [
     // Tamano maximo por archivo (bytes). 25 MB en MVP; ajustable por env.
     'max_file_bytes' => (int) env('STORAGE_MAX_FILE_MB', 25) * 1024 * 1024,
 
+    // ONLYOFFICE Docs autoalojado. JWT debe coincidir con JWT_SECRET del servicio.
+    // Ningún documento Office se convierte a PDF en el backend del Aula.
+    'aula_office_url' => env('AULA_OFFICE_URL', ''),
+    'aula_office_jwt_secret' => env('AULA_OFFICE_JWT_SECRET', ''),
+    // Address used by ONLYOFFICE (not the browser) to read the signed original
+    // and send callbacks. It may differ from the public APP_URL in local Docker.
+    'aula_office_backend_url' => env('AULA_OFFICE_BACKEND_URL', env('APP_URL', '')),
+
     // Whitelist MIME: documentos, imagenes, media, comprimidos con excepciones.
     // Sin ejecutables (.exe/.php/.html/.svg con script...) (RN-AC-003).
     'mime_whitelist' => [
@@ -52,6 +60,7 @@ return [
         // Media
         'audio/mpeg' => ['mp3'],
         'audio/ogg' => ['ogg'],
+        'audio/webm' => ['webm'],
         'video/mp4' => ['mp4'],
         'video/webm' => ['webm'],
     ],

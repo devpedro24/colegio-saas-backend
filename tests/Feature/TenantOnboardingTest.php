@@ -71,7 +71,7 @@ class TenantOnboardingTest extends TestCase
             'logo' => UploadedFile::fake()->image('escudo.jpg', 1200, 800),
         ])->assertOk()->assertJsonPath('required', false);
         $this->assertSame([450, 300], array_slice(getimagesizefromstring(
-            Storage::disk('tenant')->get($tenant->getKey().'/branding/logo.png')
+            Storage::disk('tenant')->get(\App\Support\Storage\StorageService::tenantFolder($tenant).'/branding/logo.png')
         ), 0, 2));
         $this->get($api.'/branding/logo')->assertOk()->assertHeader('Content-Type', 'image/png');
         $status = $this->getJson($api.'/onboarding/status')->assertOk();
@@ -91,7 +91,7 @@ class TenantOnboardingTest extends TestCase
         $this->assertNotSame($status->json('logo_url'), $newLogoUrl);
         $this->get($versionedUrl)->assertNotFound();
         $this->assertSame([300, 300], array_slice(getimagesizefromstring(
-            Storage::disk('tenant')->get($tenant->getKey().'/branding/logo.png')
+            Storage::disk('tenant')->get(\App\Support\Storage\StorageService::tenantFolder($tenant).'/branding/logo.png')
         ), 0, 2));
         $this->getJson($api.'/anos-lectivos')->assertOk();
     }

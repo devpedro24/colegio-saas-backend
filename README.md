@@ -35,6 +35,92 @@ simulados y un canal privado aislado; no modifica colegios reales.
 - Composer 2.x
 - PostgreSQL 16 corriendo en `127.0.0.1:5432`
 
+### Vista previa privada de documentos del Aula
+
+DOC, DOCX, XLS, XLSX, PPT y PPTX se conservan en su formato original. La vista integrada
+usa **ONLYOFFICE Docs autoalojado** en modo solo lectura; Laravel no convierte
+estos archivos a PDF. La carga del archivo es independiente del estado del
+visor: si ONLYOFFICE no está disponible, el archivo sigue adjunto y descargable.
+
+En el VPS instala [ONLYOFFICE Docs Community](https://helpcenter.onlyoffice.com/docs/installation/docs-community-install-docker.aspx)
+en un servicio propio, accesible por HTTPS desde el navegador. Configura el
+servidor con `JWT_ENABLED=true` y un `JWT_SECRET` persistente y largo. En la API:
+
+```dotenv
+AULA_OFFICE_URL=https://office.tu-dominio.com
+AULA_OFFICE_JWT_SECRET=el-mismo-JWT_SECRET-del-servidor
+AULA_OFFICE_BACKEND_URL=https://api.tu-dominio.com
+APP_URL=https://api.tu-dominio.com
+```
+
+`AULA_OFFICE_BACKEND_URL` debe poder alcanzarse desde ONLYOFFICE: se usa para
+descargar el DOCX/PPTX original mediante una URL firmada de una hora y para el
+callback de solo lectura. Puede diferir de `APP_URL` (por ejemplo en Docker
+local). El navegador debe poder acceder a `AULA_OFFICE_URL`. Incluye el host de
+la API en `TENANCY_CENTRAL_DOMAINS` cuando sea distinto del habitual.
+No publiques el directorio `storage/app/tenants` ni desactives JWT. Reinicia PHP
+y ejecuta `php artisan config:clear` si usas configuración cacheada. Comprueba
+el servicio y la descarga firmada desde la red del contenedor antes de probar
+la vista en el aula.
+
+Para desarrollo en Windows con Docker Desktop (WSL 2), en `.env` del backend:
+
+```dotenv
+AULA_OFFICE_URL=http://localhost:8088
+AULA_OFFICE_BACKEND_URL=http://host.docker.internal:8000
+AULA_OFFICE_JWT_SECRET=<secreto aleatorio persistente de 32 bytes o más>
+TENANCY_CENTRAL_DOMAINS=localhost,127.0.0.1,host.docker.internal
+```
+
+Inicia la API escuchando en `0.0.0.0:8000` para que el contenedor pueda acceder
+a ella y ejecuta desde este repositorio:
+
+```powershell
+docker compose --env-file .env -f compose.office.local.yml up -d
+```
+
+El visor queda enlazado únicamente al loopback del equipo (`localhost:8088`).
+El contenedor recibe solo el secreto JWT requerido por Compose, no las demás
+credenciales del backend. Las instalaciones nativas de ONLYOFFICE Docs en
+Windows [requieren Windows Server](https://helpcenter.onlyoffice.com/docs/installation/docs-community-install-windows.aspx).
+
+Los adjuntos nuevos se guardan en
+`storage/app/tenants/<colegio>_<id>/aula/Año_lectivo_2026/Grado_Primero_01A/Ciencias_Sociales/Cuarto_período/Segundo_preinforme/Nombre_de_la_sección/Nombre_del_recurso/archivo.docx`.
+No se crean carpetas técnicas `periodos`, `recursos` o `materiales`. Los espacios
+se cambian por `_`; ante nombres de archivo iguales y contenido diferente, el
+segundo recibe `-2`, sin sobrescribir el primero. Títulos de secciones o
+recursos idénticos en el mismo lugar reciben `_2` para no mezclar sus archivos.
+Una nueva carga del mismo documento en dos recursos se guarda en ambas carpetas.
+Para reorganizar adjuntos anteriores, revisa primero `php artisan storage:organize-aula`
+y luego ejecuta `php artisan storage:organize-aula --tenant=<id> --apply`. La
+orden verifica SHA-256 antes de actualizar cada ruta y deja una copia recuperable
+del nombre anterior en `storage/app/aula-storage-migration-backups/`. Materiales
+antiguos sin vínculo activo con un recurso quedan en `Archivos_sin_vinculo`;
+no se reasignan automáticamente a un aula distinta.
+
+### Política y apariencia del Aula
+
+El Aula se aprovisiona automáticamente al existir un grupo y una materia en su
+currículo; las asignaciones docentes no crean ni duplican contenido. El plan debe
+incluir `aula` (por defecto Estándar y Premium). La personalización visual es
+una capacidad separada, `aula_colores`, ubicada después de Aula en el catálogo
+comercial y también incluida por defecto desde Estándar. Sin ella se usan los
+colores predeterminados; los valores previamente guardados se conservan.
+
+Solo el rector puede usar `GET/PUT /api/aula/configuracion`: se comprueban el
+rol y `aula.configurar`; cambiar colores exige además
+`aula.apariencia.configurar` y `aula_colores`. El color de cada posición de
+período se reutiliza entre años lectivos, y un color independiente identifica
+los preinformes en el menú lateral y el contenido principal. El texto mantiene
+un color oscuro para preservar contraste. La misma configuración permite o
+bloquea preparar contenido informativo en períodos cerrados; las calificaciones,
+entregas y nuevas vinculaciones a Planilla siguen protegidas en cualquier caso.
+
+En cada despliegue ejecuta `php artisan migrate --force` y
+`php artisan tenants:migrate --force`; comprueba luego plan, permiso y visor con
+un rector y un usuario sin permiso. Las migraciones son aditivas y no borran
+los colores o materiales al retirar una capacidad comercial.
+
 ## Puesta en marcha
 
 ```bash

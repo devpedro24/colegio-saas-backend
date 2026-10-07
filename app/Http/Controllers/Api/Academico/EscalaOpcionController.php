@@ -112,7 +112,8 @@ final class EscalaOpcionController extends Controller
             throw ValidationException::withMessages(['imagen' => 'No se pudo procesar la imagen. Sube un PNG o JPG válido.']);
         }
         $hash = substr(hash('sha256', $processed), 0, 16);
-        $path = "escalas/{$escala}/opciones/{$opcion}-{$hash}.png";
+        $path = \App\Support\Storage\StorageService::tenantFolder(tenant())
+            ."/escalas/{$escala}/opciones/{$opcion}-{$hash}.png";
         Storage::disk('tenant')->put($path, $processed);
         $before = $option->toArray();
         $option->update(['imagen_path' => $path]);

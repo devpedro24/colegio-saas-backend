@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\Platform\AuditController;
+use App\Http\Controllers\Api\Platform\AulaOfficeCallbackController;
 use App\Http\Controllers\Api\Platform\AuthController as PlatformAuthController;
 use App\Http\Controllers\Api\Platform\ColegioController;
 use App\Http\Controllers\Api\Platform\ColegioSedeController;
@@ -40,6 +41,17 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
             ->where('file', '[A-Za-z0-9_-]{24}')
             ->middleware('signed')
             ->name('storage.file');
+
+        // ONLYOFFICE reaches the API through a different internal host in
+        // Docker. A separate, short-lived relative signature keeps this URL
+        // valid without weakening signatures for ordinary file downloads.
+        Route::get('/aula/office-file/{file}/download', [StorageController::class, 'download'])
+            ->where('file', '[A-Za-z0-9_-]{24}')
+            ->middleware('signed:relative')
+            ->name('storage.office-file');
+
+        Route::post('/aula/office-callback', AulaOfficeCallbackController::class)
+            ->middleware('throttle:60,1')->name('aula.office-callback');
 
         // Callback de Google (anclar cuenta): PUBLICO (lo llama Google tras el
         // consentimiento). No puede ir bajo auth:sanctum.

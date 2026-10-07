@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  *
  * Metadato central (cuotas por plan + descarga firmada se resuelven fuera del
  * contexto del colegio); los BYTES viven en el disco 'tenant' bajo
- * <tenant_id>/<carpeta>/<uuid>.<ext>. Soft-delete (RG-004): la fila persiste
+ * <colegio>_<tenant_id>/<carpeta>/<nombre>.<ext>. Soft-delete (RG-004): la fila persiste
  * hasta la ventana de retencion, cuando la purga fisica borra objeto+fila.
  *
  * @property int         $id

@@ -62,7 +62,7 @@ return [
 
         /*
          | Disco POR COLEGIO (RN-AC-001): los bytes de cada tenant viven bajo
-         | storage/app/tenants/<tenant_id>/... aislados entre colegios. El
+         | storage/app/tenants/<colegio>_<tenant_id>/... aislados entre colegios. El
          | pipeline (StorageService) impone whitelist MIME, antivirus y cuota.
          */
         'tenant' => [

@@ -104,7 +104,7 @@ class OnboardingController extends Controller
 
     public function logo(Request $request): BinaryFileResponse
     {
-        $path = TenantOnboarding::logoPath();
+        $path = TenantOnboarding::logoReadPath();
         abort_unless(Storage::disk('tenant')->exists($path), 404);
 
         $institution = DatosInstitucionales::query()->first();

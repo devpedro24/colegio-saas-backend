@@ -75,9 +75,9 @@ class StorageController extends Controller
             abort(404, 'Archivo no encontrado.');
         }
 
-        return response()->file($disk->path($stored->path), [
+        return response()->download($disk->path($stored->path), $stored->original_name, [
             'Content-Type' => $stored->mime,
-            'Content-Disposition' => 'attachment; filename="'.basename($stored->path).'"',
+            'Cache-Control' => 'private, no-store',
             'X-Content-Type-Options' => 'nosniff',
         ]);
     }

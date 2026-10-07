@@ -1,0 +1,19 @@
+services:
+  office:
+    image: onlyoffice/documentserver:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8088:80"
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${AULA_OFFICE_JWT_SECRET:?Configure AULA_OFFICE_JWT_SECRET in .env}
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
+    volumes:
+      - office_data:/var/www/onlyoffice/Data
+      - office_lib:/var/lib/onlyoffice
+      - office_logs:/var/log/onlyoffice
+
+volumes:
+  office_data:
+  office_lib:
+  office_logs:
