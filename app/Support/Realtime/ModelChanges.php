@@ -34,6 +34,11 @@ final class ModelChanges
             'escalas_valorativas', 'metodos_aprobacion', 'modelos_pedagogicos' => 'academic-config',
             'datos_institucionales' => 'institution',
             'eventos' => 'events',
+            'aulas', 'aula_secciones' => 'aula',
+            'aula_recursos' => 'aula-grade',
+            'aula_adjuntos', 'aula_entregas', 'aula_preguntas', 'aula_pregunta_medios' => 'aula-content',
+            'aula_intentos', 'aula_incidentes', 'aula_respuesta_medios' => 'aula-attempt',
+            'aula_vistas_recursos' => 'aula-progress',
             'users' => 'users',
             'plans' => 'plans',
             'tenants', 'impersonations' => 'schools',
@@ -44,6 +49,11 @@ final class ModelChanges
         };
         if ($model instanceof StoredFile) {
             $tenantId = (string) $model->tenant_id;
+            // Classroom originals (including student submissions) only change
+            // classroom content; they do not invalidate every storage consumer.
+            if (str_contains('/'.ltrim((string) $model->path, '/'), '/aula/')) {
+                $resource = 'aula-content';
+            }
         }
         $changes->record($tenantId, $resource, $connection);
         if ($tenantId !== null && $resource === 'users' && tenant()?->parent_id) {

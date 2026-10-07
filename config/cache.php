@@ -40,9 +40,10 @@ return [
 
         'database' => [
             'driver' => 'database',
-            'connection' => env('DB_CACHE_CONNECTION'),
+            // Cache locks must use the central DB even while the tenant DB is active.
+            'connection' => env('DB_CACHE_CONNECTION', env('DB_CONNECTION', 'sqlite')),
             'table' => env('DB_CACHE_TABLE', 'cache'),
-            'lock_connection' => env('DB_CACHE_LOCK_CONNECTION'),
+            'lock_connection' => env('DB_CACHE_LOCK_CONNECTION', env('DB_CACHE_CONNECTION', env('DB_CONNECTION', 'sqlite'))),
             'lock_table' => env('DB_CACHE_LOCK_TABLE'),
         ],
 

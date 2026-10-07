@@ -6,10 +6,14 @@ use App\Events\ApplicationChanged;
 use App\Events\TenantDataChanged;
 use App\Http\Middleware\SynchronizeRealtimeChanges;
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\AulaAdjunto;
+use App\Models\AuditLog;
+use App\Models\StoredFile;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Support\Realtime\TenantChannelName;
 use App\Support\Realtime\RealtimeChanges;
+use App\Support\Realtime\ModelChanges;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Broadcast;
@@ -123,6 +127,40 @@ class RealtimeSyncTest extends TestCase
         Event::assertDispatched(ApplicationChanged::class, fn ($event) => $event->resources === ['schedule']);
     }
 
+    public function test_aula_opening_broadcasts_only_private_progress(): void
+    {
+        $request = Request::create('/api/aula/recursos/public-token/abrir', 'POST');
+        $request->setUserResolver(fn () => new User(['role' => 'estudiante']));
+        app(SynchronizeRealtimeChanges::class)->handle($request, fn () => response()->json(['saved' => true]));
+        Event::assertDispatchedTimes(ApplicationChanged::class, 1);
+        Event::assertDispatched(ApplicationChanged::class,
+            fn ($event) => $event->resources === ['aula-progress']);
+    }
+
+    public function test_aula_attachment_upload_refreshes_only_content_and_audit(): void
+    {
+        $request = Request::create('/api/aula/recursos/public-token/adjuntos', 'POST');
+        $request->setUserResolver(fn () => new User(['role' => 'docente']));
+        app(SynchronizeRealtimeChanges::class)->handle($request, function () {
+            $modelChanges = app(ModelChanges::class);
+            $modelChanges('eloquent.created: '.StoredFile::class, [new StoredFile([
+                'tenant_id' => 'realtime-a', 'path' => 'Inmaculada_realtime-a/aula/Año_lectivo_2026/archivo.docx',
+            ])]);
+            $modelChanges('eloquent.created: '.AulaAdjunto::class, [new AulaAdjunto(['recurso_id' => 1])]);
+            $modelChanges('eloquent.created: '.AuditLog::class, [new AuditLog([
+                'recurso' => 'aula_adjunto', 'accion' => 'CREATE',
+            ])]);
+
+            return response()->json(['saved' => true], 201);
+        });
+
+        Event::assertDispatchedTimes(ApplicationChanged::class, 2);
+        Event::assertDispatched(ApplicationChanged::class, fn ($event) =>
+            $event->tenantId === 'realtime-a' && $event->resources === ['aula-content', 'audit']);
+        Event::assertDispatched(ApplicationChanged::class, fn ($event) =>
+            $event->tenantId === null && $event->resources === ['audit']);
+    }
+
     public function test_reads_authentication_and_rejected_writes_do_not_trigger_refresh_loops(): void
     {
         foreach ([['GET', '/api/anos-lectivos', 200], ['POST', '/api/broadcasting/auth', 200],
@@ -151,6 +189,24 @@ class RealtimeSyncTest extends TestCase
         $this->assertSame(['resources' => ['academic', 'schedule']], $event->broadcastWith());
         $this->assertSame('private-tenant.'.TenantChannelName::tokenForId('school-a'), $event->broadcastOn()[0]->name);
         $this->assertSame('private-platform', (new ApplicationChanged(null, ['schools']))->broadcastOn()[0]->name);
+    }
+
+    public function test_payload_correlates_own_change_without_exposing_other_request_data(): void
+    {
+        $previous = app('request');
+        $request = Request::create('/api/aula/recursos/test', 'PUT');
+        $request->headers->set('X-Client-Change-ID', '3e0aa476-d27c-4d85-8720-83dc8dd2f21c');
+        app()->instance('request', $request);
+        try {
+            $event = new ApplicationChanged('school-a', ['aula-content']);
+            $this->assertSame(['resources' => ['aula-content'],
+                'change_id' => '3e0aa476-d27c-4d85-8720-83dc8dd2f21c'], $event->broadcastWith());
+            $request->headers->set('X-Client-Change-ID', 'not-a-uuid');
+            $this->assertSame(['resources' => ['aula-content']],
+                (new ApplicationChanged('school-a', ['aula-content']))->broadcastWith());
+        } finally {
+            app()->instance('request', $previous);
+        }
     }
 
     public function test_channel_authentication_accepts_only_the_current_school_or_central_superadmin(): void

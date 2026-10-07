@@ -16,10 +16,16 @@ final class ApplicationChanged implements ShouldBroadcast
     use Dispatchable;
     use InteractsWithSockets;
 
+    public readonly ?string $clientChangeId;
+
     public function __construct(
         public readonly ?string $tenantId,
         public readonly array $resources,
     ) {
+        $header = app()->bound('request') ? request()->header('X-Client-Change-ID') : null;
+        $this->clientChangeId = is_string($header)
+            && preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i', $header)
+                ? $header : null;
         $this->dontBroadcastToCurrentUser();
     }
 
@@ -48,6 +54,7 @@ final class ApplicationChanged implements ShouldBroadcast
 
     public function broadcastWith(): array
     {
-        return ['resources' => $this->resources];
+        return ['resources' => $this->resources,
+            ...($this->clientChangeId ? ['change_id' => $this->clientChangeId] : [])];
     }
 }

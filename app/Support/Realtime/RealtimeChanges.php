@@ -66,6 +66,20 @@ final class RealtimeChanges
         if (preg_match('#^/?(?:api/)?siee/[^/]+/curriculo(?:/|$|\?)#', $path)) {
             return 'curriculum';
         }
+        // Las aperturas y el autosalvado son privados del estudiante. No deben
+        // invalidar los catálogos del colegio ni provocar una recarga de /me.
+        if (preg_match('#^/?(?:api/)?aula/recursos/[^/]+/abrir(?:/|$|\?)#', $path)) {
+            return 'aula-progress';
+        }
+        if (preg_match('#^/?(?:api/)?aula/(?:(?:recursos|entregas)/[^/]+/adjuntos|adjuntos/[^/]+)(?:/|$|\?)#', $path)) {
+            return 'aula-content';
+        }
+        if (preg_match('#^/?(?:api/)?aula/intentos/[^/]+/(?:respuestas|pagina|incidentes)(?:/|$|\?)#', $path)) {
+            return 'aula-attempt';
+        }
+        if (preg_match('#^/?(?:api/)?aula/(?:secciones/[^/]+/recursos|recursos/[^/]+|entregas/[^/]+/calificar|intentos/[^/]+/(?:finalizar|calificar))(?:$|\?)#', $path)) {
+            return 'aula-grade';
+        }
         $root = explode('/', trim(preg_replace('#^/?api/#', '', $path), '/'))[0];
         return match ($root) {
             'anos-lectivos', 'periodos' => 'academic',
@@ -74,6 +88,7 @@ final class RealtimeChanges
             'horarios', 'asignaciones' => 'schedule',
             'asistencias' => 'attendance',
             'evaluacion' => 'evaluation',
+            'aula' => 'aula',
             'siee', 'config' => 'academic-config',
             'eventos' => 'events',
             'onboarding', 'branding' => 'institution',
