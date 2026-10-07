@@ -9,3 +9,4 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('academico:sincronizar-periodos')->hourly()->withoutOverlapping();
+Schedule::command('aula:expirar-intentos')->everyMinute()->withoutOverlapping();

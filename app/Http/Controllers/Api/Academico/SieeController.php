@@ -13,6 +13,7 @@ use App\Models\Academico\Grado;
 use App\Models\Academico\Materia;
 use App\Models\Academico\MetodoAprobacion;
 use App\Services\GradeCalculationService;
+use App\Services\AulaProvisioningService;
 use App\Services\SieeConfiguration;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
@@ -191,6 +192,7 @@ class SieeController extends Controller
             $key = ['ano_lectivo_id' => $id, 'grado_id' => $data['grado_id'], 'materia_id' => $data['materia_id']];
             $previous = DB::table('materias_curriculares')->where($key)->first();
             DB::table('materias_curriculares')->updateOrInsert($key, [...$data, 'updated_at' => now(), ...($previous ? [] : ['created_at' => now()])]);
+            app(AulaProvisioningService::class)->syncGrade($id, $grade->id);
             AuditLogger::tenant($request->user(), $previous ? 'UPDATE' : 'CREATE', 'materia_curricular', $id.':'.$data['grado_id'].':'.$data['materia_id'], $previous ? (array) $previous : null, $data);
         });
 
@@ -254,6 +256,8 @@ class SieeController extends Controller
                     $id.':'.$key, $previous ? (array) $previous : null, $values);
                 $count++;
             }
+
+            app(AulaProvisioningService::class)->syncYear($id);
 
             return $count;
         });

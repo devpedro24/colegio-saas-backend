@@ -8,6 +8,7 @@ use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Area;
 use App\Models\Academico\Aula;
 use App\Models\Academico\AulaPregunta;
+use App\Models\Academico\AulaPreguntaMedio;
 use App\Models\Academico\AulaRecurso;
 use App\Models\Academico\AulaSeccion;
 use App\Models\Academico\BloqueHorario;
@@ -49,6 +50,7 @@ final class DuplicarAnoLectivoService
     public function duplicar(AnoLectivo $source, array $yearData, array $options, User $actor): AnoLectivo
     {
         $options = $this->withDependencies($options);
+        if ($options['aulas']) abort_unless($actor->can('aula.duplicar'), 403);
 
         return DB::transaction(function () use ($source, $yearData, $options, $actor): AnoLectivo {
             $source = AnoLectivo::lockForUpdate()->findOrFail($source->id);
@@ -125,6 +127,8 @@ final class DuplicarAnoLectivoService
             $asistenciaCopiada = $options['asistencia']
                 ? $this->copyAttendancePolicy($source, $target) : 0;
             $aulasCopiadas = $options['aulas'] ? $this->copyAulas($source, $target, $maps) : 0;
+            // The curriculum defines every empty Aula, even when classroom content is not copied.
+            app(AulaProvisioningService::class)->syncYear($target->id);
 
             $this->saveCopyState($target, $source, $options, ! $options['aulas']);
 
@@ -153,6 +157,7 @@ final class DuplicarAnoLectivoService
     public function copiarConfiguracion(AnoLectivo $source, AnoLectivo $target, array $options, User $actor): AnoLectivo
     {
         $options = $this->withDependencies($options);
+        if ($options['aulas']) abort_unless($actor->can('aula.duplicar'), 403);
         if (! in_array(true, $options, true)) {
             throw ValidationException::withMessages(['opciones' => 'Selecciona al menos una configuración para copiar.']);
         }
@@ -278,6 +283,7 @@ final class DuplicarAnoLectivoService
             $created['asistencia'] = $options['asistencia']
                 ? $this->copyAttendancePolicy($source, $target) : 0;
             $created['aulas'] = $options['aulas'] ? $this->copyAulas($source, $target, $maps) : 0;
+            app(AulaProvisioningService::class)->syncYear($target->id);
 
             $priorOptions = $state && ! $switching ? (json_decode($state->opciones, true) ?: []) : [];
             $savedOptions = $options;
@@ -325,7 +331,9 @@ final class DuplicarAnoLectivoService
         $filled['siee'] = $target->siee !== null;
         $filled['asistencia'] = DB::table('asistencia_politicas')
             ->where('ano_lectivo_id', $target->id)->exists();
-        $filled['aulas'] = DB::table('aulas')->where('ano_lectivo_id', $target->id)->exists();
+        $filled['aulas'] = DB::table('aula_secciones as s')->join('aulas as a', 'a.id', '=', 's.aula_id')
+            ->where('a.ano_lectivo_id', $target->id)->exists()
+            || DB::table('aulas')->where('ano_lectivo_id', $target->id)->whereNotNull('portada_token')->exists();
 
         return $filled;
     }
@@ -388,6 +396,12 @@ final class DuplicarAnoLectivoService
 
     private function assertCanReplace(AnoLectivo $target): void
     {
+        // System-provisioned, untouched Aulas do not make a copied academic setup immutable.
+        $aulaIds = DB::table('aulas')->where('ano_lectivo_id', $target->id)->pluck('id');
+        if (DB::table('aulas')->whereIn('id', $aulaIds)->whereNotNull('portada_token')->exists()
+            || DB::table('aula_secciones')->whereIn('aula_id', $aulaIds)->exists()) {
+            throw ValidationException::withMessages(['origen_id' => 'El aula ya tiene contenido o portada y no se puede reemplazar la configuración copiada.']);
+        }
         $protected = array_values(self::TABLES);
         $ids = [];
         foreach (['grupos' => 'grupo_id', 'materias' => 'materia_id', 'grados' => 'grado_id',
@@ -401,7 +415,7 @@ final class DuplicarAnoLectivoService
             if (in_array($table, $protected, true) || in_array($table, [
                 'anos_lectivos', 'copias_configuracion_anual', 'periodos_sumatorios_legado',
                 'preparaciones_evaluacion', 'componentes_preparados', 'actividades_preparadas',
-                'preinformes', 'asistencia_politicas',
+                'preinformes', 'asistencia_politicas', 'aulas',
             ], true)) {
                 continue;
             }
@@ -420,6 +434,9 @@ final class DuplicarAnoLectivoService
 
     private function clearConfiguration(AnoLectivo $target): void
     {
+        $aulaIds = DB::table('aulas')->where('ano_lectivo_id', $target->id)->pluck('id');
+        DB::table('academic_public_tokens')->where('resource', 'aula')->whereIn('record_id', $aulaIds)->delete();
+        DB::table('aulas')->whereIn('id', $aulaIds)->delete();
         DB::table('asistencia_politicas')->where('ano_lectivo_id', $target->id)->delete();
         $target->update(['siee' => null]);
         $curriculumIds = DB::table('materias_curriculares')->where('ano_lectivo_id', $target->id)->pluck('id');
@@ -476,10 +493,12 @@ final class DuplicarAnoLectivoService
                 'El currículo destino no incluye una asignatura del aula.');
             $newAula = Aula::firstOrCreate(['grupo_id' => $group, 'materia_id' => $subject],
                 ['ano_lectivo_id' => $target->id, 'portada_token' => $oldAula->portada_token]);
-            // Un aula que ya existe en destino puede tener trabajo propio: no insertamos
-            // secciones adicionales de forma silenciosa en ella ni alteramos sus materiales.
-            if (! $newAula->wasRecentlyCreated) continue;
-            $copied++;
+            if ($newAula->portada_token === null && $oldAula->portada_token !== null) {
+                $newAula->update(['portada_token' => $oldAula->portada_token]);
+            }
+            // El aula puede existir por una asignación previa. Agregamos solo contenido
+            // que aún no se había copiado y conservamos intacto su trabajo propio.
+            $changed = $newAula->wasRecentlyCreated;
             foreach ($oldAula->secciones as $oldSection) {
                 $oldPeriod = Periodo::findOrFail($oldSection->periodo_id);
                 $newPeriod = Periodo::where('ano_lectivo_id', $target->id)->where('orden', $oldPeriod->orden)->first();
@@ -490,13 +509,18 @@ final class DuplicarAnoLectivoService
                     $newPre = Preinforme::where('periodo_id', $newPeriod->id)->where('orden', $oldPre->orden)->first();
                     if (! $newPre) throw ValidationException::withMessages(['opciones' => 'Falta un preinforme equivalente para el aula.']);
                 }
-                $newSection = AulaSeccion::firstOrCreate(['aula_id' => $newAula->id, 'seccion_origen_id' => $oldSection->id],
+                $newSection = AulaSeccion::withTrashed()->firstOrCreate(['aula_id' => $newAula->id, 'seccion_origen_id' => $oldSection->id],
                     ['periodo_id' => $newPeriod->id, 'preinforme_id' => $newPre?->id, 'titulo' => $oldSection->titulo,
                         'orden' => $oldSection->orden, 'visible_estudiantes' => false, 'autor_id' => $oldSection->autor_id]);
+                if ($newSection->trashed()) continue; // No revivir una copia eliminada intencionalmente.
+                $changed = $changed || $newSection->wasRecentlyCreated;
                 foreach ($oldSection->recursos as $oldResource) {
-                    if (AulaRecurso::where('seccion_id', $newSection->id)->where('recurso_origen_id', $oldResource->id)->exists()) continue;
+                    if (AulaRecurso::withTrashed()->whereIn('seccion_id', AulaSeccion::withTrashed()
+                        ->where('aula_id', $newAula->id)->select('id'))
+                        ->where('recurso_origen_id', $oldResource->id)->exists()) continue;
                     $config = $oldResource->configuracion ?? [];
                     if ($oldResource->llevar_planilla) $config['vinculo_anterior_requiere_revision'] = true;
+                    unset($config['planilla_componente_token']); // Nunca reutilizar el componente del año anterior.
                     $newResource = AulaRecurso::create(['seccion_id' => $newSection->id, 'tipo' => $oldResource->tipo,
                         'titulo' => $oldResource->titulo, 'contenido' => $oldResource->contenido, 'configuracion' => $config,
                         'estado' => $oldResource->estado, 'visible_estudiantes' => false,
@@ -504,11 +528,19 @@ final class DuplicarAnoLectivoService
                         'peso' => $oldResource->peso, 'disponible_desde' => null, 'disponible_hasta' => null,
                         'fecha_limite' => null, 'zona_publicacion' => null, 'orden' => $oldResource->orden,
                         'autor_id' => $oldResource->autor_id, 'recurso_origen_id' => $oldResource->id, 'version' => 1]);
+                    $changed = true;
                     foreach ($oldResource->preguntas as $question) {
-                        AulaPregunta::create(['recurso_id' => $newResource->id, 'tipo' => $question->tipo,
+                        $newQuestion = AulaPregunta::create(['recurso_id' => $newResource->id, 'tipo' => $question->tipo,
                             'enunciado' => $question->enunciado, 'opciones' => $question->opciones,
                             'respuesta_correcta' => $question->respuesta_correcta, 'puntos' => $question->puntos,
+                            'puntajes_opciones' => $question->puntajes_opciones, 'rubrica' => $question->rubrica,
                             'orden' => $question->orden]);
+                        foreach ($question->medios as $medium) {
+                            AulaPreguntaMedio::create(['pregunta_id' => $newQuestion->id,
+                                'opcion_indice' => $medium->opcion_indice,
+                                'archivo_token' => $medium->archivo_token, 'nombre' => $medium->nombre,
+                                'mime' => $medium->mime, 'autor_id' => $medium->autor_id]);
+                        }
                     }
                     foreach (DB::table('aula_adjuntos')->where('recurso_id', $oldResource->id)->whereNull('entrega_id')->get() as $file) {
                         DB::table('aula_adjuntos')->insert(['recurso_id' => $newResource->id, 'entrega_id' => null,
@@ -517,6 +549,7 @@ final class DuplicarAnoLectivoService
                     }
                 }
             }
+            if ($changed) $copied++;
         }
 
         return $copied;

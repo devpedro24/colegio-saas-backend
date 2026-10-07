@@ -58,6 +58,7 @@ class PlanCatalog
             // ---- Academico avanzado ----
             ['key' => 'preinformes', 'category' => 'academico_avanzado', 'label' => 'plan.f.preinformes', 'description' => 'plan.f.preinformes.desc'],
             ['key' => 'aula', 'category' => 'academico_avanzado', 'label' => 'plan.f.aula', 'description' => 'plan.f.aula.desc'],
+            ['key' => 'aula_colores', 'category' => 'academico_avanzado', 'label' => 'plan.f.aulaColores', 'description' => 'plan.f.aulaColores.desc'],
             ['key' => 'boletines_personalizables', 'category' => 'academico_avanzado', 'label' => 'plan.f.boletines', 'description' => 'plan.f.boletines.desc'],
             ['key' => 'multi_sede', 'category' => 'academico_avanzado', 'label' => 'plan.f.multiSede', 'description' => 'plan.f.multiSede.desc'],
             ['key' => 'firma_electronica', 'category' => 'academico_avanzado', 'label' => 'plan.f.firmaElectronica', 'description' => 'plan.f.firmaElectronica.desc'],
@@ -114,7 +115,7 @@ class PlanCatalog
 
         $estandar = array_merge($esencial, [
             'multi_pasarela', 'pagos_sin_friccion', 'app_acudientes',
-            'boletines_personalizables', 'multi_sede', 'firma_electronica', 'preinformes', 'aula',
+            'boletines_personalizables', 'multi_sede', 'firma_electronica', 'preinformes', 'aula', 'aula_colores',
             'carne_qr', 'reportes_financieros',
         ]);
 

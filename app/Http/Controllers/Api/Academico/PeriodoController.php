@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
 use App\Services\PeriodoLifecycleService;
+use App\Services\AulaGradebookService;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use Illuminate\Http\JsonResponse;
@@ -207,6 +208,8 @@ class PeriodoController extends Controller
 
             return [$periodo, $prev];
         });
+
+        app(AulaGradebookService::class)->reconcilePeriod($periodo);
 
         AuditLogger::tenant(
             $request->user(),

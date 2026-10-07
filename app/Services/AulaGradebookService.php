@@ -13,10 +13,12 @@ use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\AulaSeccion;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 use Brick\Math\BigDecimal;
 
 final class AulaGradebookService
@@ -37,11 +39,40 @@ final class AulaGradebookService
             $resource = AulaRecurso::whereKey($resource->id)->lockForUpdate()->firstOrFail();
             if ($resource->actividad_id) return ActividadEvaluacion::findOrFail($resource->actividad_id);
             $period = Periodo::findOrFail($resource->seccion->periodo_id);
+            $usesReports = (bool) ($period->configuracion_notas['usar_preinformes'] ?? false);
+            if ($usesReports) {
+                app(AcademicPlanAccess::class)->requirePreinformes();
+                abort_unless($resource->seccion->preinforme_id, 422,
+                    'Selecciona un preinforme para vincular este recurso con la planilla.');
+            }
+            $components = ComponenteEvaluacion::where('asignacion_id', $assignment->id)
+                ->where('periodo_id', $period->id);
+            $usesReports ? $components->where('preinforme_id', $resource->seccion->preinforme_id)
+                : $components->whereNull('preinforme_id');
+            $componentToken = $resource->configuracion['planilla_componente_token'] ?? null;
+            if ($componentToken) {
+                $selectedComponent = OpaqueUrlToken::find('componente-evaluacion', $componentToken, clone $components);
+                abort_unless($selectedComponent, 422,
+                    'La sección seleccionada ya no pertenece a esta planilla.');
+            } else {
+                abort_if((clone $components)->count() > 1, 422,
+                    'Selecciona la sección de la planilla antes de guardar el recurso.');
+                $selectedComponent = (clone $components)->first();
+            }
+            if ($selectedComponent?->modo === 'WEIGHTED_AVERAGE') {
+                abort_if($resource->peso === null || BigDecimal::of((string) $resource->peso)->isLessThanOrEqualTo('0'),
+                    422, 'Indica un porcentaje mayor que cero para esta actividad ponderada.');
+                $used = ActividadEvaluacion::where('componente_id', $selectedComponent->id)->pluck('peso')
+                    ->reduce(fn (BigDecimal $sum, $peso) => $sum->plus((string) ($peso ?? 0)), BigDecimal::zero());
+                abort_if($used->plus((string) $resource->peso)->isGreaterThan('100'), 422,
+                    'Los porcentajes de actividades vinculadas no pueden superar 100 %.');
+            }
             if ($period->estado === Periodo::ESTADO_PLANIFICADO) return null;
             $this->book->writable($assignment, $period->id);
             $section = $this->sheets->section($assignment, $period, [
                 'preinforme_token' => $resource->seccion->preinforme_id
                     ? OpaqueUrlToken::for('preinforme', $resource->seccion->preinforme_id) : null,
+                'componente_token' => $resource->configuracion['planilla_componente_token'] ?? null,
             ]);
             abort_if($section->modo === 'WEIGHTED_AVERAGE' && $resource->peso === null, 422,
                 'Indica el porcentaje de la actividad antes de vincularla.');
@@ -65,6 +96,38 @@ final class AulaGradebookService
 
             return $activity;
         });
+    }
+
+    /** Resolve requested links when a planned period opens, without failing its transition. */
+    public function reconcilePeriod(Periodo $period): array
+    {
+        if ($period->estado !== Periodo::ESTADO_ABIERTO) return ['vinculados' => 0, 'pendientes' => 0];
+
+        $linked = 0;
+        $pending = 0;
+        AulaRecurso::whereIn('seccion_id', AulaSeccion::where('periodo_id', $period->id)->select('id'))
+            ->where('calificable', true)->where('llevar_planilla', true)->whereNull('actividad_id')
+            ->with('seccion.aula')->chunkById(100, function ($resources) use (&$linked, &$pending): void {
+                foreach ($resources as $resource) {
+                    $assignment = $this->access->assignment($resource->seccion->aula);
+                    $teacher = $assignment?->docente;
+                    if (! $teacher || ! $this->access->canManage($teacher, $resource->seccion->aula)
+                        || ! $teacher->can('notas.registrar_materia_asignada')) {
+                        $pending++;
+                        continue;
+                    }
+                    try {
+                        $this->link($resource, $teacher);
+                        $linked++;
+                    } catch (Throwable $error) {
+                        // The requested link remains pending for correction; never lose the period opening.
+                        report($error);
+                        $pending++;
+                    }
+                }
+            });
+
+        return ['vinculados' => $linked, 'pendientes' => $pending];
     }
 
     private function backfill(AulaRecurso $resource, ActividadEvaluacion $activity,

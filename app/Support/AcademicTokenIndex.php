@@ -28,6 +28,8 @@ final class AcademicTokenIndex
         'aula_recursos' => ['aula-recurso'], 'aula_entregas' => ['aula-entrega'],
         'aula_intentos' => ['aula-intento'], 'aula_preguntas' => ['aula-pregunta'],
         'aula_adjuntos' => ['aula-adjunto'],
+        'aula_pregunta_medios' => ['aula-pregunta-medio'],
+        'aula_respuesta_medios' => ['aula-respuesta-medio'],
         'escalas_valorativas' => ['escala-valorativa'], 'escala_opciones' => ['escala-opcion'], 'metodos_aprobacion' => ['metodo-aprobacion'],
         'modelos_pedagogicos' => ['modelo-pedagogico'], 'users' => ['usuario', 'docente'],
     ];

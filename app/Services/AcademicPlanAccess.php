@@ -31,4 +31,12 @@ final class AcademicPlanAccess
     {
         abort_unless($this->aula(), 403, 'El plan del colegio no incluye Aula.');
     }
+
+    public function aulaColors(): bool
+    {
+        $planKey = tenant()?->fresh()?->plan;
+        $features = $planKey ? Plan::where('key', $planKey)->value('features') ?? [] : [];
+
+        return in_array('aula', $features, true) && in_array('aula_colores', $features, true);
+    }
 }

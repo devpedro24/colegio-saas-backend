@@ -6,12 +6,16 @@ namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\ActividadEvaluacion;
 use App\Models\Academico\AulaIntento;
 use App\Models\Academico\AulaPregunta;
+use App\Models\Academico\AulaPreguntaMedio;
+use App\Models\Academico\AulaRespuestaMedio;
 use App\Models\Academico\AulaRecurso;
 use App\Models\Academico\Calificacion;
 use App\Models\Academico\EscalaOpcion;
 use App\Services\AulaAccess;
+use App\Services\AulaContentPolicy;
 use App\Services\AulaGradebookService;
 use App\Services\EscalaVisualService;
 use App\Services\SieeConfiguration;
@@ -33,35 +37,123 @@ final class AulaCuestionarioController extends Controller
     {
         $resource = $this->quiz($token);
         $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.gestionar');
-        abort_if($resource->seccion->periodo->estaCerrado(), 422, 'El período está cerrado.');
+        $this->access->content($request->user(), $resource->seccion->aula, 'editar', true);
+        app(AulaContentPolicy::class)->assertEditable($resource->seccion->periodo);
         abort_if(AulaIntento::where('recurso_id', $resource->id)->exists(), 422,
             'El cuestionario ya tiene intentos. No cambies sus respuestas históricas.');
         $data = $request->validate([
+            'version' => ['required', 'integer', 'min:1'],
             'preguntas' => ['required', 'array', 'min:1', 'max:100'],
-            'preguntas.*.tipo' => ['required', Rule::in(['unica', 'multiple', 'booleano', 'correspondencia', 'orden', 'abierta'])],
+            'preguntas.*.token' => ['nullable', 'string', 'size:24'],
+            'preguntas.*.tipo' => ['required', Rule::in(['unica', 'multiple', 'booleano', 'correspondencia', 'orden', 'abierta', 'audio', 'video'])],
             'preguntas.*.enunciado' => ['required', 'string', 'max:10000'],
             'preguntas.*.opciones' => ['nullable', 'array', 'max:30'],
+            'preguntas.*.opciones.*' => ['string', 'max:1000'],
             'preguntas.*.respuesta_correcta' => ['nullable', 'array'],
             'preguntas.*.puntos' => ['required', 'numeric', 'min:0.001', 'max:100'],
+            'preguntas.*.puntajes_opciones' => ['nullable', 'array'],
+            'preguntas.*.rubrica' => ['nullable', 'array', 'max:15'],
+            'preguntas.*.rubrica.*.nombre' => ['required_with:preguntas.*.rubrica', 'string', 'max:160'],
+            'preguntas.*.rubrica.*.puntos' => ['required_with:preguntas.*.rubrica', 'numeric', 'min:0.001', 'max:100'],
         ]);
-        foreach ($data['preguntas'] as $question) {
-            if ($question['tipo'] !== 'abierta') {
-                abort_if(empty($question['respuesta_correcta']), 422, 'Cada pregunta objetiva necesita una respuesta correcta.');
+        foreach ($data['preguntas'] as &$question) {
+            $options = array_map('trim', $question['opciones'] ?? []);
+            $answer = $question['respuesta_correcta']['valor'] ?? null;
+            if (in_array($question['tipo'], ['abierta', 'audio', 'video'], true)) {
+                $question['opciones'] = [];
+                $question['respuesta_correcta'] = null;
+                $question['puntajes_opciones'] = null;
+                $rubric = $question['rubrica'] ?? [];
+                abort_if(collect($rubric)->sum(fn ($item) => (float) $item['puntos']) > (float) $question['puntos'] + 0.00001,
+                    422, 'Los criterios de la rúbrica no pueden superar los puntos de la pregunta.');
+                continue;
+            }
+            abort_if(! empty($question['rubrica']), 422, 'La rúbrica corresponde a una respuesta abierta, de audio o de video.');
+            $question['rubrica'] = null;
+            if ($question['tipo'] === 'booleano') {
+                $options = ['Verdadero', 'Falso'];
+            } else {
+                abort_if(count($options) < 2 || in_array('', $options, true)
+                    || count(array_unique($options)) !== count($options), 422,
+                    'Cada pregunta objetiva necesita al menos dos opciones distintas y completas.');
+            }
+            if (in_array($question['tipo'], ['unica', 'booleano'], true)) {
+                abort_unless(is_string($answer) && in_array(trim($answer), $options, true), 422,
+                    'Selecciona una respuesta correcta incluida en las opciones.');
+                $answer = trim($answer);
+            } else {
+                abort_unless(is_array($answer) && count($answer) > 0
+                    && collect($answer)->every(fn ($value) => is_string($value)
+                        && trim($value) !== '' && mb_strlen($value) <= 1000), 422,
+                    'Completa la respuesta correcta de la pregunta.');
+                $answer = array_map('trim', $answer);
+                abort_if(count(array_unique($answer)) !== count($answer), 422,
+                    'La respuesta correcta no puede repetir elementos.');
+                if ($question['tipo'] === 'multiple') {
+                    abort_if(count(array_diff($answer, $options)) > 0, 422,
+                        'Las respuestas correctas deben pertenecer a las opciones.');
+                } else {
+                    abort_if(count($answer) !== count($options), 422,
+                        'La respuesta correcta debe incluir un elemento por cada opción.');
+                    if ($question['tipo'] === 'orden') {
+                        abort_if(count(array_diff($answer, $options)) > 0, 422,
+                            'El orden correcto debe contener exactamente los elementos propuestos.');
+                    }
+                }
+            }
+            $question['opciones'] = $options;
+            $question['respuesta_correcta'] = ['valor' => $answer];
+            $weights = $question['puntajes_opciones'] ?? null;
+            if ($weights !== null) {
+                abort_unless(in_array($question['tipo'], ['unica', 'multiple', 'booleano'], true), 422,
+                    'Los puntos por opción solo se usan en selección única, múltiple y verdadero/falso.');
+                abort_if(array_diff(array_keys($weights), $options) || collect($weights)->contains(
+                    fn ($value) => ! is_numeric($value) || (float) $value < 0 || (float) $value > (float) $question['puntos']),
+                    422, 'Los puntos por opción deben corresponder a opciones válidas de la pregunta.');
+                abort_if($question['tipo'] === 'multiple' && array_sum(array_map('floatval', $weights)) > (float) $question['puntos'] + 0.00001,
+                    422, 'La suma de los puntos por opción no puede superar los puntos de la pregunta.');
+                $question['puntajes_opciones'] = $weights;
             }
         }
+        unset($question);
         DB::transaction(function () use ($resource, $data, $request): void {
-            AulaPregunta::where('recurso_id', $resource->id)->delete();
+            $locked = AulaRecurso::whereKey($resource->id)->lockForUpdate()->firstOrFail();
+            abort_unless($locked->version === $data['version'], 409,
+                'El cuestionario cambió en otra sesión. Recarga antes de guardar preguntas.');
+            abort_if(AulaIntento::where('recurso_id', $locked->id)->exists(), 422,
+                'El cuestionario ya tiene intentos. No cambies sus respuestas históricas.');
+            $kept = [];
             foreach ($data['preguntas'] as $order => $question) {
-                AulaPregunta::create(['recurso_id' => $resource->id, 'tipo' => $question['tipo'],
+                $existing = ! empty($question['token']) ? Token::find('aula-pregunta', $question['token'],
+                    AulaPregunta::where('recurso_id', $resource->id)) : null;
+                abort_if(! empty($question['token']) && ! $existing, 422, 'La pregunta no pertenece a este cuestionario.');
+                abort_if($existing && in_array($existing->id, $kept, true), 422, 'Una pregunta aparece dos veces.');
+                $fields = ['recurso_id' => $resource->id, 'tipo' => $question['tipo'],
                     'enunciado' => $question['enunciado'], 'opciones' => $question['opciones'] ?? null,
                     'respuesta_correcta' => $question['respuesta_correcta'] ?? null,
-                    'puntos' => $question['puntos'], 'orden' => $order]);
+                    'puntajes_opciones' => $question['puntajes_opciones'] ?? null, 'rubrica' => $question['rubrica'] ?? null,
+                    'puntos' => $question['puntos'], 'orden' => $order];
+                if ($existing) {
+                    $previousOptions = $existing->opciones ?? [];
+                    foreach ($existing->medios()->whereNotNull('opcion_indice')->get() as $medium) {
+                        if (($previousOptions[$medium->opcion_indice] ?? null) !== ($fields['opciones'][$medium->opcion_indice] ?? null)) {
+                            $medium->delete();
+                        }
+                    }
+                    $existing->update($fields);
+                    $kept[] = $existing->id;
+                } else {
+                    $kept[] = AulaPregunta::create($fields)->id;
+                }
             }
+            AulaPregunta::where('recurso_id', $resource->id)->whereNotIn('id', $kept)->delete();
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_preguntas', (string) $resource->id, null,
                 ['cantidad' => count($data['preguntas'])]);
+            $locked->update(['version' => $locked->version + 1]);
         });
 
-        return response()->json(['data' => ['guardado' => true]]);
+        return response()->json(['data' => ['guardado' => true, 'version' => $resource->fresh()->version,
+            'preguntas' => $this->questionData($resource->fresh()->preguntas()->with('medios')->get())]]);
     }
 
     public function iniciar(Request $request, string $token): JsonResponse
@@ -91,9 +183,11 @@ final class AulaCuestionarioController extends Controller
             $duration = (int) ($config['duracion_minutos'] ?? 60);
             $expires = now('UTC')->addMinutes($duration);
             if ($resource->disponible_hasta && $resource->disponible_hasta->lt($expires)) $expires = $resource->disponible_hasta;
+            $presentation = $this->newPresentation($resource, $config);
             $attempt = AulaIntento::create(['recurso_id' => $resource->id, 'matricula_id' => $enrollment->id,
                 'numero' => ($latest?->numero ?? 0) + 1, 'estado' => 'en_curso', 'iniciado_at' => now('UTC'),
-                'vence_at' => $expires, 'respuestas' => [], 'pagina_actual' => 1, 'version' => 1]);
+                'vence_at' => $expires, 'respuestas' => [], 'pagina_actual' => 1,
+                'presentacion' => $presentation, 'version' => 1]);
             AuditLogger::tenant($request->user(), 'CREATE', 'aula_intento', (string) $attempt->id, null,
                 ['recurso_id' => $resource->id, 'matricula_id' => $enrollment->id, 'numero' => $attempt->numero]);
 
@@ -110,8 +204,8 @@ final class AulaCuestionarioController extends Controller
         $resource = $attempt->recurso;
         $this->access->readResource($request->user(), $resource);
         $own = $this->access->enrollment($request->user(), $resource->seccion->aula)?->id === $attempt->matricula_id;
-        if (! $own) $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.gestionar');
-        abort_unless($own || $request->user()->can('aula.evaluaciones.gestionar'), 403);
+        if (! $own) $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.calificar');
+        abort_unless($own || $request->user()->can('aula.evaluaciones.calificar'), 403);
 
         return response()->json(['data' => $this->attemptData($attempt, $resource, $own)]);
     }
@@ -137,8 +231,8 @@ final class AulaCuestionarioController extends Controller
             abort_unless($attempt, 404);
             $attempt = AulaIntento::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
             $this->ownActiveAttempt($request, $attempt);
-            $allowed = AulaPregunta::where('recurso_id', $attempt->recurso_id)->orderBy('orden')->orderBy('id')->pluck('id')
-                ->map(fn ($id) => Token::for('aula-pregunta', $id))->all();
+            $questions = $this->orderedQuestions($attempt, $attempt->recurso);
+            $allowed = $questions->map(fn ($question) => Token::for('aula-pregunta', $question->id))->all();
             $previous = $attempt->respuestas ?? [];
             $config = $attempt->recurso->configuracion ?? [];
             $perPage = max(1, (int) ($config['preguntas_por_pagina'] ?? 100));
@@ -149,6 +243,33 @@ final class AulaCuestionarioController extends Controller
                 abort_if(is_array($answer) && (count($answer) > 30 || collect($answer)->contains(
                     fn ($item) => ! is_string($item) || mb_strlen($item) > 1000)), 422, 'La respuesta no es válida.');
                 $index = array_search($key, $allowed, true);
+                $question = $questions[$index];
+                if (in_array($question->tipo, ['audio', 'video'], true)) {
+                    $medium = AulaRespuestaMedio::where('intento_id', $attempt->id)
+                        ->where('pregunta_id', $question->id)->first();
+                    abort_unless(is_string($answer) && $medium
+                        && hash_equals(Token::for('aula-respuesta-medio', $medium->id), $answer), 422,
+                        'La respuesta multimedia debe ser un archivo propio de este intento.');
+                } elseif ($question->tipo === 'abierta') {
+                    abort_unless(is_string($answer), 422, 'La respuesta abierta debe ser texto.');
+                } elseif (in_array($question->tipo, ['unica', 'booleano'], true)) {
+                    abort_unless(is_string($answer) && in_array($answer, $question->opciones ?? [], true), 422,
+                        'Elige una opción válida.');
+                } elseif ($question->tipo === 'correspondencia') {
+                    $choices = $question->respuesta_correcta['valor'] ?? [];
+                    abort_unless(is_array($answer) && count($answer) === count($question->opciones ?? [])
+                        && collect($answer)->every(fn ($value) => is_string($value)
+                            && ($value === '' || in_array($value, $choices, true)))
+                        && count(array_unique(array_filter($answer, fn ($value) => $value !== '')))
+                            === count(array_filter($answer, fn ($value) => $value !== '')), 422,
+                        'Cada correspondencia debe usar una opción válida sin repetirla.');
+                } else {
+                    abort_unless(is_array($answer) && collect($answer)->every(fn ($value) =>
+                        is_string($value) && in_array($value, $question->opciones ?? [], true))
+                        && count(array_unique($answer)) === count($answer)
+                        && ($question->tipo !== 'orden' || count($answer) === count($question->opciones ?? [])), 422,
+                        'La respuesta no pertenece a las opciones.');
+                }
                 $answerPage = intdiv($index, $perPage) + 1;
                 abort_if($answerPage > $attempt->pagina_actual, 422,
                     'No puedes responder una página que aún no has abierto.');
@@ -202,15 +323,18 @@ final class AulaCuestionarioController extends Controller
             abort_unless($attempt, 404);
             $attempt = AulaIntento::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
             $this->ownActiveAttempt($request, $attempt);
+            $minimum = (int) ($attempt->recurso->configuracion['duracion_minima_minutos'] ?? 0);
+            abort_if($minimum > 0 && now('UTC')->lt($attempt->iniciado_at->copy()->addMinutes($minimum)), 422,
+                "Este cuestionario exige al menos {$minimum} minuto(s) antes de finalizar.");
             $questions = AulaPregunta::where('recurso_id', $attempt->recurso_id)->get();
-            $hasOpen = $questions->contains('tipo', 'abierta');
+            $hasOpen = $questions->contains(fn ($question) => in_array($question->tipo, ['abierta', 'audio', 'video'], true));
             $points = BigDecimal::zero();
             $earned = BigDecimal::zero();
             foreach ($questions as $question) {
                 $points = $points->plus((string) $question->puntos);
-                if ($question->tipo === 'abierta') continue;
+                if (in_array($question->tipo, ['abierta', 'audio', 'video'], true)) continue;
                 $given = ($attempt->respuestas ?? [])[Token::for('aula-pregunta', $question->id)] ?? null;
-                if ($this->sameAnswer($given, $question->respuesta_correcta, $question->tipo)) $earned = $earned->plus((string) $question->puntos);
+                $earned = $earned->plus($this->objectivePoints($question, $given));
             }
             $grade = null;
             if (! $hasOpen && ! $points->isZero()) {
@@ -244,11 +368,46 @@ final class AulaCuestionarioController extends Controller
             }
         }
 
+        $officialExists = $attempt->recurso->actividad_id && Calificacion::where('actividad_id', $attempt->recurso->actividad_id)
+            ->where('matricula_id', $attempt->matricula_id)->exists();
+        $automatic = $attempt->recurso->llevar_planilla
+            && ($attempt->recurso->configuracion['transferencia'] ?? 'confirmar') === 'automatica';
+
         return response()->json(['data' => ['estado' => $attempt->estado,
             'nota' => $attempt->escala_opcion_id ? null : $attempt->nota,
             'valoracion' => $attempt->escala_opcion_id
                 ? EscalaOpcionController::present(EscalaOpcion::findOrFail($attempt->escala_opcion_id)) : null,
-            'transferida_planilla' => $transferred]]);
+            'transferida_planilla' => $transferred,
+            'estado_planilla' => ! $automatic || $attempt->nota === null ? 'no_aplica'
+                : ($transferred ? 'transferida' : ($officialExists ? 'nota_oficial_existente' : 'pendiente'))]]);
+    }
+
+    /** Explicit retry after an automatic transfer failed; never replaces an existing official note. */
+    public function reintentarPlanilla(Request $request, string $token): JsonResponse
+    {
+        $attempt = Token::find('aula-intento', $token, AulaIntento::query());
+        abort_unless($attempt, 404);
+        $resource = $attempt->recurso;
+        $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.gestionar');
+        $this->access->manages($request->user(), $resource->seccion->aula, 'aula.planilla.vincular');
+        abort_unless($resource->llevar_planilla
+            && ($resource->configuracion['transferencia'] ?? 'confirmar') === 'automatica'
+            && $attempt->estado === 'finalizado' && $attempt->nota !== null, 422,
+            'Este intento no tiene una transferencia automática pendiente.');
+        $data = $request->validate(['motivo' => ['required', 'string', 'min:8', 'max:1000']]);
+        DB::transaction(function () use ($resource, $attempt, $request, $data): void {
+            $activity = $resource->actividad_id
+                ? ActividadEvaluacion::findOrFail($resource->actividad_id)
+                : app(AulaGradebookService::class)->link($resource, $request->user());
+            abort_unless($activity, 422, 'El período aún no está abierto; la nota sigue pendiente.');
+            abort_if(Calificacion::where('actividad_id', $activity->id)
+                ->where('matricula_id', $attempt->matricula_id)->exists(), 409,
+                'Ya existe una nota oficial. No se reemplazó.');
+            app(AulaGradebookService::class)->transfer($resource->fresh(), $request->user(),
+                $attempt->matricula_id, (string) $attempt->nota, null, $data['motivo']);
+        });
+
+        return response()->json(['data' => ['estado_planilla' => 'transferida']]);
     }
 
     public function incidente(Request $request, string $token): JsonResponse
@@ -308,7 +467,7 @@ final class AulaCuestionarioController extends Controller
     public function intentos(Request $request, string $resourceToken): JsonResponse
     {
         $resource = $this->quiz($resourceToken);
-        $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.gestionar');
+        $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.calificar');
         $official = $resource->actividad_id ? Calificacion::where('actividad_id', $resource->actividad_id)
             ->get()->keyBy('matricula_id') : collect();
 
@@ -320,8 +479,108 @@ final class AulaCuestionarioController extends Controller
                 'escala_opcion_token' => ($official->get($attempt->matricula_id)?->escala_opcion_id ?? $attempt->escala_opcion_id)
                     ? Token::for('escala-opcion', $official->get($attempt->matricula_id)?->escala_opcion_id ?? $attempt->escala_opcion_id) : null,
                 'incidentes' => $attempt->incidentes, 'finalizado_at' => $attempt->finalizado_at,
+                'estado_planilla' => ! $resource->llevar_planilla
+                    || ($resource->configuracion['transferencia'] ?? 'confirmar') !== 'automatica'
+                    || $attempt->estado !== 'finalizado' || $attempt->nota === null ? 'no_aplica'
+                    : ($official->has($attempt->matricula_id) ? 'nota_oficial_existente' : 'pendiente'),
                 'version' => $attempt->version,
             ])]);
+    }
+
+    /** La revisión de respuestas abiertas, de audio y video conserva el detalle por pregunta. */
+    public function revisarPreguntas(Request $request, string $token): JsonResponse
+    {
+        $attempt = Token::find('aula-intento', $token, AulaIntento::query());
+        abort_unless($attempt, 404);
+        $resource = $attempt->recurso;
+        $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.calificar');
+        abort_if($resource->seccion->periodo->estaCerrado(), 422, 'El período está cerrado.');
+        abort_unless($attempt->estado === 'pendiente_revision', 422,
+            'Solo los intentos pendientes de revisión admiten esta operación.');
+        $data = $request->validate([
+            'version' => ['required', 'integer', 'min:1'],
+            'motivo' => ['required', 'string', 'min:8', 'max:1000'],
+            'evaluaciones' => ['required', 'array', 'min:1', 'max:100'],
+            'evaluaciones.*.pregunta_token' => ['required', 'string', 'size:24'],
+            'evaluaciones.*.puntos' => ['required', 'numeric', 'min:0', 'max:100'],
+            'evaluaciones.*.retroalimentacion' => ['nullable', 'string', 'max:5000'],
+            'evaluaciones.*.criterios' => ['nullable', 'array', 'max:15'],
+            'evaluaciones.*.criterios.*' => ['numeric', 'min:0', 'max:100'],
+        ]);
+        $attempt = DB::transaction(function () use ($attempt, $resource, $data, $request): AulaIntento {
+            $locked = AulaIntento::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+            abort_unless($locked->version === $data['version'] && $locked->estado === 'pendiente_revision', 409,
+                'El intento cambió; recarga sus respuestas antes de revisar.');
+            $questions = AulaPregunta::where('recurso_id', $resource->id)->orderBy('orden')->get();
+            $manual = $questions->filter(fn ($q) => in_array($q->tipo, ['abierta', 'audio', 'video'], true));
+            abort_unless($manual->count() === count($data['evaluaciones']), 422,
+                'Debes revisar todas las respuestas abiertas o multimedia del intento.');
+            $reviews = [];
+            foreach ($data['evaluaciones'] as $entry) {
+                $question = Token::find('aula-pregunta', $entry['pregunta_token'],
+                    AulaPregunta::where('recurso_id', $resource->id));
+                abort_unless($question && in_array($question->tipo, ['abierta', 'audio', 'video'], true)
+                    && ! isset($reviews[$entry['pregunta_token']]), 422, 'La pregunta de revisión no es válida.');
+                $value = BigDecimal::of((string) $entry['puntos']);
+                abort_if($value->isGreaterThan((string) $question->puntos), 422,
+                    'El puntaje concedido supera el máximo de la pregunta.');
+                $rubric = $question->rubrica ?? [];
+                $criteria = $entry['criterios'] ?? [];
+                if ($rubric) {
+                    abort_unless(count($criteria) === count($rubric), 422, 'Completa todos los criterios de la rúbrica.');
+                    $sum = BigDecimal::zero();
+                    foreach ($rubric as $index => $criterion) {
+                        $score = BigDecimal::of((string) $criteria[$index]);
+                        abort_if($score->isGreaterThan((string) $criterion['puntos']), 422,
+                            'Un criterio supera su puntaje máximo.');
+                        $sum = $sum->plus($score);
+                    }
+                    abort_unless($sum->isEqualTo($value), 422,
+                        'La suma de la rúbrica debe coincidir con los puntos otorgados.');
+                } else {
+                    abort_if($criteria !== [], 422, 'Esta pregunta no tiene rúbrica configurada.');
+                }
+                $reviews[$entry['pregunta_token']] = ['puntos' => (string) $value,
+                    'retroalimentacion' => $entry['retroalimentacion'] ?? null,
+                    'criterios' => $criteria];
+            }
+            $possible = BigDecimal::zero();
+            $earned = BigDecimal::zero();
+            foreach ($questions as $question) {
+                $key = Token::for('aula-pregunta', $question->id);
+                $possible = $possible->plus((string) $question->puntos);
+                $earned = $earned->plus(isset($reviews[$key])
+                    ? $reviews[$key]['puntos'] : $this->objectivePoints($question, ($locked->respuestas ?? [])[$key] ?? null));
+            }
+            $year = AnoLectivo::findOrFail($resource->seccion->aula->ano_lectivo_id);
+            $config = app(SieeConfiguration::class)->resolve($year);
+            $minimum = BigDecimal::of((string) $config['valor_min']);
+            $range = BigDecimal::of((string) $config['valor_max'])->minus($minimum);
+            $grade = (string) $minimum->plus($earned->dividedBy($possible, 8, RoundingMode::HALF_DOWN)
+                ->multipliedBy($range))->toScale(8, RoundingMode::HALF_DOWN);
+            $scale = app(EscalaVisualService::class)->forGroup($resource->seccion->aula->grupo);
+            $choice = $scale ? app(EscalaVisualService::class)->nearestChoice($grade, $scale->opciones) : null;
+            $before = $locked->toArray();
+            $locked->update(['revision_preguntas' => $reviews, 'estado' => 'finalizado',
+                'nota' => $grade, 'escala_opcion_id' => $choice?->id, 'version' => $locked->version + 1]);
+            AuditLogger::tenant($request->user(), 'UPDATE', 'aula_intento', (string) $locked->id,
+                $before, $locked->toArray(), $data['motivo']);
+
+            return $locked;
+        });
+        $transferred = false;
+        if ($resource->llevar_planilla && ($resource->configuracion['transferencia'] ?? 'confirmar') === 'automatica') {
+            try {
+                $transferred = app(AulaGradebookService::class)->transferAutomatic($resource,
+                    $request->user(), $attempt->matricula_id, (string) $attempt->nota);
+            } catch (Throwable $error) {
+                report($error);
+            }
+        }
+
+        return response()->json(['data' => ['estado' => $attempt->estado, 'nota' => $attempt->nota,
+            'revision_preguntas' => $attempt->revision_preguntas, 'version' => $attempt->version,
+            'transferida_planilla' => $transferred]]);
     }
 
     public function calificar(Request $request, string $token): JsonResponse
@@ -329,7 +588,7 @@ final class AulaCuestionarioController extends Controller
         $attempt = Token::find('aula-intento', $token, AulaIntento::query());
         abort_unless($attempt, 404);
         $resource = $attempt->recurso;
-        $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.gestionar');
+        $this->access->manages($request->user(), $resource->seccion->aula, 'aula.evaluaciones.calificar');
         abort_unless($resource->calificable, 422);
         abort_if($resource->seccion->periodo->estaCerrado(), 422, 'El período está cerrado.');
         abort_unless(in_array($attempt->estado, ['finalizado', 'pendiente_revision', 'tiempo_agotado'], true), 422);
@@ -396,23 +655,111 @@ final class AulaCuestionarioController extends Controller
     {
         $choice = $attempt->escala_opcion_id ? EscalaOpcion::findOrFail($attempt->escala_opcion_id) : null;
         $perPage = max(1, (int) ($resource->configuracion['preguntas_por_pagina'] ?? 100));
-        $questions = $resource->preguntas;
+        $questions = $this->orderedQuestions($attempt, $resource);
         $visibleQuestions = $student && $attempt->estado === 'en_curso'
             ? $questions->slice(($attempt->pagina_actual - 1) * $perPage, $perPage)->values() : $questions;
-        return ['token' => Token::for('aula-intento', $attempt->id), 'estado' => $attempt->estado,
+        return ['token' => Token::for('aula-intento', $attempt->id), 'version' => $attempt->version,
+            'estado' => $attempt->estado,
             'vence_at' => $attempt->vence_at, 'numero' => $attempt->numero, 'incidentes' => $attempt->incidentes,
             'nota' => $choice ? null : $attempt->nota,
             'valoracion' => $choice ? EscalaOpcionController::present($choice) : null,
             'vigilado' => (bool) ($resource->configuracion['vigilado'] ?? false),
             'incidentes_permitidos' => (int) ($resource->configuracion['incidentes_permitidos'] ?? 0),
+            'duracion_minima_minutos' => (int) ($resource->configuracion['duracion_minima_minutos'] ?? 0),
             'pagina_actual' => $attempt->pagina_actual,
             'preguntas_por_pagina' => $perPage, 'preguntas_total' => $questions->count(),
             'permitir_regresar' => (bool) ($resource->configuracion['permitir_regresar'] ?? true),
             'permitir_editar_respuestas' => (bool) ($resource->configuracion['permitir_editar_respuestas'] ?? true),
             'respuestas' => $attempt->respuestas ?? [],
-            'preguntas' => $visibleQuestions->map(fn ($q) => [
-                'token' => Token::for('aula-pregunta', $q->id), 'tipo' => $q->tipo,
-                'enunciado' => $q->enunciado, 'opciones' => $q->opciones, 'puntos' => $q->puntos,
-            ])];
+            ...($student ? [] : ['revision_preguntas' => $attempt->revision_preguntas ?? []]),
+            'preguntas' => $visibleQuestions->map(function ($q) use ($attempt, $student) {
+                $original = $q->opciones ?? [];
+                $options = $student ? ($attempt->presentacion['opciones'][$q->id] ?? $original) : $original;
+                if ($student && $q->tipo === 'orden' && ! $attempt->presentacion) $options = array_reverse($original);
+                $choices = $q->tipo === 'correspondencia' && $student
+                    ? ($attempt->presentacion['opciones'][$q->id]
+                        ?? array_reverse($q->respuesta_correcta['valor'] ?? [])) : null;
+                $media = $q->medios->map(function ($medium) use ($student, $original, $options, $q) {
+                    $data = AulaMedioController::presentQuestion($medium);
+                    if ($student && $q->tipo !== 'correspondencia' && $medium->opcion_indice !== null && $original !== $options) {
+                        $value = $original[$medium->opcion_indice] ?? null;
+                        $data['opcion_indice'] = array_search($value, $options, true);
+                    }
+
+                    return $data;
+                })->values();
+
+                return [
+                    'token' => Token::for('aula-pregunta', $q->id), 'tipo' => $q->tipo,
+                    'enunciado' => $q->enunciado, 'opciones' => $student && $q->tipo === 'correspondencia' ? $original : $options,
+                    'puntos' => $q->puntos, 'medios' => $media,
+                    ...($choices !== null ? ['respuestas_disponibles' => $choices] : []),
+                    ...($student ? [] : ['rubrica' => $q->rubrica, 'puntajes_opciones' => $q->puntajes_opciones]),
+                ];
+            })->values()];
+    }
+
+    private function newPresentation(AulaRecurso $resource, array $config): array
+    {
+        $questions = $resource->preguntas()->orderBy('orden')->orderBy('id')->get();
+        $ids = $questions->pluck('id')->all();
+        if ($config['mezclar_preguntas'] ?? false) shuffle($ids);
+        $options = [];
+        foreach ($questions as $question) {
+            $choices = $question->tipo === 'correspondencia'
+                ? ($question->respuesta_correcta['valor'] ?? []) : ($question->opciones ?? []);
+            if (($config['mezclar_respuestas'] ?? false)
+                || in_array($question->tipo, ['orden', 'correspondencia'], true)) {
+                $original = $choices;
+                shuffle($choices);
+                if (count($choices) > 1 && $choices === $original) {
+                    $first = array_shift($choices);
+                    $choices[] = $first;
+                }
+            }
+            $options[$question->id] = $choices;
+        }
+
+        return ['preguntas' => $ids, 'opciones' => $options];
+    }
+
+    private function orderedQuestions(AulaIntento $attempt, AulaRecurso $resource)
+    {
+        $questions = $resource->preguntas()->with('medios')->orderBy('orden')->orderBy('id')->get();
+        $order = $attempt->presentacion['preguntas'] ?? null;
+        if (! is_array($order)) return $questions;
+        $byId = $questions->keyBy('id');
+
+        return collect($order)->map(fn ($id) => $byId->get($id))->filter()->values();
+    }
+
+    private function objectivePoints(AulaPregunta $question, mixed $given): BigDecimal
+    {
+        $weights = $question->puntajes_opciones;
+        if ($weights && in_array($question->tipo, ['unica', 'multiple', 'booleano'], true)) {
+            $chosen = $question->tipo === 'multiple' && is_array($given) ? array_unique($given)
+                : (is_string($given) ? [$given] : []);
+            $earned = BigDecimal::zero();
+            foreach ($chosen as $value) {
+                if (! is_string($value) || ! in_array($value, $question->opciones ?? [], true)) continue;
+                $earned = $earned->plus((string) ($weights[$value] ?? 0));
+            }
+            $maximum = BigDecimal::of((string) $question->puntos);
+            return $earned->isGreaterThan($maximum) ? $maximum : $earned;
+        }
+
+        return $this->sameAnswer($given, $question->respuesta_correcta, $question->tipo)
+            ? BigDecimal::of((string) $question->puntos) : BigDecimal::zero();
+    }
+
+    private function questionData($questions): array
+    {
+        return $questions->map(fn ($q) => [
+            'token' => Token::for('aula-pregunta', $q->id), 'tipo' => $q->tipo,
+            'enunciado' => $q->enunciado, 'opciones' => $q->opciones,
+            'respuesta_correcta' => $q->respuesta_correcta, 'puntos' => $q->puntos,
+            'puntajes_opciones' => $q->puntajes_opciones, 'rubrica' => $q->rubrica,
+            'medios' => $q->medios->map(AulaMedioController::presentQuestion(...))->values(),
+        ])->values()->all();
     }
 }

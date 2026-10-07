@@ -11,9 +11,11 @@ use App\Models\Academico\Grupo;
 use App\Models\Academico\Grado;
 use App\Models\Academico\Jornada;
 use App\Services\AcademicYearSelection;
+use App\Services\AulaProvisioningService;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -82,15 +84,20 @@ class GrupoController extends Controller
             abort(422, 'Ya existe un grupo con ese nombre para el mismo grado, año lectivo y jornada.');
         }
 
-        $grupo = Grupo::create([
-            'grado_id' => $data['grado_id'],
-            'ano_lectivo_id' => $data['ano_lectivo_id'],
-            'jornada_id' => $data['jornada_id'] ?? null,
-            'sede_id' => $data['sede_id'] ?? null,
-            'nombre' => $data['nombre'],
-            'cupo_maximo' => $data['cupo_maximo'] ?? null,
-            'estado' => $data['estado'] ?? Grupo::ESTADO_ACTIVO,
-        ]);
+        $grupo = DB::transaction(function () use ($data): Grupo {
+            $grupo = Grupo::create([
+                'grado_id' => $data['grado_id'],
+                'ano_lectivo_id' => $data['ano_lectivo_id'],
+                'jornada_id' => $data['jornada_id'] ?? null,
+                'sede_id' => $data['sede_id'] ?? null,
+                'nombre' => $data['nombre'],
+                'cupo_maximo' => $data['cupo_maximo'] ?? null,
+                'estado' => $data['estado'] ?? Grupo::ESTADO_ACTIVO,
+            ]);
+            app(AulaProvisioningService::class)->syncGroup($grupo);
+
+            return $grupo;
+        });
 
         AuditLogger::tenant($request->user(), 'CREATE', 'grupo', (string) $grupo->id, null, $this->snapshot($grupo));
 
@@ -144,7 +151,10 @@ class GrupoController extends Controller
         }
 
         $prev = $this->snapshot($grupo);
-        $grupo->update($data);
+        DB::transaction(function () use ($grupo, $data): void {
+            $grupo->update($data);
+            if ($grupo->wasChanged('grado_id')) app(AulaProvisioningService::class)->syncGroup($grupo);
+        });
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'grupo', (string) $grupo->id, $prev, $this->snapshot($grupo));
 

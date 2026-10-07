@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\Academico\AsistenciaCorreccionController;
 use App\Http\Controllers\Api\Academico\AulaController;
 use App\Http\Controllers\Api\Academico\AulaArchivoController;
 use App\Http\Controllers\Api\Academico\AulaCuestionarioController;
+use App\Http\Controllers\Api\Academico\AulaMedioController;
 use App\Http\Controllers\Api\Academico\AcademicOptionsController;
 use App\Http\Controllers\Api\Academico\BloqueHorarioController;
 use App\Http\Controllers\Api\Academico\DatosInstitucionalesController;
@@ -74,16 +75,27 @@ Route::put('/evaluacion/planillas/{asignacion}/{periodo}/actividades', [\App\Htt
 ]);
 Route::prefix('aula')->controller(AulaController::class)->group(function () {
     Route::get('/catalogo', 'catalogo');
-    Route::post('/', 'crear');
+    Route::get('/configuracion', 'configuracion')->middleware('can:aula.configurar');
+    Route::put('/configuracion', 'guardarConfiguracion')->middleware('can:aula.configurar');
     Route::get('/{aulaToken}', 'ver');
     Route::post('/{aulaToken}/secciones', 'crearSeccion');
+    Route::get('/secciones/{sectionToken}/planilla', 'planillaDestino');
     Route::put('/secciones/{token}', 'editarSeccion');
+    Route::delete('/secciones/{token}', 'eliminarSeccion');
+    Route::post('/secciones/{token}/restaurar', 'restaurarSeccion');
     Route::post('/secciones/{sectionToken}/recursos', 'crearRecurso');
     Route::get('/recursos/{token}', 'verRecurso');
+    Route::post('/recursos/{token}/abrir', 'abrirRecurso');
     Route::put('/recursos/{token}', 'editarRecurso');
+    Route::post('/recursos/{token}/vincular-planilla', 'vincularPlanilla');
+    Route::post('/recursos/{token}/archivar', 'archivarRecurso');
+    Route::delete('/recursos/{token}', 'eliminarRecurso');
+    Route::post('/recursos/{token}/restaurar', 'restaurarRecurso');
     Route::post('/recursos/{token}/entregas', 'entregar');
+    Route::post('/recursos/{token}/entregas/borrador', 'borradorEntrega');
     Route::get('/recursos/{resourceToken}/entregas', 'entregas');
     Route::put('/entregas/{token}/calificar', 'calificar');
+    Route::put('/entregas/{token}/revisar', 'revisarEntrega');
 });
 Route::prefix('aula')->controller(AulaCuestionarioController::class)->group(function () {
     Route::put('/recursos/{token}/preguntas', 'guardarPreguntas');
@@ -94,9 +106,19 @@ Route::prefix('aula')->controller(AulaCuestionarioController::class)->group(func
     Route::put('/intentos/{token}/respuestas', 'guardarRespuestas');
     Route::put('/intentos/{token}/pagina', 'cambiarPagina');
     Route::post('/intentos/{token}/finalizar', 'finalizar');
+    Route::post('/intentos/{token}/reintentar-planilla', 'reintentarPlanilla');
     Route::post('/intentos/{token}/incidentes', 'incidente');
     Route::post('/intentos/{token}/reactivar', 'reactivar');
     Route::put('/intentos/{token}/calificar', 'calificar');
+    Route::put('/intentos/{token}/revisar-preguntas', 'revisarPreguntas');
+});
+Route::prefix('aula')->controller(AulaMedioController::class)->group(function () {
+    Route::post('/preguntas/{token}/medios', 'subirPregunta')->middleware('throttle:school-uploads');
+    Route::delete('/preguntas/medios/{token}', 'quitarPregunta');
+    Route::get('/preguntas/medios/{token}', 'verPregunta');
+    Route::post('/intentos/{attemptToken}/preguntas/{questionToken}/respuesta-medio', 'subirRespuesta')
+        ->middleware('throttle:school-uploads');
+    Route::get('/respuestas/medios/{token}', 'verRespuesta');
 });
 Route::prefix('aula')->controller(AulaArchivoController::class)->group(function () {
     Route::post('/{token}/portada', 'subirPortada')->middleware('throttle:school-uploads');
@@ -104,6 +126,9 @@ Route::prefix('aula')->controller(AulaArchivoController::class)->group(function 
     Route::post('/recursos/{token}/adjuntos', 'subirRecurso')->middleware('throttle:school-uploads');
     Route::post('/entregas/{token}/adjuntos', 'subirEntrega')->middleware('throttle:school-uploads');
     Route::get('/adjuntos/{token}/imagen', 'verImagen');
+    Route::get('/adjuntos/{token}/medio', 'verMedio');
+    Route::get('/adjuntos/{token}/vista-oficina', 'verOficina');
+    Route::delete('/adjuntos/{token}', 'quitarAdjunto');
     Route::get('/adjuntos/{token}', 'descargar');
 });
 

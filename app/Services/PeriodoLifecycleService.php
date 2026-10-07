@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Events\TenantDataChanged;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Periodo;
+use App\Services\AulaGradebookService;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -63,16 +64,19 @@ final class PeriodoLifecycleService
                         ['estado' => $period->estado, 'reapertura_manual' => false],
                         'Transición automática por fecha lectiva '.$today.'.',
                     );
-                    $events[] = $period->nombre;
+                    $events[] = ['nombre' => $period->nombre, 'id' => $period->id, 'estado' => $target];
                 }
 
                 return $events;
             });
 
             $changed += count($events);
-            foreach ($events as $name) {
+            foreach ($events as $event) {
+                if ($event['estado'] === Periodo::ESTADO_ABIERTO) {
+                    app(AulaGradebookService::class)->reconcilePeriod(Periodo::findOrFail($event['id']));
+                }
                 try {
-                    TenantDataChanged::dispatch('periodo', 'updated', $name);
+                    TenantDataChanged::dispatch('periodo', 'updated', $event['nombre']);
                 } catch (\Throwable) {
                 }
             }

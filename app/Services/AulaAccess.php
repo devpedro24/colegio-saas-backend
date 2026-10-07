@@ -41,6 +41,19 @@ final class AulaAccess
             || $this->assignment($aula)?->docente_id === $user->id);
     }
 
+    public function content(User $user, Aula $aula, string $action, bool $quiz = false): void
+    {
+        $this->view($user, $aula);
+        abort_unless($this->canContent($user, $aula, $action, $quiz), 403);
+    }
+
+    public function canContent(User $user, Aula $aula, string $action, bool $quiz = false): bool
+    {
+        return $this->canManage($user, $aula)
+            && $this->canManage($user, $aula, 'aula.contenido.'.$action)
+            && (! $quiz || $this->canManage($user, $aula, 'aula.evaluaciones.gestionar'));
+    }
+
     public function isStudent(User $user, Aula $aula): bool
     {
         return ! $user->can('aula.ver_todas') && $this->assignment($aula)?->docente_id !== $user->id
@@ -61,18 +74,27 @@ final class AulaAccess
 
     public function visible(AulaRecurso $resource): bool
     {
-        $section = $resource->seccion;
-        if (! $section->visible_estudiantes || ! $resource->visible_estudiantes
-            || ! in_array($resource->estado, ['publicado', 'programado', 'cerrado'], true)) return false;
-        if ($resource->estado === 'programado' && ! $resource->disponible_desde) return false;
+        if (! $this->listed($resource)) return false;
         $now = Carbon::now('UTC');
 
         // El vencimiento cierra interacciones, no el acceso a evidencias y retroalimentación.
         return ! $resource->disponible_desde || ! $now->lt($resource->disponible_desde);
     }
 
+    public function listed(AulaRecurso $resource): bool
+    {
+        $section = $resource->seccion;
+        if ($resource->trashed() || ! $section || $section->trashed()) return false;
+        if (! $section->visible_estudiantes || ! $resource->visible_estudiantes
+            || ! in_array($resource->estado, ['publicado', 'programado', 'cerrado'], true)) return false;
+        if ($resource->estado === 'programado' && ! $resource->disponible_desde) return false;
+
+        return true;
+    }
+
     public function readResource(User $user, AulaRecurso $resource): void
     {
+        abort_if($resource->trashed() || ! $resource->seccion || $resource->seccion->trashed(), 404);
         $this->view($user, $resource->seccion->aula);
         abort_if($this->isStudent($user, $resource->seccion->aula) && ! $this->visible($resource), 404);
     }
