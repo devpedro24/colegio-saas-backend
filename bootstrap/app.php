@@ -23,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // redirect to Laravel's nonexistent web login route.
         $middleware->redirectGuestsTo(fn (Request $request) => $request->is('api/*') ? null : '/auth');
         $middleware->prepend(ResolveBrowserSession::class);
+        $middleware->prepend(\App\Http\Middleware\SetIntakeLocale::class);
         $middleware->prepend(\App\Http\Middleware\MeasureRequestPerformance::class);
         $middleware->append(\App\Http\Middleware\SynchronizeRealtimeChanges::class);
         $middleware->append(AuditRequests::class);
@@ -32,6 +33,7 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        $exceptions->dontFlash(['app_password']);
         // API sin vista 'login': el superadmin NO autenticado responde JSON 401
         // (en vez del 500 que produce route('login') al no existir).
         $exceptions->render(function (AuthenticationException $e, Request $request) {

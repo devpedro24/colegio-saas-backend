@@ -188,6 +188,16 @@ return [
     */
 
     'attributes' => [
+        'ano_token' => 'año lectivo', 'desde' => 'fecha de apertura', 'hasta' => 'fecha de cierre',
+        'abierta' => 'enlace habilitado', 'configuracion' => 'configuración',
+        'configuracion.privacidad' => 'aviso de privacidad', 'configuracion.grados' => 'grados',
+        'configuracion.grados.*.cupo' => 'cupo del grado', 'configuracion.documentos.*.nombre' => 'nombre del documento',
+        'configuracion.documentos.*.instrucciones' => 'descripción del documento', 'configuracion.documentos.*.max_mb' => 'tamaño máximo',
+        'configuracion.documentos.*.formatos' => 'formatos permitidos', 'configuracion.campos.*.nombre' => 'nombre del dato adicional',
+        'datos.primer_nombre' => 'primer nombre', 'datos.primer_apellido' => 'primer apellido', 'datos.nacimiento' => 'fecha de nacimiento',
+        'datos.tipo_documento' => 'tipo de documento', 'datos.numero_documento' => 'número de documento',
+        'grado_token' => 'grado', 'archivo' => 'archivo', 'consentimiento' => 'consentimiento', 'motivo' => 'motivo',
+        'observacion' => 'observación', 'accion' => 'acción', 'decision' => 'decisión', 'app_password' => 'contraseña de aplicación de Google',
         // Años lectivos
         'nombre' => 'nombre',
         'tipo_calendario' => 'tipo de calendario',
