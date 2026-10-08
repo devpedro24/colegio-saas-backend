@@ -9,6 +9,8 @@ PostgreSQL exclusiva** (`RN-AI-001`) y acceso por subdominio `<slug>.<dominio>`.
 
 Entregas y límites del corte actual: [docs/ENTREGAS_2026-09.md](docs/ENTREGAS_2026-09.md) y [docs/SEGURIDAD_API.md](docs/SEGURIDAD_API.md).
 
+Ingreso estudiantil: [configuración, permisos, migraciones y operación de correo](docs/INGRESO_ESTUDIANTIL.md). Matrícula directa por enlace, sin pagos ni cuentas de acudiente.
+
 ## Actualización en tiempo real
 
 Reverb comunica todos los cambios de la API mediante `application.changed` en

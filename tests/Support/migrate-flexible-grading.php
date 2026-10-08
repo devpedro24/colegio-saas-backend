@@ -15,8 +15,12 @@ use Symfony\Component\Process\Process;
 require __DIR__.'/../../vendor/autoload.php';
 $app = require __DIR__.'/../../bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
+set_exception_handler(function (Throwable $error): void {
+    fwrite(STDERR, $error->getMessage().PHP_EOL);
+    exit(1);
+});
 if (PHP_SAPI !== 'cli' || ! in_array('--verify', $argv, true) || ! $app->environment('local')) {
-    exit("Solo entorno local: --verify [--apply] --pg-bin=...\n");
+    exit("Solo entorno local: --verify [--apply] [--verify-intake] --pg-bin=...\n");
 }
 $bin = '';
 foreach ($argv as $arg) {
@@ -35,7 +39,7 @@ if ($schools->isEmpty()) {
     throw new RuntimeException('No hay tenants para verificar una actualización.');
 }
 $nonce = bin2hex(random_bytes(6));
-$directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'colegio-preinformes-'.date('Ymd-His').'-'.$nonce;
+$directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.(in_array('--verify-intake', $argv, true) ? 'colegio-ingreso-' : 'colegio-preinformes-').date('Ymd-His').'-'.$nonce;
 mkdir($directory, 0700);
 $connection = ['--host', $config['host'], '--port', (string) $config['port'], '--username', $config['username'], '--no-password'];
 $run = function (array $args) use ($config): string {
@@ -63,8 +67,39 @@ foreach ($databases as $label => $database) {
 $created = [];
 $signature = function (): array {
     return ['users' => DB::table('users')->count(), 'activities' => DB::table('actividades_evaluacion')->count(),
+        // Compare existing values, excluding the intentionally added nullable column.
+        'user_rows' => hash('sha256', json_encode(DB::table('users')->orderBy('id')->get()->map(function ($row) {
+            unset($row->temporary_password_expires_at);
+
+            return $row;
+        })->all())),
+        'enrollments' => hash('sha256', json_encode(DB::table('matriculas')->orderBy('id')->get()->all())),
+        'campaigns' => hash('sha256', json_encode(DB::getSchemaBuilder()->hasTable('ingreso_campanas')
+            ? DB::table('ingreso_campanas')->orderBy('id')->get()->all() : [])),
+        // Preserve real sender credentials without decrypting, printing or replacing them.
+        'mail_settings' => hash('sha256', json_encode(DB::getSchemaBuilder()->hasTable('correo_configuracion')
+            ? DB::table('correo_configuracion')->orderBy('key')->get(['key', 'email', 'nombre', 'app_password', 'verificado_en', 'created_at', 'updated_at'])->all() : [])),
         'grades' => DB::table('calificaciones')->count(),
         'values' => hash('sha256', json_encode(DB::table('calificaciones')->orderBy('id')->get(['id', 'valor'])->map(fn ($row) => [$row->id, AcademicDecimal::normalize($row->valor)])->all()))];
+};
+$verifyIntake = function () use ($argv): void {
+    if (! in_array('--verify-intake', $argv, true)) {
+        return;
+    }
+    foreach (['campanas', 'solicitudes', 'documentos', 'historial', 'perfiles', 'notificaciones'] as $table) {
+        if (! DB::getSchemaBuilder()->hasTable('ingreso_'.$table)) {
+            throw new RuntimeException('Falta tabla ingreso_'.$table);
+        }
+    }
+    $endDate = DB::selectOne("SELECT is_nullable FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'ingreso_campanas' AND column_name = 'hasta'");
+    if ($endDate?->is_nullable !== 'YES') {
+        throw new RuntimeException('La fecha de cierre de convocatoria debe admitir NULL.');
+    }
+    if (! DB::getSchemaBuilder()->hasColumn('users', 'temporary_password_expires_at')
+        || Permission::where('name', 'like', 'ingreso.%')->count() !== 6
+        || ! DB::getSchemaBuilder()->hasColumn('correo_configuracion', 'revision') || ! Permission::where('name', 'config.correo')->exists()) {
+        throw new RuntimeException('Faltan esquema o permisos de ingreso estudiantil.');
+    }
 };
 try {
     foreach (['fresh', 'upgrade'] as $kind) {
@@ -89,6 +124,7 @@ try {
         if ($before !== null && $before !== $signature()) {
             throw new RuntimeException('La actualización alteró datos existentes.');
         }
+        $verifyIntake();
         if (! DB::getSchemaBuilder()->hasTable('preinformes')) {
             throw new RuntimeException('Falta preinformes.');
         }
@@ -116,7 +152,7 @@ if (in_array('--apply', $argv, true)) {
         if (Artisan::call('tenants:migrate', ['--tenants' => [$school->id], '--force' => true]) !== 0) {
             throw new RuntimeException(Artisan::output());
         }
-        $school->run(function () use ($before, $signature, $school) {
+        $school->run(function () use ($before, $signature, $school, $verifyIntake) {
             if ($before !== $signature()) {
                 throw new RuntimeException('Cambió la información de un colegio.');
             }
@@ -126,6 +162,7 @@ if (in_array('--apply', $argv, true)) {
             if (! Permission::where('name', 'notas.actividades.crear')->exists()) {
                 throw new RuntimeException('Falta permiso.');
             }
+            $verifyIntake();
             echo "Actualizado y verificado: {$school->slug}\n";
         });
     }
