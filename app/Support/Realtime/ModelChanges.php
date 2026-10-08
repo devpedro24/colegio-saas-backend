@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Support\Realtime;
 
-use App\Models\Tenant;
 use App\Models\StoredFile;
+use App\Models\Tenant;
 use Illuminate\Database\Eloquent\Model;
 
 /** Also covers domain writes from services, scheduled commands and queued jobs. */
@@ -18,6 +18,10 @@ final class ModelChanges
             return;
         }
         $table = $model->getTable();
+        // Delivery bookkeeping and PIN updates must not refresh unrelated modules.
+        if ($table === 'ingreso_notificaciones') {
+            return;
+        }
         if (in_array($table, ['audit_logs', 'platform_audit_logs'], true)
             && ($model->recurso === 'http' || in_array($model->accion, ['READ', 'REQUEST', 'REQUEST_DENIED'], true))) {
             return; // Refreshing a view must not generate another refresh indefinitely.
@@ -33,12 +37,15 @@ final class ModelChanges
             'matriculas', 'componentes_evaluacion', 'actividades_evaluacion', 'calificaciones' => 'evaluation',
             'escalas_valorativas', 'metodos_aprobacion', 'modelos_pedagogicos' => 'academic-config',
             'datos_institucionales' => 'institution',
+            'correo_configuracion' => 'school-mail',
+            'school_mail_change_requests' => 'school-mail-requests',
             'eventos' => 'events',
             'aulas', 'aula_secciones' => 'aula',
             'aula_recursos' => 'aula-grade',
             'aula_adjuntos', 'aula_entregas', 'aula_preguntas', 'aula_pregunta_medios' => 'aula-content',
             'aula_intentos', 'aula_incidentes', 'aula_respuesta_medios' => 'aula-attempt',
             'aula_vistas_recursos' => 'aula-progress',
+            'ingreso_campanas', 'ingreso_solicitudes', 'ingreso_documentos' => 'enrollment-intake',
             'users' => 'users',
             'plans' => 'plans',
             'tenants', 'impersonations' => 'schools',
@@ -53,6 +60,9 @@ final class ModelChanges
             // classroom content; they do not invalidate every storage consumer.
             if (str_contains('/'.ltrim((string) $model->path, '/'), '/aula/')) {
                 $resource = 'aula-content';
+            }
+            if (str_contains('/'.ltrim((string) $model->path, '/'), '/matriculas/')) {
+                $resource = 'enrollment-intake';
             }
         }
         $changes->record($tenantId, $resource, $connection);

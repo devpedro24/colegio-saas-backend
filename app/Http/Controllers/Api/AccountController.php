@@ -144,7 +144,7 @@ class AccountController extends Controller
         $user->update([
             'password' => $data['new_password'],
             'must_change_password' => false,
-            ...(tenancy()->initialized ? ['temporary_password' => null] : []),
+            ...(tenancy()->initialized ? ['temporary_password' => null, 'temporary_password_expires_at' => null] : []),
         ]);
 
         if (tenancy()->initialized && $user->hasRole('rector')) {
@@ -307,7 +307,7 @@ class AccountController extends Controller
             $this->audit($user, 'GOOGLE_LINK', 'account', (string) $user->id);
 
             return redirect()->away($frontUrl.'/account/settings?google=linked');
-        } catch (\Throwable) {
+        } catch (Throwable) {
             return redirect()->away($frontUrl.'/account/settings?google=error');
         }
     }

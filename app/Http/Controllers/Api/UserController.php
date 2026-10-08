@@ -11,9 +11,9 @@ use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Rbac\PermissionMatrix;
-use App\Support\PasswordPolicy;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
+use App\Support\PasswordPolicy;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -59,9 +59,9 @@ class UserController extends Controller
             }
 
             $count = $this->runIn($hijo, fn () => User::query()
-                    ->whereNull('deleted_at')
-                    ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
-                    ->count());
+                ->whereNull('deleted_at')
+                ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
+                ->count());
             $childSources[] = [$sede, $hijo, $count, OpaqueUrlToken::for('sede', $sede->id)];
             $total += $count;
         }
@@ -92,6 +92,7 @@ class UserController extends Controller
             }
             if ($offset >= $count) {
                 $offset -= $count;
+
                 continue;
             }
             $rows = $this->runIn($hijo, function () use ($sede, $sedeToken, $offset, $remaining) {
@@ -158,7 +159,8 @@ class UserController extends Controller
 
         try {
             TenantDataChanged::dispatch('usuario', 'created', $user->name);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json([
             'data' => $this->serialize($user),
@@ -220,7 +222,8 @@ class UserController extends Controller
 
         try {
             TenantDataChanged::dispatch('usuario', 'updated', $usuario->name);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->serialize($usuario)]);
     }
@@ -257,7 +260,8 @@ class UserController extends Controller
 
         try {
             TenantDataChanged::dispatch('usuario', 'deleted', $usuario->name);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => null]);
     }
@@ -286,6 +290,7 @@ class UserController extends Controller
                     $u->update([
                         'password' => Hash::make($password),
                         'temporary_password' => $password,
+                        'temporary_password_expires_at' => now()->addDays(3),
                         'must_change_password' => true,
                     ]);
                     $u->tokens()->delete();
@@ -304,6 +309,7 @@ class UserController extends Controller
             $user->update([
                 'password' => Hash::make($password),
                 'temporary_password' => $password,
+                'temporary_password_expires_at' => now()->addDays(3),
                 'must_change_password' => true,
             ]);
             $user->tokens()->delete();
@@ -375,7 +381,7 @@ class UserController extends Controller
      * La sede destino del usuario, si alguna. Devuelve la Sede o un array de
      * error cuando la sede es principal (usa su BD) o no tiene tenant hijo.
      *
-     * @return \App\Models\Academico\Sede|array{message:string}|null
+     * @return Sede|array{message:string}|null
      */
     private function sedeDestino(?string $sedeId)
     {
@@ -500,7 +506,7 @@ class UserController extends Controller
         $hijo = Tenant::find($sede->tenant_id);
         $sedeToken = OpaqueUrlToken::for('sede', $sede->id);
 
-        $resultado = $this->runIn($hijo, function () use ($actor, $id, $data, $sede, $sedeToken) {
+        $resultado = $this->runIn($hijo, function () use ($id, $data, $sede, $sedeToken) {
             $usuario = $this->userForSelector($id);
             $prev = $this->serialize($usuario, $sede, $sedeToken);
 

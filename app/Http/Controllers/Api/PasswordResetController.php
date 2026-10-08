@@ -6,8 +6,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
-use App\Support\PasswordPolicy;
 use App\Support\Audit\AuditLogger;
+use App\Support\PasswordPolicy;
 use Illuminate\Auth\Passwords\PasswordBrokerManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -52,7 +52,7 @@ class PasswordResetController extends Controller
                         'password' => Hash::make($password),
                         'remember_token' => Str::random(60),
                         'must_change_password' => false,
-                        ...(tenancy()->initialized ? ['temporary_password' => null] : []),
+                        ...(tenancy()->initialized ? ['temporary_password' => null, 'temporary_password_expires_at' => null] : []),
                     ])->save();
                     $user->tokens()->delete();
                     $this->audit($user, 'PASSWORD_RESET');

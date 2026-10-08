@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 final class RealtimeChanges
 {
     private bool $buffering = false;
+
     private array $pending = [];
 
     public function begin(): void
@@ -63,6 +64,9 @@ final class RealtimeChanges
 
     public static function resourceForPath(string $path): string
     {
+        if (preg_match('#^/?(?:api/)?(?:platform/correo-solicitudes|correo-institucional/solicitudes)(?:/|$|\?)#', $path)) {
+            return 'school-mail-requests';
+        }
         if (preg_match('#^/?(?:api/)?siee/[^/]+/curriculo(?:/|$|\?)#', $path)) {
             return 'curriculum';
         }
@@ -81,6 +85,7 @@ final class RealtimeChanges
             return 'aula-grade';
         }
         $root = explode('/', trim(preg_replace('#^/?api/#', '', $path), '/'))[0];
+
         return match ($root) {
             'anos-lectivos', 'periodos' => 'academic',
             'estructura' => 'structure',
@@ -89,6 +94,8 @@ final class RealtimeChanges
             'asistencias' => 'attendance',
             'evaluacion' => 'evaluation',
             'aula' => 'aula',
+            'ingreso', 'ingreso-publico' => 'enrollment-intake',
+            'correo-institucional' => 'school-mail',
             'siee', 'config' => 'academic-config',
             'eventos' => 'events',
             'onboarding', 'branding' => 'institution',

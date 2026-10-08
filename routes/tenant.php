@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\IngresoPublicController;
 use App\Http\Controllers\Api\MfaController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PasswordResetController;
@@ -13,6 +14,7 @@ use App\Http\Middleware\EnsureMfaReady;
 use App\Http\Middleware\EnsureOnboardingComplete;
 use App\Http\Middleware\EnsureTenantActive;
 use App\Http\Middleware\InitializeTenancyByDomainOrSubdomain;
+use App\Http\Middleware\RequireOpaqueAcademicContract;
 use App\Models\Tenant;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
@@ -80,6 +82,18 @@ Route::middleware([
     // ningun colegio registrado).
     Route::get('/tenant-status', fn () => response()->json(['ok' => true]));
     Route::get('/branding/logo', [OnboardingController::class, 'logo']);
+
+    Route::prefix('ingreso-publico')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoPublicController::class)->group(function () {
+        Route::get('/catalogo', 'catalog')->middleware('throttle:60,1');
+        Route::post('/{campaign}/iniciar', 'start')->middleware('throttle:ingreso-access');
+        Route::post('/{campaign}/recuperar', 'recover')->middleware('throttle:ingreso-access');
+        Route::post('/{campaign}/acceder', 'login')->middleware('throttle:ingreso-access');
+        Route::get('/solicitud', 'show')->middleware('throttle:60,1');
+        Route::put('/solicitud', 'save')->middleware('throttle:30,1');
+        Route::post('/salir', 'logout');
+        Route::post('/documentos/{requirement}', 'upload')->middleware('throttle:ingreso-upload');
+        Route::get('/documentos/{document}', 'download')->middleware('throttle:60,1');
+    });
 
     Route::middleware(['auth:sanctum', EnsureMfaReady::class])->group(function () {
         Route::get('/me', [AuthController::class, 'me']);

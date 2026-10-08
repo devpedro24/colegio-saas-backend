@@ -26,6 +26,7 @@ class PermissionMatrix
 {
     /** Marcas de configurable en las celdas. */
     public const CONFIGURABLE = 'cfg';        // configurable, por defecto OFF
+
     public const CONFIGURABLE_ON = 'cfg_on';  // configurable, por defecto ON
 
     /** Niveles estructurales (otorgado y bloqueado). */
@@ -44,7 +45,7 @@ class PermissionMatrix
         'secretaria' => 'Secretaria Academica',                      // ROL-06
         'docente' => 'Docente',                                      // ROL-07
         'director_grupo' => 'Director de Grupo',                     // ROL-08 (complemento)
-        'estudiante' => 'Estudiante / Acudiente',                    // ROL-09
+        'estudiante' => 'Estudiante',                               // ROL-09; sin cuenta de acudiente
         'personal_apoyo' => 'Personal de Apoyo',                     // ROL-12
     ];
 
@@ -57,6 +58,13 @@ class PermissionMatrix
     public static function permissions(): array
     {
         return [
+            ['key' => 'config.correo', 'module' => 'Configuracion del Colegio', 'action' => 'Configurar el correo remitente del colegio', 'cells' => ['rector' => 'editar']],
+            ['key' => 'ingreso.configurar', 'module' => 'Ingreso estudiantil', 'action' => 'Configurar campañas y requisitos', 'feature' => 'academico', 'cells' => ['rector' => 'editar', 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'ingreso.ver', 'module' => 'Ingreso estudiantil', 'action' => 'Consultar solicitudes y documentos privados', 'feature' => 'academico', 'cells' => ['rector' => 'ver', 'secretaria' => self::CONFIGURABLE, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'ingreso.revisar', 'module' => 'Ingreso estudiantil', 'action' => 'Revisar documentos y pedir correcciones', 'feature' => 'academico', 'cells' => ['rector' => 'editar', 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'ingreso.decidir', 'module' => 'Ingreso estudiantil', 'action' => 'Aprobar, rechazar o poner en espera solicitudes', 'feature' => 'academico', 'cells' => ['rector' => 'aprobar', 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'ingreso.cambiar_grado', 'module' => 'Ingreso estudiantil', 'action' => 'Aprobar un grado diferente al solicitado', 'feature' => 'academico', 'cells' => ['rector' => 'editar', 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'ingreso.asignar', 'module' => 'Ingreso estudiantil', 'action' => 'Asignar grupos y confirmar matrículas', 'feature' => 'academico', 'cells' => ['rector' => 'editar', 'secretaria' => self::CONFIGURABLE, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
             // ---- Configuracion del Colegio (todo Rector, estructural) ----
             ['key' => 'config.identidad', 'module' => 'Configuracion del Colegio', 'action' => 'Configurar logo, NIT, MEN', 'cells' => ['rector' => 'editar']],
             ['key' => 'config.calendario', 'module' => 'Configuracion del Colegio', 'action' => 'Definir periodos lectivos', 'cells' => ['rector' => 'editar']],

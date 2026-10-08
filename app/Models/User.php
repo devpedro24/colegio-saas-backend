@@ -91,6 +91,7 @@ class User extends Authenticatable
         'google_email',
         'google_linked_at',
         'temporary_password',
+        'temporary_password_expires_at',
     ];
 
     /**
@@ -122,6 +123,7 @@ class User extends Authenticatable
             // El secreto TOTP se cifra EN REPOSO (pendiente de Fase 0).
             'two_factor_secret' => 'encrypted',
             'temporary_password' => 'encrypted',
+            'temporary_password_expires_at' => 'datetime',
         ];
     }
 

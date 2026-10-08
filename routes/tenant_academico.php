@@ -357,3 +357,24 @@ Route::middleware('can:usuarios.gestionar')->prefix('usuarios')->group(function 
 });
 
 Route::get('/institution-context', InstitutionContextController::class);
+
+Route::prefix('ingreso')->middleware(RequireOpaqueAcademicContract::class)->controller(\App\Http\Controllers\Api\IngresoController::class)->group(function () {
+    Route::get('/catalogo', 'catalog');
+    Route::get('/mi-estado', 'studentStatus');
+    Route::post('/campanas', 'saveCampaign');
+    Route::put('/campanas/{campaign}', 'saveCampaign');
+    Route::get('/campanas/{campaign}/solicitudes', 'applications');
+    Route::post('/campanas/{campaign}/distribuir', 'distribute');
+    Route::get('/solicitudes/{application}', 'show');
+    Route::post('/solicitudes/{application}/decision', 'decide');
+    Route::put('/solicitudes/{application}/grado', 'changeGrade');
+    Route::put('/solicitudes/{application}/documentos/{document}', 'review');
+    Route::get('/solicitudes/{application}/documentos/{document}', 'download');
+});
+
+Route::prefix('correo-institucional')->controller(\App\Http\Controllers\Api\SchoolMailController::class)->group(function () {
+    Route::get('/', 'show');
+    Route::post('/solicitudes', 'requestChange')->middleware('throttle:school-mail-test');
+    Route::put('/', 'save')->middleware('throttle:school-mail-test');
+    Route::delete('/', 'disconnect')->middleware('throttle:school-mail-test');
+});

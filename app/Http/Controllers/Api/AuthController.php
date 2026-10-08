@@ -6,12 +6,14 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\TenantOnboarding;
 use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
 use App\Support\Auth\BrowserAuthCookies;
 use App\Support\Mfa\MfaVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
@@ -43,6 +45,11 @@ class AuthController extends Controller
             throw ValidationException::withMessages([
                 'email' => ['El usuario no esta activo.'],
             ]);
+        }
+
+        if ($user->must_change_password && $user->temporary_password_expires_at
+            && Carbon::parse($user->temporary_password_expires_at)->isPast()) {
+            throw ValidationException::withMessages(['email' => ['La contraseña temporal venció. Usa Olvidé mi contraseña para recuperar el acceso.']]);
         }
 
         // Segundo factor (MFA/TOTP): si el usuario lo tiene confirmado, exige un
@@ -107,6 +114,6 @@ class AuthController extends Controller
      */
     private function userPayload(User $user): array
     {
-        return [...AccountPresenter::user($user), 'onboarding' => \App\Services\TenantOnboarding::status($user)];
+        return [...AccountPresenter::user($user), 'onboarding' => TenantOnboarding::status($user)];
     }
 }

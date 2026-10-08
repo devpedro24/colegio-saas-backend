@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\Academico\DatosInstitucionales;
-use App\Models\Tenant;
 use App\Models\User;
 use App\Support\Storage\StorageService;
 use Illuminate\Support\Facades\Storage;
@@ -20,10 +19,13 @@ final class TenantOnboarding
     public static function logoReadPath(): string
     {
         $path = self::logoPath();
-        if (Storage::disk('tenant')->exists($path)) return $path;
+        if (Storage::disk('tenant')->exists($path)) {
+            return $path;
+        }
 
         // Existing colleges remain readable until their files are reorganized.
         $legacy = (string) tenant()->getKey().'/branding/logo.png';
+
         return Storage::disk('tenant')->exists($legacy) ? $legacy : $path;
     }
 
@@ -64,14 +66,14 @@ final class TenantOnboarding
     public static function institutionRequired(User $user): bool
     {
         return ! self::institutionalComplete()
-            && (tenant()?->status === Tenant::STATUS_CONFIGURING || $user->hasRole('rector'));
+            && $user->can('config.identidad');
     }
 
     public static function status(User $user): array
     {
         $institution = DatosInstitucionales::query()->first();
         $institutionRequired = ! self::complete($institution)
-            && (tenant()?->status === Tenant::STATUS_CONFIGURING || $user->hasRole('rector'));
+            && $user->can('config.identidad');
         $passwordRequired = (bool) $user->must_change_password;
 
         return [

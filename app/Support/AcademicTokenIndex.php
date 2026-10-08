@@ -13,6 +13,8 @@ final class AcademicTokenIndex
     public const TABLE = 'academic_public_tokens';
 
     public const RESOURCES = [
+        'ingreso_campanas' => ['ingreso-campana'], 'ingreso_solicitudes' => ['ingreso-solicitud'],
+        'ingreso_documentos' => ['ingreso-documento'],
         'anos_lectivos' => ['ano-lectivo'], 'periodos' => ['periodo'],
         'sedes' => ['sede'], 'jornadas' => ['jornada'], 'niveles' => ['nivel'],
         'grados' => ['grado'], 'grupos' => ['grupo'], 'bloques_horarios' => ['bloque-horario'],
