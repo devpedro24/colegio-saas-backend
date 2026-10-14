@@ -39,7 +39,7 @@ if ($schools->isEmpty()) {
     throw new RuntimeException('No hay tenants para verificar una actualización.');
 }
 $nonce = bin2hex(random_bytes(6));
-$directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.(in_array('--verify-intake', $argv, true) ? 'colegio-ingreso-' : 'colegio-preinformes-').date('Ymd-His').'-'.$nonce;
+$directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.(in_array('--verify-events', $argv, true) ? 'colegio-eventos-' : (in_array('--verify-intake', $argv, true) ? 'colegio-ingreso-' : 'colegio-preinformes-')).date('Ymd-His').'-'.$nonce;
 mkdir($directory, 0700);
 $connection = ['--host', $config['host'], '--port', (string) $config['port'], '--username', $config['username'], '--no-password'];
 $run = function (array $args) use ($config): string {
@@ -101,6 +101,15 @@ $verifyIntake = function () use ($argv): void {
         throw new RuntimeException('Faltan esquema o permisos de ingreso estudiantil.');
     }
 };
+$verifyEvents = function () use ($argv): void {
+    if (! in_array('--verify-events', $argv, true)) return;
+    if (! DB::getSchemaBuilder()->hasTable('evento_correos')
+        || ! DB::getSchemaBuilder()->hasColumn('aula_recursos', 'publicado_en')
+        || DB::table('eventos')->where('categoria', 'tarea')->exists()
+        || DB::table('configuracion_eventos')->where('docentes_cualquier_grupo', true)->exists()) {
+        throw new RuntimeException('El esquema de eventos no cumple el contrato nuevo.');
+    }
+};
 try {
     foreach (['fresh', 'upgrade'] as $kind) {
         $name = 'grading_probe_'.$kind.'_'.$nonce;
@@ -125,6 +134,7 @@ try {
             throw new RuntimeException('La actualización alteró datos existentes.');
         }
         $verifyIntake();
+        $verifyEvents();
         if (! DB::getSchemaBuilder()->hasTable('preinformes')) {
             throw new RuntimeException('Falta preinformes.');
         }
@@ -152,7 +162,7 @@ if (in_array('--apply', $argv, true)) {
         if (Artisan::call('tenants:migrate', ['--tenants' => [$school->id], '--force' => true]) !== 0) {
             throw new RuntimeException(Artisan::output());
         }
-        $school->run(function () use ($before, $signature, $school, $verifyIntake) {
+        $school->run(function () use ($before, $signature, $school, $verifyIntake, $verifyEvents) {
             if ($before !== $signature()) {
                 throw new RuntimeException('Cambió la información de un colegio.');
             }
@@ -163,6 +173,7 @@ if (in_array('--apply', $argv, true)) {
                 throw new RuntimeException('Falta permiso.');
             }
             $verifyIntake();
+            $verifyEvents();
             echo "Actualizado y verificado: {$school->slug}\n";
         });
     }
