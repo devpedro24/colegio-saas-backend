@@ -19,7 +19,12 @@ class AulaRecurso extends Model
     protected $casts = ['contenido' => 'array', 'configuracion' => 'array', 'visible_estudiantes' => 'boolean',
         'calificable' => 'boolean', 'llevar_planilla' => 'boolean', 'disponible_desde' => 'datetime',
         'disponible_hasta' => 'datetime', 'fecha_limite' => 'datetime', 'version' => 'integer',
-        'deleted_with_section' => 'boolean'];
+        'deleted_with_section' => 'boolean', 'publicado_en' => 'datetime', 'publicacion_estimada' => 'boolean'];
+
+    protected static function booted(): void
+    {
+        static::saving(fn (self $resource) => \App\Services\AulaPublication::stamp($resource));
+    }
 
     public function seccion(): BelongsTo { return $this->belongsTo(AulaSeccion::class, 'seccion_id'); }
     public function preguntas(): HasMany { return $this->hasMany(AulaPregunta::class, 'recurso_id')->orderBy('orden')->orderBy('id'); }

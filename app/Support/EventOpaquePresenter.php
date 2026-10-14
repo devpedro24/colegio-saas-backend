@@ -14,10 +14,11 @@ final class EventOpaquePresenter
      */
     public static function present(Evento $event, ?array $files = null, ?bool $canEdit = null): array
     {
-        $event->loadMissing('grupos:id,nombre');
+        $event->loadMissing('grupos.grado');
         $groups = $event->grupos->map(fn (Grupo $group) => [
             'url_token' => OpaqueUrlToken::for('grupo', $group->id),
             'nombre' => $group->nombre,
+            'grado' => $group->grado ? ['nombre' => $group->grado->nombre] : null,
         ])->all();
         $data = [
             'url_token' => OpaqueUrlToken::for('evento', $event->id),
@@ -27,6 +28,12 @@ final class EventOpaquePresenter
             'hora_inicio' => $event->hora_inicio,
             'hora_fin' => $event->hora_fin,
             'categoria' => $event->categoria,
+            'origen' => 'evento',
+            'estado' => $event->estado,
+            'version' => $event->version,
+            'publicado_en' => $event->publicado_en?->toIso8601String(),
+            'enviar_correo' => (bool) $event->enviar_correo,
+            'zona_horaria' => tenant()->zonaHorariaInstitucional(),
             'institucional' => (bool) $event->institucional,
             'materia_token' => $event->materia_id ? OpaqueUrlToken::for('materia', $event->materia_id) : null,
             'created_by_token' => OpaqueUrlToken::for('usuario', $event->created_by),

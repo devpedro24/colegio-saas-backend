@@ -16,6 +16,15 @@ class AulaSeccion extends Model
     protected $fillable = ['aula_id', 'periodo_id', 'preinforme_id', 'seccion_origen_id', 'titulo', 'orden', 'visible_estudiantes', 'autor_id'];
     protected $casts = ['visible_estudiantes' => 'boolean'];
 
+    protected static function booted(): void
+    {
+        static::updated(function (self $section) {
+            if ($section->wasChanged('visible_estudiantes')) {
+                $section->recursos()->where('visible_estudiantes', true)->each(fn ($resource) => $resource->save());
+            }
+        });
+    }
+
     public function aula(): BelongsTo { return $this->belongsTo(Aula::class); }
     public function periodo(): BelongsTo { return $this->belongsTo(Periodo::class); }
     public function preinforme(): BelongsTo { return $this->belongsTo(Preinforme::class); }

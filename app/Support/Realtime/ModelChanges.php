@@ -6,6 +6,7 @@ namespace App\Support\Realtime;
 
 use App\Models\StoredFile;
 use App\Models\Tenant;
+use App\Services\EventAgendaCache;
 use Illuminate\Database\Eloquent\Model;
 
 /** Also covers domain writes from services, scheduled commands and queued jobs. */
@@ -19,7 +20,7 @@ final class ModelChanges
         }
         $table = $model->getTable();
         // Delivery bookkeeping and PIN updates must not refresh unrelated modules.
-        if ($table === 'ingreso_notificaciones') {
+        if (in_array($table, ['ingreso_notificaciones', 'evento_correos'], true)) {
             return;
         }
         if (in_array($table, ['audit_logs', 'platform_audit_logs'], true)
@@ -29,6 +30,11 @@ final class ModelChanges
         $changes = app(RealtimeChanges::class);
         $connection = $model->getConnection();
         $tenantId = $connection->getName() === 'tenant' ? tenant()?->getKey() : null;
+        if ($tenantId !== null && in_array($table, ['eventos', 'grupos', 'matriculas', 'asignaciones_docentes', 'users'], true)) {
+            $invalidate = fn () => app(EventAgendaCache::class)->invalidate((string) $tenantId);
+            if ($connection->transactionLevel() > 0) $connection->afterCommit($invalidate);
+            else $invalidate();
+        }
         $resource = match ($table) {
             'anos_lectivos', 'periodos', 'preinformes' => 'academic',
             'sedes', 'jornadas', 'niveles', 'grados', 'grupos', 'bloques_horarios', 'espacios_fisicos' => 'structure',

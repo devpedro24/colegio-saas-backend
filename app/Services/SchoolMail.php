@@ -69,4 +69,32 @@ class SchoolMail
             throw new \RuntimeException(__('Google no aceptó la prueba. Verifica el correo, la contraseña de aplicación, la verificación en dos pasos y que el servidor permita SMTP seguro.'));
         }
     }
+
+    public function sendEvent(#[\SensitiveParameter] string $recipient, array $event, string $locale): void
+    {
+        try {
+            if (! $this->readyForEvents()) throw new \RuntimeException;
+            $subject = ($locale === 'en' ? 'New school event: ' : 'Nuevo evento del colegio: ').$event['title'];
+            $mailer = $this->mailer();
+            $transport = $mailer->getSymfonyTransport();
+            if ($transport instanceof \Symfony\Component\Mailer\Transport\Smtp\SmtpTransport
+                && $transport->getStream() instanceof \Symfony\Component\Mailer\Transport\Smtp\Stream\SocketStream) {
+                $transport->getStream()->setTimeout(10);
+            }
+            $sent = $mailer->send(['html' => 'mail.event', 'text' => 'mail.event-text'],
+                ['event' => $event, 'english' => $locale === 'en'], fn ($mail) => $mail->to($recipient)->subject($subject));
+            if (! $sent) throw new \RuntimeException;
+        } catch (\Throwable) {
+            throw new \RuntimeException('event_mail_transport_failed');
+        }
+    }
+
+    public function readyForEvents(): bool
+    {
+        if ($this->settings()) return true;
+        // A log/array (including a failover to log) is not SMTP acceptance.
+        // Use a direct delivery transport or the school's configured SMTP.
+        return in_array(config('mail.mailers.'.config('mail.default').'.transport'),
+            ['smtp', 'sendmail', 'ses', 'postmark', 'resend'], true);
+    }
 }

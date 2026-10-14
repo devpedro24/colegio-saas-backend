@@ -30,6 +30,15 @@ return [
 
     'connections' => [
 
+        'event_mail' => [
+            'driver' => 'database',
+            'connection' => env('DB_QUEUE_CONNECTION', env('DB_CONNECTION', 'pgsql')),
+            'table' => env('DB_QUEUE_TABLE', 'jobs'),
+            'queue' => 'event-mail',
+            'retry_after' => 300,
+            'after_commit' => true,
+        ],
+
         'sync' => [
             'driver' => 'sync',
         ],

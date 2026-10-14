@@ -909,7 +909,8 @@ final class AulaController extends Controller
             'actividad_token' => $resource->actividad_id ? Token::for('actividad-evaluacion', $resource->actividad_id) : null,
             'peso' => $resource->peso, 'disponible_desde' => $resource->disponible_desde,
             'disponible_hasta' => $resource->disponible_hasta ?? ($resource->tipo === 'tarea' ? $resource->fecha_limite : null),
-            'fecha_limite' => $resource->fecha_limite,
+            'fecha_limite' => $resource->fecha_limite, 'publicado_en' => $resource->publicado_en,
+            'publicacion_estimada' => (bool) $resource->publicacion_estimada,
             'zona_publicacion' => $resource->zona_publicacion, 'version' => $resource->version,
             'completar_al' => $resource->configuracion['completar_al'] ?? match ($resource->tipo) {
                 'tarea' => 'entregar', 'cuestionario' => 'finalizar', default => 'abrir',

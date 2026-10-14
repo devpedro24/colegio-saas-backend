@@ -1,4 +1,9 @@
 {
+    "Configura el correo institucional antes de publicar con notificación.": "Set up school email before publishing with notifications.",
+    "Los docentes solo pueden publicar para sus grupos asignados.": "Teachers can only publish to their assigned groups.",
+    "El evento cambió. Recarga antes de guardar.": "The event changed. Reload before saving.",
+    "El evento cambió. Recarga antes de publicar.": "The event changed. Reload before publishing.",
+    "El alcance y la notificación se definen antes de publicar. Crea otro evento para cambiarlos.": "Audience and notifications are set before publishing. Create another event to change them.",
   "Configura el correo saliente antes de abrir una convocatoria en producción.": "Configure outgoing email before opening an enrollment round in production.",
   "Un requisito tiene grados ajenos a la campaña.": "A requirement includes grades outside this enrollment round.",
   "La campaña ya tiene solicitudes: conserva sus requisitos o crea otra campaña. Puedes ajustar las fechas y abrir/cerrar.": "This round already has applications: keep its requirements or create another round. You can adjust dates and open or close it.",

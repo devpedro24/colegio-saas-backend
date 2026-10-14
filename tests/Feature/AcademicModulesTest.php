@@ -77,6 +77,7 @@ class AcademicModulesTest extends TestCase
     use RefreshDatabase;
     use \Tests\Support\FlexibleGradingTests;
     use \Tests\Support\AcademicWorkflowTests;
+    use \Tests\Support\EventWorkflowTests;
 
     public function test_aula_is_provisioned_from_curriculum_and_group_without_teacher_or_manual_creation(): void
     {

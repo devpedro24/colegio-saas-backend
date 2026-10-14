@@ -26,13 +26,16 @@ final class EventAccess
 
     public function unrestricted(): bool
     {
-        return (bool) DB::table('configuracion_eventos')->where('id', 1)->value('docentes_cualquier_grupo');
+        // Publication scope is always assignment-bound for teachers.
+        return false;
     }
 
     public function groupIds(User $user): array
     {
         if ($this->teacher($user)) {
-            return AsignacionDocente::where('docente_id', $user->id)->pluck('grupo_id')->unique()->all();
+            return AsignacionDocente::where('docente_id', $user->id)
+                ->whereHas('anoLectivo', fn ($q) => $q->whereNotIn('estado', ['cerrado', 'archivado']))
+                ->pluck('grupo_id')->unique()->all();
         }
         if (Schema::hasTable('matriculas')) {
             return DB::table('matriculas')->where('estudiante_id', $user->id)->where('estado', 'activa')->pluck('grupo_id')->all();
@@ -44,12 +47,14 @@ final class EventAccess
     public function visible(User $user): Builder
     {
         $query = Evento::query();
-        if ($this->rector($user) || ($this->teacher($user) && $this->unrestricted())) {
-            return $query;
+        if ($this->rector($user)) {
+            return $query->where(fn ($scope) => $scope->where('estado', 'publicado')
+                ->orWhere('created_by', $user->id));
         }
         $groups = $this->groupIds($user);
 
-        return $query->where(function ($query) use ($groups, $user) {
+        return $query->where(fn ($q) => $q->where('estado', 'publicado')->orWhere('created_by', $user->id))
+            ->where(function ($query) use ($groups, $user) {
             $query->where('institucional', true)->orWhere('created_by', $user->id)
                 ->orWhereHas('grupos', fn ($q) => $q->whereIn('grupos.id', $groups));
         });
@@ -70,7 +75,7 @@ final class EventAccess
         $groups = array_unique($data['grupo_ids'] ?? []);
         abort_if($groups === [], 422, 'Selecciona al menos un grupo.');
         abort_unless(Grupo::where('estado', 'activo')->whereIn('id', $groups)->count() === count($groups), 422, 'Selecciona grupos activos de este colegio.');
-        if (! $manager && ! $this->unrestricted()) {
+        if (! $manager) {
             $authorized = AsignacionDocente::where('docente_id', $user->id)
                 ->when(! empty($data['materia_id']), fn ($q) => $q->where('materia_id', $data['materia_id']))
                 ->whereHas('anoLectivo', fn ($q) => $q->whereNotIn('estado', ['cerrado', 'archivado']))

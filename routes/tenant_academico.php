@@ -323,9 +323,14 @@ Route::middleware(['can:academico.configurar', ResolveOpaqueSieeYear::class])->g
 });
 Route::middleware(ResolveAcademicInputIdentifiers::class)->group(function () {
     Route::get('/eventos/catalogo', [EventoController::class, 'catalogo']);
+    Route::get('/eventos/resumen', [EventoController::class, 'resumen']);
+    Route::get('/eventos/flujo', [EventoController::class, 'flujo']);
+    Route::get('/eventos/tareas', [EventoController::class, 'tareas']);
     Route::put('/eventos/configuracion', [EventoController::class, 'configurar']);
     Route::get('/eventos', [EventoController::class, 'index']);
     Route::post('/eventos', [EventoController::class, 'guardar']);
+    Route::post('/eventos/{id}/publicar', [EventoController::class, 'publicar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,evento');
+    Route::post('/eventos/{id}/correos/reintentar', [EventoController::class, 'reintentarCorreos'])->middleware(ResolveAcademicRouteIdentifier::class.':id,evento');
     Route::get('/eventos/{id}', [EventoController::class, 'show'])->middleware(ResolveAcademicRouteIdentifier::class.':id,evento');
     Route::put('/eventos/{id}', [EventoController::class, 'guardar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,evento');
     Route::delete('/eventos/{id}', [EventoController::class, 'destroy'])->middleware(ResolveAcademicRouteIdentifier::class.':id,evento');
