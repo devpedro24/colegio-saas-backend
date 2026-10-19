@@ -9,21 +9,21 @@ use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\Grado;
 use App\Models\Ingreso\Campana;
 use App\Models\Ingreso\Documento;
+use App\Models\Ingreso\Notificacion;
 use App\Models\Ingreso\Solicitud;
 use App\Models\StoredFile;
 use App\Models\Tenant;
 use App\Services\Ingreso\EnrollmentIntake;
+use App\Services\Ingreso\EnrollmentRenewal;
+use App\Services\Ingreso\EnrollmentSubmission;
 use App\Support\OpaqueUrlToken;
-use App\Support\Storage\ReadableStorageName;
-use App\Support\Storage\StorageException;
-use App\Support\Storage\StorageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 final class IngresoPublicController extends Controller
 {
@@ -49,7 +49,7 @@ final class IngresoPublicController extends Controller
             $payload = Crypt::decryptString((string) $r->cookie('ingreso_session'));
             $p = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
         } catch (\Throwable) {
-            abort(401, __('Ingresa con tu correo y PIN.'));
+            abort(401, __('Consulta tu matrícula con el PIN.'));
         }
         abort_unless(($p['school'] ?? '') === (string) tenant()->getTenantKey() && ($p['expires'] ?? 0) > time(), 401);
         $q = Solicitud::query();
@@ -76,7 +76,13 @@ final class IngresoPublicController extends Controller
     {
         $this->available();
 
-        return response()->json(['colegio' => tenant()->name, 'campanas' => Campana::orderByDesc('id')->limit(50)->get()->map($this->intake->campaign(...))]);
+        return response()->json(['colegio' => tenant()->name, 'limites_envio' => EnrollmentSubmission::limits(),
+            'zona_horaria' => tenant()->zonaHorariaInstitucional()]);
+    }
+
+    public function campaignDetail(string $campaign)
+    {
+        return response()->json(['data' => $this->intake->campaign($this->campaign($campaign))]);
     }
 
     public function start(Request $r, string $campaign)
@@ -86,39 +92,61 @@ final class IngresoPublicController extends Controller
         $d = $r->validate(['email' => 'required|email|max:255', 'grado_token' => 'required|string|size:24']);
         abort_unless(collect($c->configuracion['grados'])->contains('token', $d['grado_token']), 404);
         $grade = $this->intake->resolve('grado', $d['grado_token'], Grado::where('ano_lectivo_id', $c->ano_lectivo_id)->where('estado', 'activo'));
-        DB::transaction(function () use ($c, $d, $grade) {
-            $lockedCampaign = Campana::lockForUpdate()->findOrFail($c->id);
-            $this->intake->open($lockedCampaign);
-            abort_unless(collect($lockedCampaign->configuracion['grados'])->contains('token', $d['grado_token']), 422);
-            $s = Solicitud::firstOrCreate(['campana_id' => $c->id, 'email' => Str::lower(trim($d['email']))],
-                ['grado_id' => $grade->id, 'pin_hash' => Hash::make(Str::random(32)), 'pin_expira' => now(), 'sesion_version' => Str::random(64)]);
-            // Existing data is never overwritten by someone who only knows an email.
-            $this->intake->pin($s);
-        });
+        try {
+            [$access, $pinExpiry] = DB::transaction(function () use ($c, $d, $grade) {
+                $lockedCampaign = Campana::lockForUpdate()->findOrFail($c->id);
+                $this->intake->open($lockedCampaign);
+                abort_unless(collect($lockedCampaign->configuracion['grados'])->contains('token', $d['grado_token']), 422);
+                $s = Solicitud::firstOrCreate(['campana_id' => $c->id, 'email' => Str::lower(trim($d['email']))],
+                    ['grado_id' => $grade->id, 'pin_hash' => Hash::make(Str::random(32)), 'pin_expira' => now(), 'sesion_version' => Str::random(64)]);
+                // Existing data is never overwritten by someone who only knows an email.
+                $access = $this->intake->pin($s);
 
-        return response()->json(['message' => __('Revisa tu correo. Te enviamos el PIN para verificarlo y continuar la solicitud.')], 202);
-    }
-
-    public function recover(Request $r, string $campaign)
-    {
-        $c = $this->campaign($campaign);
-        $d = $r->validate(['email' => 'required|email|max:255']);
-        DB::transaction(function () use ($c, $d) {
-            $s = Solicitud::where('campana_id', $c->id)->where('email', Str::lower(trim($d['email'])))->lockForUpdate()->first();
-            if ($s) {
-                $this->intake->pin($s);
+                return [$access, $s->pin_expira];
+            });
+        } catch (\RuntimeException $e) {
+            if ($e instanceof HttpExceptionInterface) {
+                throw $e;
             }
-        });
+            abort(503, __('No se pudo enviar el PIN. Revisa la conexión de correo institucional e inténtalo de nuevo.'));
+        }
 
-        return response()->json(['message' => __('Si existe una solicitud, recibirás un nuevo PIN en tu correo.')], 202);
+        // Without a deadline this browser challenge is a session cookie; the
+        // private email link remains usable after the browser session ends.
+        $challengeMinutes = $pinExpiry ? max(1, (int) ceil(($pinExpiry->timestamp - time()) / 60)) : 0;
+
+        return response()->json(['message' => __('Revisa tu correo. Te enviamos el PIN para verificarlo y continuar la solicitud.')], 202)
+            ->cookie('ingreso_challenge', $access, $challengeMinutes, '/api/ingreso-publico', null, $r->isSecure(), true, false, 'strict');
     }
 
-    public function login(Request $r, string $campaign)
+    public function consult(Request $r)
     {
-        $c = $this->campaign($campaign);
-        $d = $r->validate(['email' => 'required|email|max:255', 'pin' => 'required|string|max:32']);
-        $s = Solicitud::where('campana_id', $c->id)->where('email', Str::lower(trim($d['email'])))->first();
-        abort_unless($s && $s->pin_expira->isFuture() && Hash::check(strtoupper(trim($d['pin'])), $s->pin_hash), 422, __('Correo o PIN inválido o vencido.'));
+        $this->available();
+        $d = $r->validate(['pin' => ['required', 'string', 'regex:/\A[0-9]{4}\z/'],
+            'access' => ['nullable', 'string', 'regex:/\A[a-f0-9]{64}\z/']]);
+        $pin = $d['pin'];
+        $access = $d['access'] ?? $r->cookie('ingreso_challenge');
+        abort_unless(is_string($access) && preg_match('/\A[a-f0-9]{64}\z/', $access), 422, __('Abre el enlace privado del correo e ingresa el PIN.'));
+        $s = DB::transaction(function () use ($access, $pin) {
+            $request = Solicitud::where('access_lookup', $this->intake->accessLookup($access))->lockForUpdate()->first();
+            if (! $request || ($request->pin_expira && ! $request->pin_expira->isFuture()) || $request->pin_intentos >= 5) {
+                return null;
+            }
+            if (! Hash::check($pin, $request->pin_hash)) {
+                $request->increment('pin_intentos');
+
+                return null;
+            }
+
+            return $request;
+        });
+        abort_unless($s, 422, __('PIN inválido o vencido. Solicita uno nuevo desde el enlace de matrícula.'));
+
+        return $this->issueSession($r, $s);
+    }
+
+    private function issueSession(Request $r, Solicitud $s)
+    {
         if (! $s->email_verificado) {
             $s->update(['email_verificado' => now()]);
         }
@@ -142,81 +170,70 @@ final class IngresoPublicController extends Controller
         $s = $this->session($r);
         $s->update(['sesion_version' => Str::random(64)]);
 
-        return response()->json(['ok' => true])->withoutCookie('ingreso_session', '/api/ingreso-publico')->withoutCookie('ingreso_csrf');
+        return response()->json(['ok' => true])->withoutCookie('ingreso_session', '/api/ingreso-publico')->withoutCookie('ingreso_csrf')
+            ->withoutCookie('ingreso_challenge', '/api/ingreso-publico');
     }
 
-    public function save(Request $r)
+    public function geography()
     {
-        $s = DB::transaction(function () use ($r) {
+        $this->available();
+
+        return response()->json(['data' => EnrollmentSubmission::geography()]);
+    }
+
+    public function renewal(Request $r, EnrollmentRenewal $renewal)
+    {
+        $d = $r->validate(['tipo_documento' => 'required|string|in:RC,TI,CC,CE,PASAPORTE,OTRO',
+            'numero_documento' => 'required|string|regex:/^[a-zA-Z0-9-]{3,40}$/']);
+        return response()->json(['data' => DB::transaction(function () use ($r, $d, $renewal) {
             $s = $this->session($r, true);
             $this->editable($s);
-            $submit = $r->boolean('enviar');
-            $required = $submit ? 'required' : 'nullable';
-            $rules = ['enviar' => 'required|boolean', 'consentimiento' => $submit ? 'accepted' : 'nullable|boolean',
-                'datos' => 'required|array:primer_nombre,segundo_nombre,primer_apellido,segundo_apellido,nacimiento,tipo_documento,numero_documento,telefono,direccion,adicionales',
-                'datos.primer_nombre' => "$required|string|max:80", 'datos.segundo_nombre' => 'nullable|string|max:80',
-                'datos.primer_apellido' => "$required|string|max:80", 'datos.segundo_apellido' => 'nullable|string|max:80',
-                'datos.nacimiento' => "$required|date_format:Y-m-d|before:today|after:1900-01-01",
-                'datos.tipo_documento' => [$required, Rule::in(EnrollmentIntake::DOCUMENT_TYPES)],
-                'datos.numero_documento' => "$required|string|regex:/^[a-zA-Z0-9-]{3,40}$/",
-                'datos.telefono' => 'nullable|string|max:30', 'datos.direccion' => 'nullable|string|max:200',
-                'datos.adicionales' => 'present|array'];
-            foreach ($s->campana->configuracion['campos'] as $field) {
-                $rules['datos.adicionales.'.$field['key']] = ($submit && $field['obligatorio'] ? 'required' : 'nullable')
-                    .($field['tipo'] === 'fecha' ? '|date_format:Y-m-d' : '|string|max:1000');
-            }
-            $d = $r->validate($rules);
-            abort_if(array_diff(array_keys($d['datos']['adicionales']), array_column($s->campana->configuracion['campos'], 'key')), 422, __('Hay campos no configurados.'));
-            $s->datos = $d['datos'];
-            if (isset($s->datos['numero_documento'])) {
-                $s->datos = [...$s->datos, 'numero_documento' => strtoupper(trim($s->datos['numero_documento']))];
-            }
-            if ($submit) {
-                $this->intake->complete($s);
-                $s->estado = 'enviada';
-                $s->enviada_en = now();
-                $s->consentimiento_en = now();
-            }
-            $s->save();
-            if ($submit) {
-                $this->intake->event($s, 'enviada');
-                $this->intake->notify($s, 'envio:'.Str::uuid(), 'Solicitud de matrícula recibida', 'Recibimos tu solicitud. Podrás consultar el estado de cada documento en el portal.');
-            }
 
-            return $s;
-        });
+            return $renewal->prefill($s, $d['tipo_documento'], $d['numero_documento']);
+        })]);
+    }
+
+    public function save(Request $r, EnrollmentSubmission $submission)
+    {
+        $created = [];
+        try {
+            $s = DB::transaction(function () use ($r, $submission, &$created) {
+                $candidate = $this->session($r);
+                // Serialize submissions for the same academic year before locking
+                // an application, so two campaigns cannot renew one account twice.
+                AnoLectivo::lockForUpdate()->findOrFail($candidate->campana->ano_lectivo_id);
+                $s = $this->session($r, true);
+                $r->validate(['envio_token' => 'required|uuid']);
+                // A retry after a successful response was lost cannot create duplicate files/notices.
+                if (Notificacion::where('clave', $s->id.':envio:'.$r->input('envio_token'))->exists()) {
+                    return $s;
+                }
+                $this->editable($s);
+                $submission->submit($r, $s, $created);
+
+                return $s;
+            });
+        } catch (\Throwable $error) {
+            foreach ($created as $file) {
+                Storage::disk($file->disk)->delete($file->path);
+                $file->forceDelete();
+            }
+            throw $error;
+        }
 
         return response()->json(['data' => $this->intake->present($s)]);
     }
 
-    public function upload(Request $r, string $requirement, StorageService $storage)
+    public function upload(Request $r, string $requirement)
     {
-        $s = DB::transaction(function () use ($r, $requirement, $storage) {
-            $s = $this->session($r, true);
-            $this->editable($s);
-            $rule = collect($this->intake->requirements($s))->firstWhere('key', $requirement);
-            abort_unless($rule, 404);
-            $last = $s->documentos()->where('requisito', $requirement)->orderByDesc('version')->first();
-            abort_if($last && $last->estado === 'aprobado', 422, __('Un documento aprobado no se puede reemplazar.'));
-            $r->validate(['archivo' => ['required', 'file', 'mimes:'.implode(',', $rule['formatos']), 'max:'.($rule['max_mb'] * 1024)]]);
-            $version = ($last?->version ?? 0) + 1;
-            abort_if($version > 20, 422, __('Se alcanzó el límite de versiones. Contacta al colegio.'));
-            $folder = 'matriculas/Ano_lectivo_'.ReadableStorageName::segment(AnoLectivo::findOrFail($s->campana->ano_lectivo_id)->nombre, 'Ano', 20)
-                .'/'.ReadableStorageName::segment($s->campana->nombre, 'Campana', 40)
-                .'/Solicitud_'.OpaqueUrlToken::for('ingreso-solicitud', $s->id).'/'.$requirement.'/Version_'.$version;
-            try {
-                $file = $storage->store($r->file('archivo'), $folder, $s->email);
-            } catch (StorageException $e) {
-                abort(422, $e->getMessage());
-            }
-            $s->documentos()->create(['requisito' => $requirement, 'version' => $version,
-                'archivo_id' => $file->id, 'nombre' => $file->original_name, 'estado' => 'pendiente']);
-            $this->intake->event($s, 'documento_cargado', $rule['nombre'].' (versión '.$version.')');
+        $this->session($r);
+        abort(410, __('intake.finalSubmissionOnly'));
+    }
 
-            return $s;
-        });
-
-        return response()->json(['data' => $this->intake->present($s)], 201);
+    public function removeDocument(Request $r, string $requirement)
+    {
+        $this->session($r);
+        abort(410, __('intake.finalSubmissionOnly'));
     }
 
     public function download(Request $r, string $document)

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\CorreoConfiguracion;
+use App\Services\Ingreso\EnrollmentMail;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
 
@@ -53,6 +54,29 @@ class SchoolMail
             }
         } catch (\Throwable) {
             // Never surface the SMTP dialogue or chain its possibly sensitive exception.
+            throw new \RuntimeException(__('No se pudo enviar el correo. Revisa la configuración institucional y vuelve a probar.'));
+        }
+    }
+
+    /** Multipart email: branded HTML for modern clients, readable plain text elsewhere. */
+    public function sendEnrollment(#[\SensitiveParameter] string $recipient, string $subject,
+        #[\SensitiveParameter] string $body, string $noticeKey): void
+    {
+        try {
+            $settings = $this->settings();
+            if (! $settings && app()->environment('production') && ! $this->ready()) {
+                throw new \RuntimeException;
+            }
+            $data = app(EnrollmentMail::class)->data($subject, $body, $noticeKey);
+            $sent = $this->mailer($settings)->send(
+                ['html' => 'mail.enrollment', 'text' => 'mail.enrollment-text'],
+                $data,
+                fn ($mail) => $mail->to($recipient)->subject($subject)
+            );
+            if (! $sent) {
+                throw new \RuntimeException;
+            }
+        } catch (\Throwable) {
             throw new \RuntimeException(__('No se pudo enviar el correo. Revisa la configuración institucional y vuelve a probar.'));
         }
     }

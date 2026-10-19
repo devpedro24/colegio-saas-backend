@@ -47,10 +47,19 @@ Tenant::where('slug', $slug)->firstOrFail()->run(function () use ($argv): void {
         app(SchoolMail::class)->test(app(SchoolMail::class)->settings());
         $sent = true;
     }
+    if (in_array('--send-enrollment-test', $argv, true)) {
+        $settings = app(SchoolMail::class)->settings();
+        app(SchoolMail::class)->sendEnrollment($settings->email,
+            'Prueba del correo de matrícula',
+            'Este es un mensaje de prueba del formato de matrícula. No se creó ninguna solicitud.',
+            'diagnostico:correo');
+    }
     $after = DB::table('correo_configuracion')->where('key', 'gmail')->first();
     if (json_encode($before) !== json_encode($after)) {
         throw new RuntimeException;
     }
     echo json_encode(['connection_configured' => true, 'locked_after_reload' => true,
-        'smtp_test_accepted' => $sent, 'settings_and_encrypted_credential_unchanged' => true], JSON_PRETTY_PRINT).PHP_EOL;
+        'smtp_test_accepted' => $sent,
+        'enrollment_mail_accepted' => in_array('--send-enrollment-test', $argv, true) ? true : null,
+        'settings_and_encrypted_credential_unchanged' => true], JSON_PRETTY_PRINT).PHP_EOL;
 });

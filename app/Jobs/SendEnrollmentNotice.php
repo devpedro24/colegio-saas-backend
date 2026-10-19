@@ -29,7 +29,7 @@ final class SendEnrollmentNotice implements ShouldQueue
                 if ($notice->enviada_en) {
                     return;
                 }
-                app(SchoolMail::class)->sendRaw($notice->email, $notice->asunto, $notice->contenido);
+                app(SchoolMail::class)->sendEnrollment($notice->email, $notice->asunto, $notice->contenido, $notice->clave);
                 // Secrets are encrypted at rest and discarded after delivery.
                 $notice->update(['enviada_en' => now(), 'contenido' => null]);
             });

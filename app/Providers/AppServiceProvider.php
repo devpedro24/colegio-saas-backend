@@ -3,6 +3,9 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Notifications\SchoolMailChannel;
+use App\Services\Ingreso\EnrollmentIntake;
+use App\Services\SchoolMailFactory;
 use App\Support\AcademicTokenIndex;
 use App\Support\RequestPerformance;
 use App\Support\Storage\ClamAvScanner;
@@ -15,6 +18,8 @@ use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Http\Request;
+use Illuminate\Mail\Markdown;
+use Illuminate\Notifications\ChannelManager;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
@@ -46,8 +51,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        app(\Illuminate\Notifications\ChannelManager::class)->extend('mail', fn ($app) => new \App\Notifications\SchoolMailChannel(
-            new \App\Services\SchoolMailFactory, $app->make(\Illuminate\Mail\Markdown::class)
+        app(ChannelManager::class)->extend('mail', fn ($app) => new SchoolMailChannel(
+            new SchoolMailFactory, $app->make(Markdown::class)
         ));
         RateLimiter::for('school-mail-test', fn (Request $request) => Limit::perMinute(3)->by((string) tenant()?->getKey()));
         if (config('performance.enabled')) {
@@ -64,7 +69,7 @@ class AppServiceProvider extends ServiceProvider
         ResetPassword::createUrlUsing(function (User $user, string $token): string {
             $base = rtrim(config('frontend.url'), '/');
             if (tenancy()->initialized) {
-                $base = app(\App\Services\Ingreso\EnrollmentIntake::class)->baseUrl();
+                $base = app(EnrollmentIntake::class)->baseUrl();
             }
 
             return $base.'/auth/reset-password?'.http_build_query(['token' => $token, 'email' => $user->email]);
@@ -74,7 +79,7 @@ class AppServiceProvider extends ServiceProvider
         });
         RateLimiter::for('ingreso-access', fn (Request $r) => [
             Limit::perMinute(5)->by('ingreso-ip|'.$r->getHost().'|'.$r->ip()),
-            Limit::perHour(15)->by('ingreso-email|'.$r->getHost().'|'.hash('sha256', strtolower((string) $r->input('email')))),
+            Limit::perHour(5)->by('ingreso-secret|'.$r->getHost().'|'.hash('sha256', strtolower((string) ($r->input('email') ?: $r->input('access') ?: $r->cookie('ingreso_challenge') ?: $r->input('pin'))))),
         ]);
         RateLimiter::for('ingreso-upload', fn (Request $r) => [
             Limit::perMinute(5)->by($r->getHost().'|'.$r->ip()),

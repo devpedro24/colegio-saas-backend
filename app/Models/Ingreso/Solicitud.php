@@ -10,11 +10,12 @@ final class Solicitud extends Model
 
     protected $guarded = ['id'];
 
-    protected $hidden = ['pin_hash', 'sesion_version'];
+    protected $hidden = ['pin_hash', 'access_lookup', 'pin_intentos', 'sesion_version'];
 
     protected function casts(): array
     {
-        return ['datos' => 'array', 'pin_expira' => 'datetime', 'email_verificado' => 'datetime', 'enviada_en' => 'datetime'];
+        return ['datos' => 'array', 'validacion_edad' => 'array', 'consentimiento_privacidad' => 'array',
+            'pin_expira' => 'datetime', 'email_verificado' => 'datetime', 'enviada_en' => 'datetime'];
     }
 
     public function campana()

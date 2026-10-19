@@ -85,13 +85,17 @@ Route::middleware([
 
     Route::prefix('ingreso-publico')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoPublicController::class)->group(function () {
         Route::get('/catalogo', 'catalog')->middleware('throttle:60,1');
+        Route::get('/ubicaciones', 'geography')->middleware('throttle:60,1');
+        Route::get('/campanas/{campaign}', 'campaignDetail')->middleware('throttle:60,1');
+        Route::post('/consultar', 'consult')->middleware('throttle:ingreso-access');
         Route::post('/{campaign}/iniciar', 'start')->middleware('throttle:ingreso-access');
-        Route::post('/{campaign}/recuperar', 'recover')->middleware('throttle:ingreso-access');
-        Route::post('/{campaign}/acceder', 'login')->middleware('throttle:ingreso-access');
         Route::get('/solicitud', 'show')->middleware('throttle:60,1');
+        Route::post('/solicitud/renovacion', 'renewal')->middleware('throttle:ingreso-access');
         Route::put('/solicitud', 'save')->middleware('throttle:30,1');
+        Route::post('/solicitud', 'save')->middleware('throttle:ingreso-upload');
         Route::post('/salir', 'logout');
         Route::post('/documentos/{requirement}', 'upload')->middleware('throttle:ingreso-upload');
+        Route::delete('/documentos/{requirement}', 'removeDocument')->middleware('throttle:30,1');
         Route::get('/documentos/{document}', 'download')->middleware('throttle:60,1');
     });
 

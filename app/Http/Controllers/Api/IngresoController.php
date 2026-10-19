@@ -13,14 +13,17 @@ use App\Models\Ingreso\Documento;
 use App\Models\Ingreso\Solicitud;
 use App\Models\StoredFile;
 use App\Services\Ingreso\EnrollmentIntake;
+use App\Services\Ingreso\EnrollmentSettings;
 use App\Services\SchoolMail;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 final class IngresoController extends Controller
 {
@@ -48,9 +51,11 @@ final class IngresoController extends Controller
         abort_unless(collect(['ver', 'configurar', 'revisar', 'decidir', 'asignar'])->contains(fn ($p) => $r->user()->can('ingreso.'.$p)), 403);
 
         return response()->json(['correo_operativo' => app(SchoolMail::class)->ready(),
+            'zona_horaria' => tenant()->zonaHorariaInstitucional(),
             'anos' => AnoLectivo::whereIn('estado', ['planificado', 'en_curso'])->orderByDesc('nombre')->get()->map(fn ($y) => [
                 'token' => OpaqueUrlToken::for('ano-lectivo', $y->id), 'nombre' => $y->nombre]),
             'grados' => Grado::where('estado', 'activo')->get()->map(fn ($g) => ['token' => OpaqueUrlToken::for('grado', $g->id),
+                'regla_token' => $g->ingreso_grado_id ? OpaqueUrlToken::for('ingreso-grado', $g->ingreso_grado_id) : null,
                 'ano_token' => OpaqueUrlToken::for('ano-lectivo', $g->ano_lectivo_id), 'nombre' => $g->nombre]),
             'campanas' => Campana::orderByDesc('id')->limit(100)->get()->map($this->intake->campaign(...))]);
     }
@@ -60,31 +65,44 @@ final class IngresoController extends Controller
         $this->permit($r, 'configurar');
         $d = $r->validate(['nombre' => 'required|string|max:120', 'ano_token' => 'required|string|size:24',
             'abierta' => 'required|boolean', 'desde' => 'required|date_format:Y-m-d', 'hasta' => 'present|nullable|date_format:Y-m-d|after_or_equal:desde',
-            'configuracion' => 'required|array:grados,documentos,campos,privacidad',
-            'configuracion.privacidad' => 'required|string|min:20|max:5000',
+            'configuracion' => 'required|array:grados,documentos,campos,privacidad,pin_expira_en,documento_identidad',
+            'configuracion.documento_identidad' => 'sometimes|nullable|string|max:50',
+            'configuracion.privacidad' => 'sometimes|nullable|string|min:20|max:5000',
+            'configuracion.pin_expira_en' => 'present|nullable|date_format:Y-m-d\TH:i',
             'configuracion.grados' => 'required|array|min:1|max:100',
-            'configuracion.grados.*' => 'array:token,nombre,cupo', 'configuracion.grados.*.token' => 'required|string|size:24|distinct',
-            'configuracion.grados.*.nombre' => 'required|string|max:120', 'configuracion.grados.*.cupo' => 'required|integer|min:1|max:10000',
+            'configuracion.grados.*' => 'array:token,nombre,cupo,edad_min,edad_max', 'configuracion.grados.*.token' => 'required|string|size:24|distinct',
+            'configuracion.grados.*.edad_min' => 'sometimes|nullable|integer|min:1|max:120',
+            'configuracion.grados.*.edad_max' => 'sometimes|nullable|integer|min:1|max:120',
+            'configuracion.grados.*.nombre' => 'required|string|max:120', 'configuracion.grados.*.cupo' => 'present|nullable|integer|min:1|max:10000',
             'configuracion.documentos' => 'present|array|max:30',
-            'configuracion.documentos.*' => 'array:key,nombre,instrucciones,obligatorio,formatos,max_mb,grados',
+            'configuracion.documentos.*' => 'array:key,nombre,instrucciones,obligatorio,formatos,grados',
             'configuracion.documentos.*.key' => 'required|string|regex:/^[a-z][a-z0-9_]{0,49}$/|distinct',
             'configuracion.documentos.*.nombre' => 'required|string|max:120',
             'configuracion.documentos.*.instrucciones' => 'required|string|max:1000',
             'configuracion.documentos.*.obligatorio' => 'required|boolean',
             'configuracion.documentos.*.formatos' => 'required|array|min:1',
             'configuracion.documentos.*.formatos.*' => ['required', Rule::in(['pdf', 'jpg', 'png', 'docx'])],
-            'configuracion.documentos.*.max_mb' => 'required|integer|min:1|max:10',
             'configuracion.documentos.*.grados' => 'present|array', 'configuracion.documentos.*.grados.*' => 'string|size:24',
             'configuracion.campos' => 'present|array|max:20', 'configuracion.campos.*' => 'array:key,nombre,obligatorio,tipo',
             'configuracion.campos.*.key' => 'required|string|regex:/^[a-z][a-z0-9_]{0,49}$/|distinct',
             'configuracion.campos.*.nombre' => 'required|string|max:120', 'configuracion.campos.*.obligatorio' => 'required|boolean',
             'configuracion.campos.*.tipo' => ['required', Rule::in(['texto', 'fecha'])]]);
+        if ($d['configuracion']['pin_expira_en'] !== null) {
+            $pinDeadline = CarbonImmutable::createFromFormat('!Y-m-d\TH:i', $d['configuracion']['pin_expira_en'], tenant()->zonaHorariaInstitucional());
+            abort_unless($pinDeadline && $pinDeadline->isFuture(), 422, __('La fecha de vencimiento del PIN debe estar en el futuro.'));
+        }
         $year = $this->intake->resolve('ano-lectivo', $d['ano_token'], AnoLectivo::whereIn('estado', ['planificado', 'en_curso']));
         foreach ($d['configuracion']['grados'] as &$g) {
             $grade = $this->intake->resolve('grado', $g['token'], Grado::where('ano_lectivo_id', $year->id)->where('estado', 'activo'));
             $g['nombre'] = $grade->nombre;
         }
         unset($g);
+        $identity = $d['configuracion']['documento_identidad'] ?? null;
+        if ($identity) {
+            $requirement = collect($d['configuracion']['documentos'])->firstWhere('key', $identity);
+            abort_unless($requirement && $requirement['obligatorio'] && ! $requirement['grados']
+                && ! array_diff($requirement['formatos'], ['pdf', 'jpg', 'png']), 422, __('intake.identityConfiguration'));
+        }
         abort_if($d['abierta'] && app()->environment('production') && ! app(SchoolMail::class)->ready(),
             422, __('Configura el correo saliente antes de abrir una convocatoria en producción.'));
         foreach ($d['configuracion']['documentos'] as $doc) {
@@ -92,9 +110,29 @@ final class IngresoController extends Controller
         }
         $c = DB::transaction(function () use ($campaign, $d, $year, $r) {
             $c = $campaign ? $this->intake->resolve('ingreso-campana', $campaign, Campana::lockForUpdate()) : new Campana;
+            $institution = app(EnrollmentSettings::class)->record();
+            // Ranges are school settings. Never write displayed effective ranges back to a campaign.
+            $d['configuracion']['grados'] = array_map(function ($grade) use ($c) {
+                unset($grade['edad_min'], $grade['edad_max']);
+                $legacy = collect($c->configuracion['grados'] ?? [])->firstWhere('token', $grade['token']) ?? [];
+
+                return $grade + array_intersect_key($legacy, array_flip(['edad_min', 'edad_max', 'edad_corte']));
+            }, $d['configuracion']['grados']);
+            $d['configuracion']['privacidad'] = $institution->version > 0 ? $institution->privacidad
+                : ($c->configuracion['privacidad'] ?? $d['configuracion']['privacidad'] ?? $institution->privacidad);
+            if (! is_string($d['configuracion']['privacidad']) || mb_strlen(trim($d['configuracion']['privacidad'])) < 20) {
+                throw ValidationException::withMessages(['configuracion.privacidad' => __('intake.privacyNotConfigured')]);
+            }
             // A frozen schema avoids changing requirements underneath a submitted family form.
             if ($c->exists && Solicitud::where('campana_id', $c->id)->exists()) {
-                abort_if($c->configuracion != $d['configuracion'] || $c->ano_lectivo_id !== $year->id,
+                $withoutPinDeadline = static function (array $config): array {
+                    $config = array_diff_key($config, ['pin_expira_en' => true, 'documento_identidad' => true, 'privacidad' => true]);
+                    $config['grados'] = array_map(fn ($g) => array_diff_key($g, ['edad_min' => true, 'edad_max' => true, 'edad_corte' => true]), $config['grados']);
+                    $config['documentos'] = array_map(fn ($document) => array_diff_key($document, ['max_mb' => true]), $config['documentos']);
+
+                    return $config;
+                };
+                abort_if($withoutPinDeadline($c->configuracion) != $withoutPinDeadline($d['configuracion']) || $c->ano_lectivo_id !== $year->id,
                     422, __('La campaña ya tiene solicitudes: conserva sus requisitos o crea otra campaña. Puedes ajustar las fechas y abrir/cerrar.'));
             }
             $c->fill(['nombre' => $d['nombre'], 'ano_lectivo_id' => $year->id, 'abierta' => $d['abierta'],
@@ -139,6 +177,7 @@ final class IngresoController extends Controller
             $s = $this->intake->resolve('ingreso-solicitud', $application, Solicitud::lockForUpdate());
             abort_unless(in_array($s->estado, EnrollmentIntake::REVIEWABLE, true), 422, __('La solicitud no está en revisión.'));
             $doc = $this->intake->resolve('ingreso-documento', $document, Documento::where('solicitud_id', $s->id));
+            abort_if($doc->estado === 'retirado', 422, __('Este documento fue retirado por el solicitante.'));
             abort_if($s->documentos()->where('requisito', $doc->requisito)->where('version', '>', $doc->version)->exists(), 422, __('Revisa la versión más reciente.'));
             if ($doc->estado === $d['estado'] && $doc->observacion === ($d['observacion'] ?? null)) {
                 return $s;

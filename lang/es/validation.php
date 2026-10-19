@@ -188,6 +188,9 @@ return [
     */
 
     'attributes' => [
+        'datos.telefono' => 'celular de contacto', 'datos.direccion' => 'dirección',
+        'datos.pais' => 'país de residencia', 'datos.departamento' => 'departamento', 'datos.municipio' => 'municipio',
+        'documentos.*' => 'documento', 'datos.adicionales.*' => 'dato adicional obligatorio',
         'ano_token' => 'año lectivo', 'desde' => 'fecha de apertura', 'hasta' => 'fecha de cierre',
         'abierta' => 'enlace habilitado', 'configuracion' => 'configuración',
         'configuracion.privacidad' => 'aviso de privacidad', 'configuracion.grados' => 'grados',

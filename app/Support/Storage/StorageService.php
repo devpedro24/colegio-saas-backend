@@ -37,13 +37,13 @@ final class StorageService
      *
      * @throws StorageException ante whitelist/tamano/antivirus/cuota fallidas.
      */
-    public function store(UploadedFile $file, string $folder = 'generales', ?string $uploadedByEmail = null, ?Tenant $tenant = null): StoredFile
+    public function store(UploadedFile $file, string $folder = 'generales', ?string $uploadedByEmail = null, ?Tenant $tenant = null, ?int $maxBytes = null): StoredFile
     {
         $tenant ??= $this->currentTenant();
 
         $mime = (string) ($file->getMimeType() ?: 'application/octet-stream');
         $this->assertMimeAllowed($mime);
-        $this->assertSizeAllowed($file);
+        $this->assertSizeAllowed($file, $maxBytes);
 
         $checksum = hash_file('sha256', $file->getRealPath());
 
@@ -214,9 +214,9 @@ final class StorageService
         }
     }
 
-    private function assertSizeAllowed(UploadedFile $file): void
+    private function assertSizeAllowed(UploadedFile $file, ?int $maxBytes = null): void
     {
-        $max = (int) config('storage.max_file_bytes');
+        $max = $maxBytes ?? (int) config('storage.max_file_bytes');
 
         if ($file->getSize() > $max) {
             throw new StorageException('El archivo supera el tamano maximo permitido.');

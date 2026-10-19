@@ -3,6 +3,9 @@
 // Keep Laravel's complete English rule messages; translate the public field labels.
 $messages = require base_path('vendor/laravel/framework/src/Illuminate/Translation/lang/en/validation.php');
 $messages['attributes'] = [
+    'datos.telefono' => 'contact mobile number', 'datos.direccion' => 'address',
+    'datos.pais' => 'country of residence', 'datos.departamento' => 'department', 'datos.municipio' => 'municipality',
+    'documentos.*' => 'document', 'datos.adicionales.*' => 'required additional field',
     'nombre' => 'name', 'ano_token' => 'academic year', 'desde' => 'opening date', 'hasta' => 'closing date',
     'abierta' => 'public link enabled', 'configuracion' => 'configuration',
     'configuracion.privacidad' => 'privacy notice', 'configuracion.grados' => 'grades',
