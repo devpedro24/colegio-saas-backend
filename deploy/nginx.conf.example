@@ -34,6 +34,21 @@ server {
     location = /index.html { add_header Cache-Control 'no-cache'; }
     location / { try_files $uri $uri/ /index.html; }
 
+    # Only final enrollment submission accepts a 1 GB document batch.
+    # 1024m is 1 GiB, leaving room for multipart fields above the app's 1 GB limit.
+    location = /api/ingreso-publico/solicitud {
+        client_max_body_size 1024m;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME /srv/colegio/backend/public/index.php;
+        fastcgi_param SCRIPT_NAME /index.php;
+        fastcgi_param DOCUMENT_ROOT /srv/colegio/backend/public;
+        fastcgi_param HTTPS on;
+        fastcgi_param HTTP_HOST $http_host;
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_read_timeout 300s;
+        fastcgi_hide_header X-Powered-By;
+    }
+
     location ~ ^/(api(?:/|$)|up$) {
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME /srv/colegio/backend/public/index.php;
