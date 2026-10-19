@@ -8,6 +8,8 @@ $runtimeDir = Join-Path $backendRoot 'storage\logs\event-runtime'
 $statePath = Join-Path $runtimeDir 'state.json'
 $stopPath = Join-Path $runtimeDir 'stop.requested'
 $shellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$launcherPath = Join-Path $PSScriptRoot 'event-services-hidden.vbs'
+$launcherExe = Join-Path $env:SystemRoot 'System32\wscript.exe'
 $hashProvider = [System.Security.Cryptography.SHA256]::Create()
 $runtimeKey = ([BitConverter]::ToString($hashProvider.ComputeHash([Text.Encoding]::UTF8.GetBytes($backendRoot)))).Replace('-', '').Substring(0, 12)
 $taskName = "ColegioSaaS-Eventos-$runtimeKey"
@@ -34,6 +36,7 @@ function Describe-Process($process) {
     return @{ pid = $process.Id; started = $process.StartTime.ToUniversalTime().ToString('o') }
 }
 $runArgs = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -Action Run -PhpPath `"$PhpPath`""
+$launcherArgs = "`"$launcherPath`" `"$shellPath`" `"$scriptPath`" `"$PhpPath`""
 
 if ($Action -eq 'Status') {
     $state = Read-RuntimeState
@@ -59,15 +62,12 @@ if ($Action -in @('Install', 'Start')) {
     if (Test-Path -LiteralPath $stopPath) { Remove-Item -LiteralPath $stopPath }
     if ($Action -eq 'Install') {
         $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        if ($existing -and ($existing.Actions.Arguments -notlike "*$scriptPath*")) { throw 'Task name belongs to another action; refusing to replace it.' }
+        if ($existing -and ($existing.Actions.Arguments -notlike "*$scriptPath*") -and ($existing.Actions.Arguments -notlike "*$launcherPath*")) { throw 'Task name belongs to another action; refusing to replace it.' }
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $taskAction = New-ScheduledTaskAction -Execute $shellPath -Argument $runArgs -WorkingDirectory $backendRoot
-        $triggers = @(
-            (New-ScheduledTaskTrigger -AtLogOn -User $identity),
-            (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1))
-        )
+        $taskAction = New-ScheduledTaskAction -Execute $launcherExe -Argument $launcherArgs -WorkingDirectory $backendRoot
+        $triggers = @(New-ScheduledTaskTrigger -AtLogOn -User $identity)
         $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
-        $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
         Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $triggers -Principal $principal -Settings $settings -Description 'Local Colegio SaaS scheduler and dedicated event-mail listener. No general queue consumption.' -Force | Out-Null
         Start-ScheduledTask -TaskName $taskName
         Write-Output "Installed and started: $taskName"
@@ -77,7 +77,7 @@ if ($Action -in @('Install', 'Start')) {
             Enable-ScheduledTask -TaskName $taskName | Out-Null
             Start-ScheduledTask -TaskName $taskName
         } else {
-            Start-Process -FilePath $shellPath -ArgumentList $runArgs -WorkingDirectory $backendRoot -WindowStyle Hidden | Out-Null
+            Start-Process -FilePath $launcherExe -ArgumentList $launcherArgs -WorkingDirectory $backendRoot -WindowStyle Hidden | Out-Null
         }
         Write-Output 'Start requested. A per-workspace mutex prevents duplicate supervisors.'
     }

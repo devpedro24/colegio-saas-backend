@@ -63,7 +63,7 @@ La primera entrega no instaló procesos persistentes ni envió correos reales. L
 
 ### Activación local en Windows — 14 de octubre de 2026
 
-Se instaló la tarea de Windows `ColegioSaaS-Eventos-99A7559F8AE5`, limitada al usuario actual, sin guardar contraseñas. Arranca al iniciar sesión y comprueba cada minuto si el supervisor necesita volver a iniciarse. Una exclusión por workspace evita duplicados. El supervisor mantiene ocultos:
+Se instaló la tarea de Windows `ColegioSaaS-Eventos-99A7559F8AE5`, limitada al usuario actual, sin guardar contraseñas. Arranca una vez al iniciar sesión mediante `wscript.exe`, que ejecuta el supervisor sin abrir una consola de PowerShell. Se retiró el disparador que relanzaba la tarea cada minuto y los reinicios automáticos de la tarea: al cerrarla ya no reaparece sola durante la sesión. Una exclusión por workspace evita duplicados. El supervisor mantiene ocultos:
 
 - `artisan schedule:work`: ejecuta el programador normal, incluido el despachador de eventos cada minuto.
 - `artisan queue:listen event_mail --queue=event-mail --sleep=3 --timeout=180 --tries=3`: exclusivamente eventos, sin consumir `default` ni `realtime`. En Windows, `queue:listen` controla el timeout del proceso hijo con Symfony; no depende de `pcntl`. Cada trabajo carga el código vigente.
@@ -78,7 +78,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/event-services.p
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/event-services.ps1 -Action Install
 ```
 
-`Stop` deshabilita el arranque automático y solicita detener el supervisor y sus procesos. Un trabajo hijo ya iniciado puede terminar; no retira un correo aceptado por SMTP. `Start` vuelve a habilitar la tarea. Los registros y el heartbeat están en `storage/logs/event-runtime/`, excluido de Git. Los logs de cada proceso se reinician cuando este vuelve a arrancar. No se detienen otros servicios del proyecto.
+`Stop` deshabilita el arranque automático y solicita detener el supervisor y sus procesos. Un trabajo hijo ya iniciado puede terminar; no retira un correo aceptado por SMTP. `Start` vuelve a habilitar la tarea. Si el supervisor se cierra inesperadamente, hace falta `Start` o volver a iniciar sesión; el supervisor sí reinicia sus procesos hijos mientras esté activo. Los registros y el heartbeat están en `storage/logs/event-runtime/`, excluido de Git. Los logs de cada proceso se reinician cuando este vuelve a arrancar. No se detienen otros servicios del proyecto.
 
 **Límite operativo:** es una instalación local para la sesión de Windows de Pedro; requiere equipo encendido, sesión iniciada, PostgreSQL y conexión de red. No funciona con el equipo apagado/suspendido ni sustituye un servicio 24/7 de producción. El scheduler también ejecuta sus tareas académicas ya registradas. No se habilitó un worker de la cola general.
 
