@@ -55,6 +55,7 @@ class GradoController extends Controller
             'nombre' => ['required', 'string', 'max:80'],
             'codigo' => ['nullable', 'string', 'min:2', 'max:5'],
             'estado' => ['nullable', Rule::in([Grado::ESTADO_ACTIVO, Grado::ESTADO_INACTIVO])],
+            'es_terminal' => ['prohibited'],
         ]);
 
         AcademicYearSelection::assertSame(Nivel::findOrFail($data['nivel_id'])->ano_lectivo_id, $year);
@@ -93,6 +94,7 @@ class GradoController extends Controller
             'nombre' => ['sometimes', 'string', 'max:80'],
             'codigo' => ['nullable', 'string', 'min:2', 'max:5'],
             'estado' => ['nullable', Rule::in([Grado::ESTADO_ACTIVO, Grado::ESTADO_INACTIVO])],
+            'es_terminal' => ['prohibited'],
         ]);
 
         if (isset($data['nivel_id'])) {

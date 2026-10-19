@@ -21,7 +21,8 @@ use Spatie\Permission\Traits\HasRoles;
  *
  * Ciclo de vida (D-USER-FSM, ciclo-de-vida-de-usuario.md):
  *   pending → active → suspended ↔ active; active ↔ inactive;
- *   {active, suspended, inactive} → deleted.
+ *   {active, suspended, inactive} → egresado (solo estudiante, salida manual);
+ *   {active, suspended, inactive} → deleted. Egresado no se reactiva por la FSM genérica.
  * Todas las transiciones son manuales (sin automatismos de inactividad).
  * El borrado es LOGICO (SoftDeletes, RG-004): la fila sobrevive durante la
  * ventana de retencion y luego una purga fisica la elimina (RN-BR-005).
@@ -57,6 +58,9 @@ class User extends Authenticatable
 
     public const STATUS_INACTIVE = 'inactive';
 
+    /** Salida institucional manual; conserva la cuenta y su historial, pero niega acceso. */
+    public const STATUS_EGRESADO = 'egresado';
+
     public const STATUS_DELETED = 'deleted';
 
     /** Email del usuario sombra que el superadministrador usa al suplantar un colegio. */
@@ -65,9 +69,10 @@ class User extends Authenticatable
     /** Transiciones permitidas (D-USER-FSM). */
     public const TRANSITIONS = [
         self::STATUS_PENDING => [self::STATUS_ACTIVE],
-        self::STATUS_ACTIVE => [self::STATUS_SUSPENDED, self::STATUS_INACTIVE, self::STATUS_DELETED],
-        self::STATUS_SUSPENDED => [self::STATUS_ACTIVE, self::STATUS_DELETED],
-        self::STATUS_INACTIVE => [self::STATUS_ACTIVE, self::STATUS_DELETED],
+        self::STATUS_ACTIVE => [self::STATUS_SUSPENDED, self::STATUS_INACTIVE, self::STATUS_EGRESADO, self::STATUS_DELETED],
+        self::STATUS_SUSPENDED => [self::STATUS_ACTIVE, self::STATUS_EGRESADO, self::STATUS_DELETED],
+        self::STATUS_INACTIVE => [self::STATUS_ACTIVE, self::STATUS_EGRESADO, self::STATUS_DELETED],
+        self::STATUS_EGRESADO => [],
         self::STATUS_DELETED => [],
     ];
 

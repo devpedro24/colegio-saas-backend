@@ -18,6 +18,7 @@ use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
@@ -37,10 +38,26 @@ class UserController extends Controller
     /** Lista los usuarios del colegio + de cada sede (tenant hijo) activa. */
     public function index(Request $request): JsonResponse
     {
+        return $this->listUsers($request, false);
+    }
+
+    /** Vista limitada a estudiantes para quien solo tiene el permiso de egreso. */
+    public function egresoCandidates(Request $request): JsonResponse
+    {
+        return $this->listUsers($request, true);
+    }
+
+    private function listUsers(Request $request, bool $studentOnly): JsonResponse
+    {
         $principales = User::query()
             ->whereNull('deleted_at')
             ->where('id', '!=', $request->user()->id)
             ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL);
+        if ($studentOnly) {
+            $principales->where('role', 'estudiante')
+                ->whereHas('roles', fn ($q) => $q->where('name', 'estudiante'))
+                ->whereDoesntHave('roles', fn ($q) => $q->where('name', '!=', 'estudiante'));
+        }
         $principalCount = (clone $principales)->count();
 
         // La tabla `sedes` solo existe en la BD del colegio principal: dentro
@@ -61,6 +78,9 @@ class UserController extends Controller
             $count = $this->runIn($hijo, fn () => User::query()
                 ->whereNull('deleted_at')
                 ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
+                ->when($studentOnly, fn ($q) => $q->where('role', 'estudiante')
+                    ->whereHas('roles', fn ($role) => $role->where('name', 'estudiante'))
+                    ->whereDoesntHave('roles', fn ($role) => $role->where('name', '!=', 'estudiante')))
                 ->count());
             $childSources[] = [$sede, $hijo, $count, OpaqueUrlToken::for('sede', $sede->id)];
             $total += $count;
@@ -95,15 +115,29 @@ class UserController extends Controller
 
                 continue;
             }
-            $rows = $this->runIn($hijo, function () use ($sede, $sedeToken, $offset, $remaining) {
+            $rows = $this->runIn($hijo, function () use ($sede, $sedeToken, $offset, $remaining, $studentOnly) {
                 return User::query()->with('roles:id,name')->whereNull('deleted_at')
                     ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
+                    ->when($studentOnly, fn ($q) => $q->where('role', 'estudiante')
+                        ->whereHas('roles', fn ($role) => $role->where('name', 'estudiante'))
+                        ->whereDoesntHave('roles', fn ($role) => $role->where('name', '!=', 'estudiante')))
                     ->orderBy('name')->offset($offset)->limit($remaining)->get()
                     ->map(fn (User $user) => $this->serialize($user, $sede, $sedeToken))->all();
             });
             array_push($items, ...$rows);
             $remaining -= count($rows);
             $offset = 0;
+        }
+
+        if ($studentOnly) {
+            $items = array_map(static fn (array $user): array => [
+                'id' => $user['id'], 'url_token' => $user['url_token'],
+                'name' => $user['name'], 'email' => $user['email'],
+                'phone' => null, 'role' => 'estudiante', 'roles' => ['estudiante'],
+                'status' => $user['status'], 'must_change_password' => false,
+                'created_at' => null, 'sede_url_token' => $user['sede_url_token'],
+                'sede_nombre' => $user['sede_nombre'],
+            ], $items);
         }
 
         return $this->paginatedResponse(new LengthAwarePaginator($items, $total, $perPage, $page));
@@ -185,6 +219,11 @@ class UserController extends Controller
         // BD del colegio (contexto actual).
         $usuario = $this->userForSelector($id);
 
+        if ($usuario->status === User::STATUS_EGRESADO
+            && (isset($data['status']) || isset($data['role']) || isset($data['password']))) {
+            return response()->json(['message' => 'Un egresado no puede reactivarse, cambiar de rol ni recibir una nueva clave desde la edición general.'], 422);
+        }
+
         if ($usuario->id === $request->user()->id && array_key_exists('role', $data)) {
             return response()->json(['message' => 'No puedes cambiar tu propio rol.'], 422);
         }
@@ -248,6 +287,10 @@ class UserController extends Controller
 
         $usuario = $this->userForSelector($id);
 
+        if ($usuario->status === User::STATUS_EGRESADO) {
+            return response()->json(['message' => 'El expediente de un egresado debe conservarse.'], 422);
+        }
+
         if ($usuario->id === $request->user()->id) {
             return response()->json(['message' => 'No puedes eliminar tu propia cuenta.'], 422);
         }
@@ -264,6 +307,57 @@ class UserController extends Controller
         }
 
         return response()->json(['data' => null]);
+    }
+
+    /** Marca manualmente la salida institucional, sin borrar usuario ni matrículas. */
+    public function egresar(Request $request, string $id): JsonResponse
+    {
+        $sede = $this->sedeDestino($this->sedeSelector($request->all()));
+        if (is_array($sede)) {
+            return response()->json(['message' => $sede['message']], 422);
+        }
+
+        $sedeToken = $sede ? OpaqueUrlToken::for('sede', $sede->id) : null;
+        $mark = function () use ($id, $sede, $sedeToken): array {
+            $usuario = $this->userForSelector($id);
+
+            return DB::transaction(function () use ($usuario, $sede, $sedeToken): array {
+                $usuario = User::query()->whereKey($usuario->id)->lockForUpdate()->firstOrFail();
+                if ($usuario->role !== 'estudiante' || ! $usuario->hasRole('estudiante')
+                    || $usuario->roles()->where('name', '!=', 'estudiante')->exists()) {
+                    return ['error' => 'Solo se puede marcar como egresado a un estudiante.'];
+                }
+                $before = $this->serialize($usuario, $sede, $sedeToken);
+                if ($usuario->status !== User::STATUS_EGRESADO) {
+                    try {
+                        $usuario->transitionTo(User::STATUS_EGRESADO);
+                    } catch (\InvalidArgumentException) {
+                        return ['error' => 'El estado actual no permite marcar el egreso.'];
+                    }
+                }
+                // También limpia sesiones residuales si se reintenta una petición ya aplicada.
+                $usuario->tokens()->delete();
+                DB::table('sessions')->where('user_id', $usuario->id)->delete();
+
+                return ['before' => $before, 'data' => $this->serialize($usuario, $sede, $sedeToken),
+                    'changed' => $before['status'] !== User::STATUS_EGRESADO, 'internal_id' => (string) $usuario->id];
+            });
+        };
+
+        $result = $sede ? $this->runIn(Tenant::findOrFail($sede->tenant_id), $mark) : $mark();
+        if (isset($result['error'])) {
+            return response()->json(['message' => $result['error']], 422);
+        }
+        if ($result['changed']) {
+            AuditLogger::tenant($request->user(), 'EGRESO_MANUAL', 'usuario', $result['internal_id'],
+                $result['before'], $result['data']);
+            try {
+                TenantDataChanged::dispatch('usuario', 'updated', $result['data']['name']);
+            } catch (\Throwable) {
+            }
+        }
+
+        return response()->json(['data' => $result['data']]);
     }
 
     /**
@@ -287,6 +381,7 @@ class UserController extends Controller
             $result = $this->runIn($hijo, function () use ($id, $password, $readOnly, $sede, $sedeToken) {
                 $u = $this->userForSelector($id);
                 if (! $readOnly) {
+                    abort_if($u->status === User::STATUS_EGRESADO, 422, 'No se emiten credenciales para un egresado.');
                     $u->update([
                         'password' => Hash::make($password),
                         'temporary_password' => $password,
@@ -306,6 +401,7 @@ class UserController extends Controller
 
         $user = $this->userForSelector($id);
         if (! $readOnly) {
+            abort_if($user->status === User::STATUS_EGRESADO, 422, 'No se emiten credenciales para un egresado.');
             $user->update([
                 'password' => Hash::make($password),
                 'temporary_password' => $password,
@@ -510,6 +606,11 @@ class UserController extends Controller
             $usuario = $this->userForSelector($id);
             $prev = $this->serialize($usuario, $sede, $sedeToken);
 
+            if ($usuario->status === User::STATUS_EGRESADO
+                && (isset($data['status']) || isset($data['role']) || isset($data['password']))) {
+                return ['error' => 'Un egresado no puede reactivarse, cambiar de rol ni recibir una nueva clave desde la edición general.'];
+            }
+
             if (isset($data['status'])) {
                 try {
                     $usuario->transitionTo($data['status']);
@@ -558,6 +659,9 @@ class UserController extends Controller
 
         return $this->runIn($hijo, function () use ($actor, $id) {
             $usuario = $this->userForSelector($id);
+            if ($usuario->status === User::STATUS_EGRESADO) {
+                return ['error' => 'El expediente de un egresado debe conservarse.'];
+            }
             $prev = $this->serialize($usuario);
             $usuario->tokens()->delete();
             $usuario->delete();

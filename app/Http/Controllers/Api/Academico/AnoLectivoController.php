@@ -222,10 +222,6 @@ class AnoLectivoController extends Controller
         ]);
 
         $nuevoTotalPeriodos = $data['num_periodos'];
-        if (($data['periodo_sumatorio'] ?? $ano->periodo_sumatorio)
-            && ($ano->siee['modo_anual'] ?? null) === 'MANUAL') {
-            abort(422, 'El período sumatorio requiere un cálculo anual simple o ponderado en el SIEE.');
-        }
         $ultimoPeriodoConfigurado = (int) $ano->periodos()->max('orden');
         if ($ultimoPeriodoConfigurado > $nuevoTotalPeriodos) {
             abort(422, "El periodo {$ultimoPeriodoConfigurado} ya está configurado. Elimínalo desde Periodos antes de reducir la cantidad.");
@@ -352,9 +348,6 @@ class AnoLectivoController extends Controller
         }
 
         $this->validarPeriodosCompletos($ano);
-        if ($ano->periodo_sumatorio && ($ano->siee['modo_anual'] ?? null) === 'MANUAL') {
-            abort(422, 'El período sumatorio requiere un cálculo anual simple o ponderado en el SIEE.');
-        }
 
         $otroEnCurso = AnoLectivo::query()
             ->where('estado', AnoLectivo::ESTADO_EN_CURSO)

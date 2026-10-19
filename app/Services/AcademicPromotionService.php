@@ -145,7 +145,9 @@ final class AcademicPromotionService
             'resultados' => $values,
         ];
 
-        return ['estado' => 'calculada', 'resultado' => $promoted ? 'promovido' : 'reprobado',
+        $result = $promoted ? 'promovido' : 'reprobado';
+
+        return ['estado' => 'calculada', 'resultado' => $result,
             'ambito' => $method->ambito, 'reprobadas' => $failed->pluck($scope.'_id')->all(),
             'obligatorias_reprobadas' => $mandatoryFailed->pluck('materia_id')->all(),
             'promedio_exacto' => (string) $average->simplified(),
@@ -173,16 +175,15 @@ final class AcademicPromotionService
                 'Las notas y recuperaciones deben estar completas antes de aprobar promoción.');
             abort_unless(hash_equals($proposal['huella'], $fingerprint), 409,
                 'Las notas o reglas cambiaron. Actualiza la propuesta antes de aprobar.');
-            abort_unless($result === $proposal['resultado']
-                || ($result === 'egresado' && $proposal['resultado'] === 'promovido'), 422,
-                'Una decisión distinta de la propuesta requiere el proceso de consejo académico.');
+            abort_unless($result === $proposal['resultado'], 422,
+                'La decisión debe coincidir con el resultado calculado a partir de las notas y la política de promoción.');
             if ($result === 'promovido') {
                 abort_unless($targetGrade && $targetGrade->ano_lectivo_id === $year->id
                     && $targetGrade->id !== $enrollment->grupo->grado_id, 422,
                     'Selecciona explícitamente el grado destino de este mismo año como referencia.');
             } else {
                 abort_if($targetGrade !== null, 422,
-                    'Reprobación o egreso no deben tener un grado destino distinto.');
+                    'La reprobación no debe tener un grado destino distinto.');
             }
             $decision = PromocionAcademica::where('matricula_id', $enrollment->id)->lockForUpdate()->first();
             abort_unless(($decision?->version ?? 0) === $version, 409,

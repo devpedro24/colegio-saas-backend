@@ -8,6 +8,7 @@ use App\Models\Academico\DatosInstitucionales;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\TenantProvisioner;
+use App\Support\OpaqueUrlToken;
 use App\Support\Realtime\TenantChannelName;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -17,6 +18,60 @@ use Tests\TestCase;
 class AccountSessionRevocationTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_student_departure_is_manual_permissioned_and_preserves_account_without_access(): void
+    {
+        [$tenant, $rectorToken, $teacherId] = $this->schoolWithUser();
+        $api = 'http://'.$tenant->slug.'.localhost/api';
+        [$studentId, $studentSelector, $studentToken] = $tenant->run(function () {
+            $student = User::create([
+                'name' => 'Estudiante histórico', 'email' => 'estudiante-egreso@sesiones.test',
+                'password' => 'Password!123', 'role' => 'estudiante', 'status' => User::STATUS_ACTIVE,
+            ]);
+            $student->assignRole('estudiante');
+
+            return [$student->id, OpaqueUrlToken::for('usuario', $student->id),
+                $student->createToken('web')->plainTextToken];
+        });
+
+        $this->withToken($rectorToken)->postJson($api.'/usuarios/'.$studentSelector.'/egreso')->assertForbidden();
+        $this->withToken($rectorToken)->getJson($api.'/usuarios/egreso-candidatos')->assertForbidden();
+        $this->withToken($rectorToken)->putJson(
+            $api.'/rbac/roles/rector/permissions/estudiantes.egreso.gestionar', ['granted' => true]
+        )->assertOk()->assertJsonPath('granted', true);
+
+        app('auth')->forgetGuards();
+        $candidates = $this->withToken($rectorToken)->getJson($api.'/usuarios/egreso-candidatos')
+            ->assertOk()->json('data');
+        $this->assertSame([$studentSelector], array_column($candidates, 'url_token'));
+        $this->withToken($rectorToken)->postJson($api.'/usuarios/'.$teacherId.'/egreso')
+            ->assertStatus(422);
+        $this->withToken($rectorToken)->postJson($api.'/usuarios/'.$studentSelector.'/egreso')
+            ->assertOk()->assertJsonPath('data.status', User::STATUS_EGRESADO);
+        $this->withToken($rectorToken)->postJson($api.'/usuarios/'.$studentSelector.'/egreso')
+            ->assertOk()->assertJsonPath('data.status', User::STATUS_EGRESADO);
+        $tenant->run(function () use ($studentId) {
+            $student = User::findOrFail($studentId);
+            $this->assertSame('estudiante', $student->role);
+            $this->assertTrue($student->hasRole('estudiante'));
+            $this->assertSame(0, $student->tokens()->count());
+            $this->assertSame(1, User::whereKey($studentId)->count());
+        });
+
+        app('auth')->forgetGuards();
+        $this->withToken($studentToken)->getJson($api.'/me')->assertUnauthorized();
+        $this->postJson($api.'/login', [
+            'email' => 'estudiante-egreso@sesiones.test', 'password' => 'Password!123',
+        ])->assertStatus(422);
+        app('auth')->forgetGuards();
+        $this->withToken($rectorToken)->putJson($api.'/usuarios/'.$studentSelector,
+            ['status' => User::STATUS_ACTIVE])->assertStatus(422);
+        $this->withToken($rectorToken)->deleteJson($api.'/usuarios/'.$studentSelector)->assertStatus(422);
+        $this->withToken($rectorToken)->postJson($api.'/usuarios/'.$studentSelector.'/reset-password')
+            ->assertStatus(422);
+        $tenant->run(fn () => $this->assertSame(User::STATUS_EGRESADO,
+            User::findOrFail($studentId)->status));
+    }
 
     protected function tearDown(): void
     {

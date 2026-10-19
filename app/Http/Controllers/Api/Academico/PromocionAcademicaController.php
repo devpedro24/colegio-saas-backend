@@ -119,7 +119,7 @@ final class PromocionAcademicaController extends Controller
         $year = AnoLectivo::findOrFail($ano);
         $data = $request->validate([
             'huella' => ['required', 'string', 'size:64', 'regex:/\A[0-9a-f]+\z/'],
-            'resultado' => ['required', Rule::in(['promovido', 'reprobado', 'egresado'])],
+            'resultado' => ['required', Rule::in(['promovido', 'reprobado'])],
             'grado_destino_token' => ['nullable', 'string'],
             'motivo' => ['required', 'string', 'min:3', 'max:2000'],
             'version' => ['required', 'integer', 'min:0'],

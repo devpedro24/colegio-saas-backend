@@ -14,6 +14,7 @@ use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
+use Spatie\Permission\Models\Role;
 
 class UserOpaqueSelectorTest extends TestCase
 {
@@ -140,6 +141,33 @@ class UserOpaqueSelectorTest extends TestCase
         });
         $this->getJson($api.'/usuarios/'.$created['url_token'].'/temporal-password?sede_url_token='.$sedeToken)
             ->assertOk()->assertJsonPath('status', 'temporal');
+
+        [$studentId, $studentSelector] = $child->run(function () {
+            $student = User::create([
+                'name' => 'Estudiante sede', 'email' => 'student-child@test.test',
+                'password' => 'Password!123', 'role' => 'estudiante', 'status' => User::STATUS_ACTIVE,
+            ]);
+            $student->assignRole('estudiante');
+            $student->createToken('web');
+
+            return [$student->id, OpaqueUrlToken::for('usuario', $student->id)];
+        });
+        $school->run(fn () => Role::findByName('rector', 'web')
+            ->givePermissionTo('estudiantes.egreso.gestionar'));
+        app('auth')->forgetGuards();
+        $candidate = collect($this->withToken($rectorToken)
+            ->getJson($api.'/usuarios/egreso-candidatos')->assertOk()->json('data'))
+            ->firstWhere('url_token', $studentSelector);
+        $this->assertSame($sedeToken, $candidate['sede_url_token']);
+        $this->postJson($api.'/usuarios/'.$studentSelector.'/egreso',
+            ['sede_url_token' => $sedeToken])->assertOk()
+            ->assertJsonPath('data.sede_url_token', $sedeToken)
+            ->assertJsonPath('data.status', User::STATUS_EGRESADO);
+        $child->run(function () use ($studentId) {
+            $student = User::findOrFail($studentId);
+            $this->assertSame(User::STATUS_EGRESADO, $student->status);
+            $this->assertSame(0, $student->tokens()->count());
+        });
     }
 
     public function test_user_list_paginates_across_parent_and_child_without_loading_all_child_rows(): void

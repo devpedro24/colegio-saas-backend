@@ -110,9 +110,6 @@ final class DuplicarAnoLectivoService
             }
             if ($options['siee'] && $source->siee) {
                 $siee = $source->siee;
-                if ($target->periodo_sumatorio && ($siee['modo_anual'] ?? null) === 'MANUAL') {
-                    throw ValidationException::withMessages(['opciones' => 'El período sumatorio requiere un cálculo anual simple o ponderado en el SIEE.']);
-                }
                 if ((isset($siee['escala_id']) && ! isset($maps['escalas'][$siee['escala_id']]))
                     || (isset($siee['metodo_id']) && ! isset($maps['metodos'][$siee['metodo_id']]))) {
                     throw ValidationException::withMessages(['opciones' => 'El SIEE referencia una escala o método que no se puede duplicar.']);
@@ -263,9 +260,6 @@ final class DuplicarAnoLectivoService
             }
             if ($options['siee'] && $source->siee && ! $target->siee) {
                 $siee = $source->siee;
-                if ($target->periodo_sumatorio && ($siee['modo_anual'] ?? null) === 'MANUAL') {
-                    throw ValidationException::withMessages(['opciones' => 'El período sumatorio requiere un cálculo anual simple o ponderado en el SIEE.']);
-                }
                 if ((isset($siee['escala_id']) && ! isset($maps['escalas'][$siee['escala_id']]))
                     || (isset($siee['metodo_id']) && ! isset($maps['metodos'][$siee['metodo_id']]))) {
                     throw ValidationException::withMessages(['opciones' => 'El SIEE referencia una escala o método que no se puede copiar.']);
