@@ -37,7 +37,7 @@ final class PlanillaActividadesController extends Controller
             'nombre' => ['required_if:operacion,crear,editar', 'string', 'max:160'],
             'fecha' => ['required_if:operacion,crear,editar', 'date_format:Y-m-d'],
             'peso' => ['nullable', 'numeric', 'decimal:0,4', 'min:0', 'max:100'],
-            'modo' => ['required_if:operacion,modo', Rule::in(['SIMPLE_AVERAGE', 'WEIGHTED_AVERAGE'])],
+            'modo' => ['required_if:operacion,modo', Rule::in(['SIMPLE_AVERAGE', 'WEIGHTED_AVERAGE', 'MANUAL'])],
         ]);
         $permission = $data['operacion'] === 'modo' ? 'notas.planilla.configurar' : 'notas.actividades.'.$data['operacion'];
         abort_unless($request->user()->can($permission), 403);
@@ -45,7 +45,22 @@ final class PlanillaActividadesController extends Controller
             $period = $book->writable($assignment, $periodo);
             $component = $sheets->section($assignment, $period, $data);
             if ($data['operacion'] === 'modo') {
+                if ($data['modo'] === 'MANUAL') {
+                    $config = app(\App\Services\SieeConfiguration::class)->resolve(
+                        \App\Models\Academico\AnoLectivo::findOrFail($assignment->ano_lectivo_id));
+                    abort_if($config['modo_asignatura'] === 'MANUAL', 422,
+                        'La definitiva de materia ya es manual; no se usa el cálculo de componentes.');
+                }
                 abort_unless($component->version === $data['version'], 409, 'La planilla cambió en otra sesión. Recarga antes de guardar.');
+                if ($data['modo'] === 'MANUAL' && $component->modo !== 'MANUAL') {
+                    abort_if($component->actividades()->exists(), 422,
+                        'Elimina primero las actividades sin notas. Un componente manual no puede ocultarlas.');
+                }
+                if ($component->modo === 'MANUAL' && $data['modo'] !== 'MANUAL') {
+                    abort_if(DB::table('resultados_manuales_componente')->where('componente_id', $component->id)
+                        ->where('estado', 'vigente')->exists(), 422,
+                        'Hay resultados manuales vigentes. Anúlalos justificadamente antes de cambiar el modo.');
+                }
                 $before = $component->toArray();
                 $component->update(['modo' => $data['modo'], 'version' => $component->version + 1]);
                 AuditLogger::tenant($request->user(), 'UPDATE', 'componente_evaluacion', (string) $component->id, $before, $component->toArray());
@@ -65,6 +80,8 @@ final class PlanillaActividadesController extends Controller
 
                 return;
             }
+            abort_if($component->modo === 'MANUAL', 422,
+                'Este componente usa un resultado manual y no admite actividades.');
             abort_if($component->modo === 'WEIGHTED_AVERAGE' && ! isset($data['peso']), 422, 'Indica el porcentaje de esta actividad.');
             abort_if($data['fecha'] < $period->fecha_inicio->toDateString() || $data['fecha'] > $period->fecha_fin->toDateString(), 422, 'La actividad debe estar dentro de las fechas del período.');
             if ($component->preinforme_id && ($period->configuracion_notas['fechas_estrictas'] ?? false)) {

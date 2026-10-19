@@ -13,6 +13,7 @@ final class AcademicTokenIndex
     public const TABLE = 'academic_public_tokens';
 
     public const RESOURCES = [
+        'ingreso_grados' => ['ingreso-grado'],
         'ingreso_campanas' => ['ingreso-campana'], 'ingreso_solicitudes' => ['ingreso-solicitud'],
         'ingreso_documentos' => ['ingreso-documento'],
         'anos_lectivos' => ['ano-lectivo'], 'periodos' => ['periodo'],
@@ -25,6 +26,9 @@ final class AcademicTokenIndex
         'recuperaciones_academicas' => ['recuperacion-academica'],
         'promociones_academicas' => ['promocion-academica'],
         'preinformes' => ['preinforme'],
+        'indicadores_base' => ['indicador-base'], 'indicadores_vinculos' => ['indicador-vinculo'],
+        'boletin_plantillas' => ['boletin-plantilla'],
+        'boletin_emisiones' => ['boletin-emision'],
         'asistencia_solicitudes' => ['asistencia-solicitud'],
         'aulas' => ['aula'], 'aula_secciones' => ['aula-seccion'],
         'aula_recursos' => ['aula-recurso'], 'aula_entregas' => ['aula-entrega'],

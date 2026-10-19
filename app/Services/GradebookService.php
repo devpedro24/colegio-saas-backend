@@ -9,6 +9,7 @@ use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\Calificacion;
 use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\Matricula;
+use App\Models\Academico\MetodoAprobacion;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\RecuperacionAcademica;
 use App\Models\Academico\Grupo;
@@ -70,14 +71,19 @@ final class GradebookService
         $this->authorizeAssignment($actor, $assignment, write: true);
         DB::transaction(function () use ($actor, $assignment, $periodId, $rows) {
             $period = $this->writable($assignment, $periodId);
-            if ($period->configuracion_notas['usar_preinformes'] ?? false) app(AcademicPlanAccess::class)->requirePreinformes();
             $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));
+            abort_if($config['modo_asignatura'] === 'MANUAL',
+                422, 'Esta asignatura usa una definitiva manual; registra el resultado en la columna de definitiva.');
+            if ($period->configuracion_notas['usar_preinformes'] ?? false) app(AcademicPlanAccess::class)->requirePreinformes();
             $visualScale = app(EscalaVisualService::class)->forGroup(Grupo::findOrFail($assignment->grupo_id));
             $visualChoices = $visualScale?->opciones->mapWithKeys(fn ($choice) => [
                 \App\Support\OpaqueUrlToken::for('escala-opcion', $choice->id) => $choice,
             ]);
             $activities = DB::table('actividades_evaluacion as a')->join('componentes_evaluacion as c', 'c.id', '=', 'a.componente_id')
                 ->where('c.asignacion_id', $assignment->id)->where('c.periodo_id', $periodId)->pluck('a.id')->all();
+            $manualActivityIds = DB::table('actividades_evaluacion as a')->join('componentes_evaluacion as c', 'c.id', '=', 'a.componente_id')
+                ->where('c.asignacion_id', $assignment->id)->where('c.periodo_id', $periodId)
+                ->where('c.modo', 'MANUAL')->pluck('a.id')->all();
             $enrollments = Matricula::where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')->pluck('id')->all();
             $seen = [];
             foreach ($rows as $row) {
@@ -85,6 +91,7 @@ final class GradebookService
                 abort_if(isset($seen[$key]), 422, 'La misma nota aparece más de una vez.');
                 $seen[$key] = true;
                 abort_unless(in_array($row['actividad_id'], $activities) && in_array($row['matricula_id'], $enrollments), 422, 'La actividad y el estudiante deben pertenecer a esta asignación.');
+                abort_if(in_array($row['actividad_id'], $manualActivityIds), 422, 'Este componente usa resultado manual; no admite notas de actividades.');
                 $choiceToken = $row['escala_opcion_token'] ?? null;
                 if ($visualScale) {
                     abort_if($row['valor'] !== null, 422, 'En esta planilla selecciona una carita, no una nota numérica.');
@@ -115,10 +122,17 @@ final class GradebookService
     /** Ninguna nota pendiente se convierte en cero. Los derivados se calculan bajo demanda. */
     public function subjectResult(AsignacionDocente $assignment, Matricula $enrollment, Periodo $period, array $config): array
     {
+        if ($config['modo_asignatura'] === 'MANUAL') {
+            $manual = DB::table('resultados_manuales_materia')->where('matricula_id', $enrollment->id)
+                ->where('asignacion_id', $assignment->id)->where('periodo_id', $period->id)->first();
+
+            return $this->manualSubjectResult($manual, $config);
+        }
         $components = ComponenteEvaluacion::with('actividades')->where('asignacion_id', $assignment->id)->where('periodo_id', $period->id)->get();
         $grades = Calificacion::where('matricula_id', $enrollment->id)->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get()->keyBy('actividad_id');
+        $componentManuals = $this->componentManuals($components->modelKeys(), collect([$enrollment->id]))->get($enrollment->id, collect());
 
-        return $this->resultFromLoaded($components, $grades, $this->periodConfig($config, $period));
+        return $this->resultFromLoaded($components, $grades, $this->periodConfig($config, $period), null, $componentManuals);
     }
 
     public function periodConfig(array $config, Periodo $period): array
@@ -131,34 +145,85 @@ final class GradebookService
     }
 
     /** Pure calculation over already authorized, scoped data. No per-student queries. */
-    public function resultFromLoaded(Collection $components, Collection $grades, array $config): array
+    public function resultFromLoaded(Collection $components, Collection $grades, array $config, ?object $manual = null, ?Collection $componentManuals = null): array
     {
+        if ($config['modo_asignatura'] === 'MANUAL') {
+            return $this->manualSubjectResult($manual, $config);
+        }
         if ($config['_periodo']['usar_preinformes'] ?? false) {
-            $inputs = $config['_preinformes']->map(function ($pre) use ($components, $grades) {
+            $inputs = $config['_preinformes']->map(function ($pre) use ($components, $grades, $componentManuals) {
                 $component = $components->firstWhere('preinforme_id', $pre->id);
                 return ['reference' => 'preinforme:'.$pre->id, 'label' => $pre->nombre, 'weight' => $pre->peso,
-                    'node' => ['mode' => $component?->modo ?? 'SIMPLE_AVERAGE', 'inputs' => $component
-                        ? $component->actividades->map(fn ($activity) => ['reference' => 'actividad:'.$activity->id,
-                            'weight' => $activity->peso, 'value' => $grades->get($activity->id)?->valor])->all() : []]];
+                    'node' => $component ? $this->componentNode($component, $grades, $componentManuals) :
+                        ['mode' => 'SIMPLE_AVERAGE', 'inputs' => []]];
             })->all();
             return $this->calculate(['mode' => $config['_periodo']['modo'], 'inputs' => $inputs], $config);
         }
         if ($components->count() === 1 && $components->first()->es_directo) {
             $component = $components->first();
-            return $this->calculate(['mode' => $component->modo, 'inputs' => $component->actividades->map(fn ($activity) => [
-                'reference' => 'actividad:'.$activity->id, 'label' => $activity->nombre,
-                'weight' => $activity->peso, 'value' => $grades->get($activity->id)?->valor,
-            ])->all()], $config);
+            return $this->calculate($this->componentNode($component, $grades, $componentManuals), $config);
         }
         $inputs = $components->map(fn ($component) => [
             'reference' => 'componente:'.$component->id, 'label' => $component->nombre, 'weight' => $component->peso,
-            'node' => ['mode' => $component->modo, 'inputs' => $component->actividades->map(fn ($activity) => [
-                'reference' => 'actividad:'.$activity->id, 'label' => $activity->nombre, 'weight' => $activity->peso,
-                'value' => $grades->get($activity->id)?->valor,
-            ])->all()],
+            'node' => $this->componentNode($component, $grades, $componentManuals),
         ])->all();
 
         return $this->calculate(['mode' => $config['modo_asignatura'], 'inputs' => $inputs], $config);
+    }
+
+    /** Componentes manuales aportan su valor al mismo árbol exacto que los calculados. */
+    private function componentNode(ComponenteEvaluacion $component, Collection $grades, ?Collection $manuals): array
+    {
+        if ($component->modo === 'MANUAL') {
+            $manual = $manuals?->get($component->id);
+            return ['mode' => 'MANUAL', 'manual' => $manual?->estado === 'vigente' ? $manual->valor : null];
+        }
+
+        return ['mode' => $component->modo, 'inputs' => $component->actividades->map(fn ($activity) => [
+            'reference' => 'actividad:'.$activity->id, 'label' => $activity->nombre, 'weight' => $activity->peso,
+            'value' => $grades->get($activity->id)?->valor,
+        ])->all()];
+    }
+
+    public function componentResult(ComponenteEvaluacion $component, Collection $grades, array $config, ?object $manual): array
+    {
+        $result = $this->calculate($this->componentNode($component, $grades, collect([$component->id => $manual])), $config);
+        return $component->modo === 'MANUAL' ? [...$result, 'origen' => 'manual',
+            'manual_version' => (int) ($manual->version ?? 0)] : $result;
+    }
+
+    /** Consulta agrupada: nunca una lectura por estudiante en boletines o planillas. */
+    public function componentManuals(array $componentIds, Collection $enrollmentIds): Collection
+    {
+        if ($componentIds === [] || $enrollmentIds->isEmpty()) return collect();
+        return DB::table('resultados_manuales_componente')->whereIn('componente_id', $componentIds)
+            ->whereIn('matricula_id', $enrollmentIds)->get()
+            ->groupBy('matricula_id')->map(fn (Collection $rows) => $rows->keyBy('componente_id'));
+    }
+
+    /** El registro manual reemplaza solo la definitiva ordinaria, nunca una actividad ficticia. */
+    public function manualSubjectResult(?object $manual, array $config): array
+    {
+        if (! $manual || $manual->estado !== 'vigente' || $manual->valor === null) {
+            return ['estado' => 'pendiente', 'motivo' => 'Falta registrar la definitiva manual de la materia.',
+                'manual_version' => (int) ($manual->version ?? 0), 'origen' => 'manual'];
+        }
+
+        return [...$this->calculate(['mode' => 'MANUAL', 'manual' => (string) $manual->valor], $config),
+            'origen' => 'manual', 'manual_version' => (int) $manual->version,
+            'manual_actualizado_en' => $manual->updated_at];
+    }
+
+    public function manualAreaResult(?object $manual, array $config): array
+    {
+        if (! $manual || $manual->estado !== 'vigente' || $manual->valor === null) {
+            return ['estado' => 'pendiente', 'motivo' => 'Falta registrar el resultado manual del área.',
+                'manual_version' => (int) ($manual->version ?? 0), 'origen' => 'manual'];
+        }
+
+        return [...$this->calculate(['mode' => 'MANUAL', 'manual' => (string) $manual->valor], $config),
+            'origen' => 'manual', 'manual_version' => (int) $manual->version,
+            'manual_actualizado_en' => $manual->updated_at];
     }
 
     public function calculate(array $node, array $config): array
@@ -180,22 +245,33 @@ final class GradebookService
         $curriculum = DB::table('materias_curriculares')->where('ano_lectivo_id', $year->id)->where('grado_id', $enrollment->grupo->grado_id)->get()->keyBy('materia_id');
         $components = ComponenteEvaluacion::with('actividades')->whereIn('asignacion_id', $subjects->modelKeys())
             ->whereIn('periodo_id', $periods->modelKeys())->get();
+        $componentManuals = $this->componentManuals($components->modelKeys(), collect([$enrollment->id]))->get($enrollment->id, collect());
         $grades = Calificacion::where('matricula_id', $enrollment->id)
             ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->modelKeys()))->get()->keyBy('actividad_id');
+        $manualResults = $config['modo_asignatura'] === 'MANUAL'
+            ? DB::table('resultados_manuales_materia')->where('matricula_id', $enrollment->id)
+                ->whereIn('asignacion_id', $subjects->modelKeys())->whereIn('periodo_id', $periods->modelKeys())
+                ->get()->keyBy(fn ($item) => $item->asignacion_id.':'.$item->periodo_id)
+            : collect();
+        $annualManuals = $config['modo_anual'] === 'MANUAL'
+            ? DB::table('resultados_manuales_anuales')->where('matricula_id', $enrollment->id)->get()
+                ->keyBy(fn ($item) => $item->materia_id !== null ? 'materia:'.$item->materia_id : 'area:'.$item->area_id)
+            : collect();
         $componentsByPeriod = $components->groupBy(fn ($c) => $c->asignacion_id.':'.$c->periodo_id);
         $recoveries = RecuperacionAcademica::where('matricula_id', $enrollment->id)
             ->where('ano_lectivo_id', $year->id)->whereIn('asignacion_id', $subjects->modelKeys())
             ->whereIn('estado', ['aprobada', 'no_aprobada'])->get()
             ->keyBy(fn ($item) => $item->asignacion_id.':'.$item->alcance);
         $periodConfigs = $periods->mapWithKeys(fn ($period) => [$period->id => $this->periodConfig($config, $period)]);
-        $rows = $subjects->map(function ($assignment) use ($periods, $periodConfigs, $config, $curriculum, $year, $componentsByPeriod, $grades, $recoveries, $applyAnnualRecoveries) {
-            $results = $periods->map(function ($period) use ($assignment, $componentsByPeriod, $grades, $periodConfigs, $config, $recoveries) {
-                $original = $this->resultFromLoaded($componentsByPeriod->get($assignment->id.':'.$period->id, collect()), $grades, $periodConfigs[$period->id]);
+        $rows = $subjects->map(function ($assignment) use ($periods, $periodConfigs, $config, $curriculum, $year, $componentsByPeriod, $grades, $manualResults, $annualManuals, $componentManuals, $recoveries, $applyAnnualRecoveries) {
+            $results = $periods->map(function ($period) use ($assignment, $componentsByPeriod, $grades, $periodConfigs, $manualResults, $componentManuals, $config, $recoveries) {
+                $original = $this->resultFromLoaded($componentsByPeriod->get($assignment->id.':'.$period->id, collect()), $grades,
+                    $periodConfigs[$period->id], $manualResults->get($assignment->id.':'.$period->id), $componentManuals);
                 $recovery = $recoveries->get($assignment->id.':periodo:'.$period->id);
 
                 return ['periodo_id' => $period->id, ...$this->applyRecovery($original, $recovery, $config)];
             })->all();
-            $annual = $this->annual($results, $periods, $year, $config);
+            $annual = $this->annual($results, $periods, $year, $config, $annualManuals->get('materia:'.$assignment->materia_id));
             if ($applyAnnualRecoveries) {
                 $annual = $this->applyRecovery($annual, $recoveries->get($assignment->id.':anual'), $config);
             }
@@ -221,9 +297,18 @@ final class GradebookService
         }
         $areas = [];
         if ($config['usar_areas']) {
+            $areaManuals = $config['modo_area'] === 'MANUAL'
+                ? DB::table('resultados_manuales_area')->where('matricula_id', $enrollment->id)
+                    ->whereIn('periodo_id', $periods->modelKeys())->get()
+                    ->keyBy(fn ($item) => $item->area_id.':'.$item->periodo_id)
+                : collect();
             $areaNames = DB::table('areas')->whereIn('id', $rows->pluck('area_id')->filter()->unique())->pluck('nombre', 'id');
             foreach ($rows->whereNotNull('area_id')->groupBy('area_id') as $areaId => $members) {
-                $areaResults = $periods->map(function ($period) use ($members, $config) {
+                $areaResults = $periods->map(function ($period) use ($members, $config, $areaId, $areaManuals) {
+                    if ($config['modo_area'] === 'MANUAL') {
+                        return ['periodo_id' => $period->id,
+                            ...$this->manualAreaResult($areaManuals->get($areaId.':'.$period->id), $config)];
+                    }
                     $inputs = $members->map(function ($member) use ($period) {
                         $result = collect($member['periodos'])->firstWhere('periodo_id', $period->id);
 
@@ -232,7 +317,7 @@ final class GradebookService
 
                     return ['periodo_id' => $period->id, ...$this->calculate(['mode' => $config['modo_area'], 'inputs' => $inputs], $config)];
                 })->all();
-                $areas[] = ['area_id' => $areaId, 'nombre' => $areaNames->get($areaId), 'periodos' => $areaResults, 'anual' => $this->annual($areaResults, $periods, $year, $config)];
+                $areas[] = ['area_id' => $areaId, 'nombre' => $areaNames->get($areaId), 'periodos' => $areaResults, 'anual' => $this->annual($areaResults, $periods, $year, $config, $annualManuals->get('area:'.$areaId))];
             }
         }
 
@@ -241,6 +326,7 @@ final class GradebookService
             'ano' => $year->nombre, 'configuracion' => $config, 'periodos' => $periods->map->only(['id', 'nombre', 'peso', 'estado']),
             'periodo_sumatorio' => $year->periodo_sumatorio ? ['orden' => $year->num_periodos + 1, 'nombre' => 'P'.($year->num_periodos + 1), 'modo' => $config['modo_anual']] : null,
             'asignaturas' => $rows->values(), 'areas' => $areas,
+            'indicadores' => app(IndicatorBulletinService::class)->forEnrollment($enrollment, $periods, $rows->values()),
             'advertencias' => $curriculum->keys()->diff($subjects->pluck('materia_id'))->isNotEmpty() ? ['Hay asignaturas del currículo sin asignación para este grupo; este informe no está completo.'] : [],
         ];
         $visualScale = app(EscalaVisualService::class)->forGroup($enrollment->grupo);
@@ -272,6 +358,49 @@ final class GradebookService
             $year = AnoLectivo::findOrFail($first->ano_lectivo_id);
             $config = app(SieeConfiguration::class)->resolve($year);
             $periods = Periodo::where('ano_lectivo_id', $year->id)->orderBy('orden')->get();
+            $method = $config['usar_areas']
+                ? MetodoAprobacion::find($config['metodo_id']) : null;
+            $annualManuals = $config['modo_anual'] === 'MANUAL'
+                ? DB::table('resultados_manuales_anuales')->whereIn('matricula_id', $groupRows->pluck('id'))->get()
+                    ->keyBy(fn ($item) => $item->matricula_id.':'.($item->materia_id !== null ? 'materia:'.$item->materia_id : 'area:'.$item->area_id))
+                : collect();
+            if ($config['modo_anual'] === 'MANUAL' && $method?->ambito === MetodoAprobacion::AMBITO_AREA
+                && $config['modo_area'] !== 'MANUAL') {
+                foreach ($annualManuals as $key => $manual) {
+                    if ($manual->area_id === null || $manual->estado !== 'vigente' || $manual->valor === null) continue;
+                    $result = $this->calculate(['mode' => 'MANUAL', 'manual' => (string) $manual->valor], $config);
+                    if ($result['estado'] === 'calculado' && ! $result['aprobado']) {
+                        $failed[$manual->matricula_id] = true;
+                    }
+                }
+            }
+            if ($config['usar_areas'] && $config['modo_area'] === 'MANUAL'
+                && $method?->ambito === MetodoAprobacion::AMBITO_AREA) {
+                $areaIds = DB::table('materias_curriculares')->where('ano_lectivo_id', $year->id)
+                    ->where('grado_id', $first->grupo->grado_id)->whereNotNull('area_id')
+                    ->distinct()->pluck('area_id');
+                $manuals = DB::table('resultados_manuales_area')->whereIn('matricula_id', $groupRows->pluck('id'))
+                    ->whereIn('area_id', $areaIds)->whereIn('periodo_id', $periods->modelKeys())
+                    ->get()->keyBy(fn ($item) => $item->matricula_id.':'.$item->area_id.':'.$item->periodo_id);
+                $visualScale = app(EscalaVisualService::class)->forGroup($first->grupo);
+                $visual = app(EscalaVisualService::class);
+                foreach ($groupRows as $enrollment) {
+                    foreach ($areaIds as $areaId) {
+                        $results = $periods->map(fn (Periodo $period) => $this->manualAreaResult(
+                            $manuals->get($enrollment->id.':'.$areaId.':'.$period->id), $config))->all();
+                        $annual = $this->annual($results, $periods, $year, $config,
+                            $annualManuals->get($enrollment->id.':area:'.$areaId));
+                        foreach ([...$results, $annual] as $result) {
+                            $shown = $visualScale ? $visual->decorate($result, $visualScale->opciones) : $result;
+                            if ($shown['estado'] === 'calculado' && ! $shown['aprobado']) {
+                                $failed[$enrollment->id] = true;
+                                break 2;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             $assignments = AsignacionDocente::where('ano_lectivo_id', $year->id)
                 ->where('grupo_id', $first->grupo_id)->get();
             if ($assignments->isEmpty()) {
@@ -284,6 +413,12 @@ final class GradebookService
             $activityIds = $components->flatten(1)->flatMap(fn (ComponenteEvaluacion $item) => $item->actividades->modelKeys());
             $grades = Calificacion::whereIn('matricula_id', $groupRows->pluck('id'))
                 ->whereIn('actividad_id', $activityIds)->get()->groupBy('matricula_id');
+            $componentManuals = $this->componentManuals($components->flatten(1)->pluck('id')->all(), $groupRows->pluck('id'));
+            $manualResults = $config['modo_asignatura'] === 'MANUAL'
+                ? DB::table('resultados_manuales_materia')->whereIn('matricula_id', $groupRows->pluck('id'))
+                    ->whereIn('asignacion_id', $assignments->modelKeys())->whereIn('periodo_id', $periods->modelKeys())
+                    ->get()->keyBy(fn ($item) => $item->matricula_id.':'.$item->asignacion_id.':'.$item->periodo_id)
+                : collect();
             $recoveries = RecuperacionAcademica::whereIn('matricula_id', $groupRows->pluck('id'))
                 ->where('ano_lectivo_id', $year->id)
                 ->whereIn('asignacion_id', $assignments->modelKeys())
@@ -296,6 +431,7 @@ final class GradebookService
 
             foreach ($groupRows as $enrollment) {
                 $studentGrades = ($grades->get($enrollment->id) ?? collect())->keyBy('actividad_id');
+                $studentComponentManuals = $componentManuals->get($enrollment->id, collect());
                 $studentRecoveries = ($recoveries->get($enrollment->id) ?? collect())
                     ->keyBy(fn (RecuperacionAcademica $item) => $item->asignacion_id.':'.$item->alcance);
                 foreach ($assignments as $assignment) {
@@ -304,6 +440,8 @@ final class GradebookService
                         $original = $this->resultFromLoaded(
                             $components->get($assignment->id.':'.$period->id, collect()),
                             $studentGrades, $periodConfigs[$period->id],
+                            $manualResults->get($enrollment->id.':'.$assignment->id.':'.$period->id),
+                            $studentComponentManuals,
                         );
                         $result = $this->applyRecovery($original,
                             $studentRecoveries->get($assignment->id.':periodo:'.$period->id), $config);
@@ -314,7 +452,8 @@ final class GradebookService
                             break 2;
                         }
                     }
-                    $annual = $this->applyRecovery($this->annual($results, $periods, $year, $config),
+                    $annual = $this->applyRecovery($this->annual($results, $periods, $year, $config,
+                        $annualManuals->get($enrollment->id.':materia:'.$assignment->materia_id)),
                         $studentRecoveries->get($assignment->id.':anual'), $config);
                     $shownAnnual = $visualScale ? $visual->decorate($annual, $visualScale->opciones) : $annual;
                     if ($shownAnnual['estado'] === 'calculado' && ! $shownAnnual['aprobado']) {
@@ -328,10 +467,24 @@ final class GradebookService
         return array_keys($failed);
     }
 
-    private function annual(array $results, $periods, AnoLectivo $year, array $config): array
+    private function annual(array $results, $periods, AnoLectivo $year, array $config, ?object $manual = null): array
     {
         if ($periods->count() !== $year->num_periodos) {
             return ['estado' => 'pendiente', 'motivo' => 'Faltan períodos por configurar.'];
+        }
+        if ($config['modo_anual'] === 'MANUAL') {
+            if (count($results) !== $year->num_periodos || collect($results)->contains(
+                fn ($result) => ($result['estado'] ?? null) !== 'calculado')) {
+                return ['estado' => 'pendiente', 'motivo' => 'Faltan resultados de períodos reales para la definitiva anual.'];
+            }
+            if (! $manual || $manual->estado !== 'vigente' || $manual->valor === null) {
+                return ['estado' => 'pendiente', 'motivo' => 'Falta registrar la definitiva manual anual.',
+                    'origen' => 'manual', 'manual_version' => (int) ($manual->version ?? 0)];
+            }
+
+            return [...$this->calculate(['mode' => 'MANUAL', 'manual' => (string) $manual->valor], $config),
+                'origen' => 'manual', 'manual_version' => (int) $manual->version,
+                'manual_actualizado_en' => $manual->updated_at];
         }
         $inputs = $periods->map(fn ($period, $index) => ['reference' => 'periodo:'.$period->id, 'weight' => $period->peso, 'value' => $results[$index]['exact_value'] ?? null])->all();
 

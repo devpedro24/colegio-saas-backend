@@ -27,6 +27,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Brick\Math\BigDecimal;
 
 class EvaluacionController extends Controller
 {
@@ -43,7 +44,10 @@ class EvaluacionController extends Controller
         abort_if($view === 'matriculas' && ! $canEnroll, 403);
         $enrollmentView = $view === 'matriculas';
         $teacher = $user->can('notas.registrar_materia_asignada');
-        abort_unless($manage || $teacher || $user->can('notas.ver_propias') || ($enrollmentView && $canEnroll), 403);
+        $areaManager = $user->can('notas.resultados_area.gestionar');
+        $annualManager = $user->can('notas.resultados_anuales.gestionar');
+        abort_unless($manage || $teacher || $user->can('notas.ver_propias')
+            || $areaManager || $annualManager || ($enrollmentView && $canEnroll), 403);
         $yearId = $request->filled('ano_lectivo_id') ? $request->integer('ano_lectivo_id') : null;
         $groupId = $request->filled('grupo_id') ? $request->integer('grupo_id') : null;
         $term = trim((string) $request->query('search', ''));
@@ -97,9 +101,9 @@ class EvaluacionController extends Controller
                 ->where('estado', 'activa')->select('estudiante_id')))
             ->when($request->filled('student_search'), fn ($q) => $q->where('name', 'like', '%'.trim((string) $request->query('student_search')).'%'))
             ->orderBy('name')->limit(50)->get(['id', 'name']) : collect();
-        $groupOptions = ($manage || $teacher || ($enrollmentView && $canEnroll)) ? $this->boundedCatalog(Grupo::with('grado')->where('estado', 'activo')
+        $groupOptions = ($manage || $teacher || $areaManager || $annualManager || ($enrollmentView && $canEnroll)) ? $this->boundedCatalog(Grupo::with('grado')->where('estado', 'activo')
             ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
-            ->when(! $manage && ! ($enrollmentView && $canEnroll), fn ($q) => $q->whereIn('id', AsignacionDocente::where('docente_id', $user->id)->select('grupo_id'))),
+            ->when(! $manage && ! $areaManager && ! $annualManager && ! ($enrollmentView && $canEnroll), fn ($q) => $q->whereIn('id', AsignacionDocente::where('docente_id', $user->id)->select('grupo_id'))),
             $request, 'group_search', [$groupId, $request->integer('selected_grupo_id')]) : collect();
         $subjectOptions = ! $enrollmentView && ($manage || $teacher) ? $this->boundedCatalog(Materia::where('estado', 'activo')
             ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
@@ -113,7 +117,14 @@ class EvaluacionController extends Controller
             return response()->json(['data' => [
                 'can_manage' => $manage, 'can_manage_enrollments' => $canEnroll, 'can_configure' => $user->can('academico.configurar'),
                 'can_view_reports' => $manage || $user->can('notas.ver_propias'),
-                'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado'])->map(PublicEval::year(...)),
+                'can_manage_manual_areas' => $user->can('notas.resultados_area.gestionar'),
+                'can_manage_manual_annuals' => $annualManager,
+                'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado', 'siee'])
+                    ->map(fn (AnoLectivo $year) => [...PublicEval::year($year),
+                        'area_manual' => (bool) ($year->siee['usar_areas'] ?? false)
+                            && ($year->siee['modo_area'] ?? null) === 'MANUAL',
+                        'anual_manual' => ($year->siee['modo_anual'] ?? null) === 'MANUAL',
+                        'anual_areas' => (bool) ($year->siee['usar_areas'] ?? false)]),
                 'periodos' => Periodo::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
                     ->orderBy('orden')->get()->map(PublicEval::period(...)),
                 'asignaciones' => $assignments->getCollection()->map(PublicEval::assignment(...)),
@@ -135,7 +146,14 @@ class EvaluacionController extends Controller
         return response()->json(['data' => [
             'can_manage' => $manage, 'can_manage_enrollments' => $canEnroll, 'can_configure' => $user->can('academico.configurar'),
             'can_view_reports' => $manage || $user->can('notas.ver_propias'),
-            'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado']),
+            'can_manage_manual_areas' => $user->can('notas.resultados_area.gestionar'),
+            'can_manage_manual_annuals' => $annualManager,
+            'anos' => AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado', 'siee'])
+                ->map(fn (AnoLectivo $year) => [...$year->only(['id', 'nombre', 'estado']),
+                    'area_manual' => (bool) ($year->siee['usar_areas'] ?? false)
+                        && ($year->siee['modo_area'] ?? null) === 'MANUAL',
+                    'anual_manual' => ($year->siee['modo_anual'] ?? null) === 'MANUAL',
+                    'anual_areas' => (bool) ($year->siee['usar_areas'] ?? false)]),
             'periodos' => Periodo::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->orderBy('orden')->get()
                 ->map(fn (Periodo $period) => [...$period->toArray(), 'url_token' => OpaqueUrlToken::for('periodo', $period->id)]),
             'asignaciones' => $assignments->getCollection()
@@ -219,10 +237,16 @@ class EvaluacionController extends Controller
         $grades = Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))
             ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get();
         $gradesByEnrollment = $grades->groupBy('matricula_id');
+        $componentManuals = $this->book->componentManuals($components->modelKeys(), $enrollments->pluck('id'));
+        $manualResults = $config['modo_asignatura'] === 'MANUAL'
+            ? DB::table('resultados_manuales_materia')->where('asignacion_id', $assignment->id)
+                ->where('periodo_id', $period->id)->whereIn('matricula_id', $enrollments->pluck('id'))
+                ->get()->keyBy('matricula_id') : collect();
         $periodConfig = $this->book->periodConfig($config, $period);
         $results = $enrollments->mapWithKeys(fn (Matricula $enrollment) => [$enrollment->id =>
             $this->book->resultFromLoaded($components,
-                $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $periodConfig)]);
+                $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $periodConfig,
+                $manualResults->get($enrollment->id), $componentManuals->get($enrollment->id, collect()))]);
         $presentResult = function (array $raw, ?string $provisional = null) use ($visualScale, $visualService): array {
             $presentable = $visualScale ? $visualService->decorate($raw, $visualScale->opciones, $provisional) : $raw;
             return [...PublicEval::result($presentable, $visualScale !== null),
@@ -233,7 +257,8 @@ class EvaluacionController extends Controller
             return response()->json(['data' => [
                 'editable' => $year->estado === 'en_curso' && $period->estado === 'abierto'
                     && ($request->user()->can('notas.editar_no_dicta') || ($assignment->docente_id == $request->user()->id && $request->user()->can('notas.registrar_materia_asignada')))
-                    && (!($period->configuracion_notas['usar_preinformes'] ?? false) || app(\App\Services\AcademicPlanAccess::class)->preinformes()),
+                    && ($config['modo_asignatura'] === 'MANUAL' || !($period->configuracion_notas['usar_preinformes'] ?? false)
+                        || app(\App\Services\AcademicPlanAccess::class)->preinformes()),
                 'requiere_motivo' => $this->book->requiresReason($request->user(), $assignment),
                 'permisos' => collect(['crear', 'editar', 'eliminar'])->mapWithKeys(fn ($action) => [$action => $request->user()->can('notas.actividades.'.$action)])
                     ->put('configurar', $request->user()->can('notas.planilla.configurar')),
@@ -255,12 +280,10 @@ class EvaluacionController extends Controller
                     'matricula_token' => PublicEval::token('matricula', $enrollment->id),
                     ...$presentResult($results->get($enrollment->id),
                         $this->book->provisionalFromResult($results->get($enrollment->id), $config)),
-                    'secciones' => $components->map(function ($component) use ($gradesByEnrollment, $enrollment, $config, $presentResult) {
-                        $result = $this->book->calculate(['mode' => $component->modo,
-                            'inputs' => $component->actividades->map(fn ($activity) => [
-                                'weight' => $activity->peso,
-                                'value' => $gradesByEnrollment->get($enrollment->id, collect())->firstWhere('actividad_id', $activity->id)?->valor,
-                            ])->all()], $config);
+                    'secciones' => $components->map(function ($component) use ($gradesByEnrollment, $componentManuals, $enrollment, $config, $presentResult) {
+                        $result = $this->book->componentResult($component,
+                            $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $config,
+                            $componentManuals->get($enrollment->id, collect())->get($component->id));
                         return ['componente_token' => PublicEval::token('componente-evaluacion', $component->id),
                             ...$presentResult($result, $this->book->provisionalFromResult($result, $config))];
                     }),
@@ -310,6 +333,9 @@ class EvaluacionController extends Controller
             $period = $this->book->writable($assignment, $data['periodo_id']);
             abort_if($period->configuracion_notas !== null, 422, 'Gestiona las actividades desde la planilla y los preinformes desde su configuración.');
             $component = $id ? ComponenteEvaluacion::where('asignacion_id', $assignment->id)->where('periodo_id', $data['periodo_id'])->findOrFail($id) : new ComponenteEvaluacion;
+            abort_if($component->exists && $component->modo === 'MANUAL'
+                && DB::table('resultados_manuales_componente')->where('componente_id', $component->id)->where('estado', 'vigente')->exists(), 422,
+                'Hay resultados manuales vigentes. Anúlalos antes de cambiar este componente.');
             abort_if(ComponenteEvaluacion::where('asignacion_id', $assignment->id)->where('periodo_id', $data['periodo_id'])->where('nombre', $data['nombre'])->when($id, fn ($q) => $q->where('id', '!=', $id))->exists(), 422, 'Ya existe un componente con ese nombre.');
             $previous = $component->exists ? $component->toArray() : null;
             $component->fill($data)->save();
@@ -337,6 +363,7 @@ class EvaluacionController extends Controller
         $this->book->authorizeAssignment($request->user(), $component->asignacion, write: true);
         $activity = DB::transaction(function () use ($data, $component, $request, $id) {
             $period = $this->book->writable($component->asignacion, $component->periodo_id);
+            abort_if($component->modo === 'MANUAL', 422, 'Un componente manual no admite actividades.');
             abort_if($period->configuracion_notas !== null || $component->es_directo, 422, 'Gestiona esta actividad desde la planilla actualizada.');
             abort_if($data['fecha'] < $period->fecha_inicio->toDateString() || $data['fecha'] > $period->fecha_fin->toDateString(), 422, 'La actividad debe estar dentro de las fechas del período.');
             $activity = $id ? ActividadEvaluacion::where('componente_id', $component->id)->findOrFail($id) : new ActividadEvaluacion;
@@ -372,6 +399,135 @@ class EvaluacionController extends Controller
             'notas.*.motivo' => [$this->book->requiresReason($request->user(), AsignacionDocente::findOrFail($asignacion)) ? 'required' : 'nullable', 'string', 'min:3', 'max:500'],
         ]);
         $this->book->saveGrades($request->user(), AsignacionDocente::findOrFail($asignacion), $periodo, $data['notas']);
+
+        return $this->planilla($request, $asignacion, $periodo);
+    }
+
+    public function resultadoManual(Request $request, int $asignacion, int $periodo, int $matricula): JsonResponse
+    {
+        $data = $request->validate([
+            'valor' => ['present', 'nullable', 'numeric', 'decimal:0,8'],
+            'escala_opcion_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
+            'motivo' => ['required', 'string', 'min:10', 'max:1000'],
+            'version' => ['required', 'integer', 'min:0'],
+        ]);
+        $reason = trim($data['motivo']);
+        abort_if(mb_strlen($reason) < 10, 422, 'Escribe un motivo claro de al menos diez caracteres.');
+        $assignment = AsignacionDocente::findOrFail($asignacion);
+        $this->book->authorizeAssignment($request->user(), $assignment, write: true);
+        $enrollment = Matricula::findOrFail($matricula);
+        abort_unless($enrollment->estado === 'activa' && $enrollment->grupo_id === $assignment->grupo_id
+            && $enrollment->ano_lectivo_id === $assignment->ano_lectivo_id, 422,
+            'La matrícula no pertenece a esta planilla activa.');
+
+        DB::transaction(function () use ($request, $assignment, $periodo, $enrollment, $data, $reason): void {
+            $this->book->writable($assignment, $periodo);
+            $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));
+            abort_unless($config['modo_asignatura'] === 'MANUAL', 422,
+                'El SIEE de este año no habilita la definitiva manual de materia.');
+            $visualScale = app(\App\Services\EscalaVisualService::class)->forGroup($assignment->grupo);
+            $manualValue = $data['valor'];
+            if ($visualScale) {
+                abort_if($manualValue !== null, 422, 'Selecciona una categoría visual, no una nota numérica.');
+                $choiceToken = $data['escala_opcion_token'] ?? null;
+                $choice = $choiceToken ? $visualScale->opciones->first(fn ($option) =>
+                    OpaqueUrlToken::for('escala-opcion', $option->id) === $choiceToken) : null;
+                abort_if($choiceToken && ! $choice, 422, 'La categoría no pertenece a la escala visual del grupo.');
+                $manualValue = $choice?->valor_equivalente;
+            } else {
+                abort_if(isset($data['escala_opcion_token']), 422, 'Esta materia usa una escala numérica.');
+            }
+            if ($manualValue !== null) {
+                $value = BigDecimal::of((string) $manualValue);
+                abort_if($value->isLessThan((string) $config['valor_min'])
+                    || $value->isGreaterThan((string) $config['valor_max']), 422,
+                    'La definitiva está fuera de la escala configurada.');
+            }
+            $key = ['matricula_id' => $enrollment->id, 'asignacion_id' => $assignment->id, 'periodo_id' => $periodo];
+            $previous = DB::table('resultados_manuales_materia')->where($key)->lockForUpdate()->first();
+            abort_unless((int) ($previous->version ?? 0) === (int) $data['version'], 409,
+                'Otra persona modificó esta definitiva. Recarga la planilla.');
+            abort_if($manualValue === null && (! $previous || $previous->estado !== 'vigente'), 422,
+                'No hay una definitiva manual vigente para anular.');
+            $values = ['valor' => $manualValue, 'estado' => $manualValue === null ? 'anulado' : 'vigente',
+                'motivo' => $reason, 'version' => (int) ($previous->version ?? 0) + 1,
+                'updated_by' => $request->user()->id, 'updated_at' => now()];
+            if ($previous) {
+                DB::table('resultados_manuales_materia')->where('id', $previous->id)->update($values);
+                $id = $previous->id;
+            } else {
+                $id = DB::table('resultados_manuales_materia')->insertGetId([...$key, ...$values, 'created_at' => now()]);
+            }
+            AuditLogger::tenant($request->user(), $manualValue === null ? 'ANULAR' : ($previous ? 'UPDATE' : 'CREATE'),
+                'resultado_manual_materia', (string) $id, $previous ? (array) $previous : null,
+                [...$key, ...$values], $reason);
+        });
+
+        return $this->planilla($request, $asignacion, $periodo);
+    }
+
+    public function resultadoManualComponente(Request $request, int $asignacion, int $periodo, int $componente, int $matricula): JsonResponse
+    {
+        $data = $request->validate([
+            'valor' => ['present', 'nullable', 'numeric', 'decimal:0,8'],
+            'escala_opcion_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
+            'motivo' => ['required', 'string', 'min:10', 'max:1000'],
+            'version' => ['required', 'integer', 'min:0'],
+        ]);
+        $reason = trim($data['motivo']);
+        abort_if(mb_strlen($reason) < 10, 422, 'Escribe un motivo claro de al menos diez caracteres.');
+        $assignment = AsignacionDocente::findOrFail($asignacion);
+        $this->book->authorizeAssignment($request->user(), $assignment, write: true);
+        $enrollment = Matricula::findOrFail($matricula);
+        abort_unless($enrollment->estado === 'activa' && $enrollment->grupo_id === $assignment->grupo_id
+            && $enrollment->ano_lectivo_id === $assignment->ano_lectivo_id, 422,
+            'La matrícula no pertenece a esta planilla activa.');
+
+        DB::transaction(function () use ($request, $assignment, $periodo, $componente, $enrollment, $data, $reason): void {
+            $period = $this->book->writable($assignment, $periodo);
+            $component = ComponenteEvaluacion::where('asignacion_id', $assignment->id)
+                ->where('periodo_id', $period->id)->findOrFail($componente);
+            abort_unless($component->modo === 'MANUAL', 422, 'Este componente no usa resultados manuales.');
+            $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));
+            abort_if($config['modo_asignatura'] === 'MANUAL', 422,
+                'La definitiva de materia es manual; los componentes no se usan en su cálculo.');
+            $visualScale = app(\App\Services\EscalaVisualService::class)->forGroup($assignment->grupo);
+            $manualValue = $data['valor'];
+            if ($visualScale) {
+                abort_if($manualValue !== null, 422, 'Selecciona una categoría visual, no una nota numérica.');
+                $choiceToken = $data['escala_opcion_token'] ?? null;
+                $choice = $choiceToken ? $visualScale->opciones->first(fn ($option) =>
+                    OpaqueUrlToken::for('escala-opcion', $option->id) === $choiceToken) : null;
+                abort_if($choiceToken && ! $choice, 422, 'La categoría no pertenece a la escala visual del grupo.');
+                $manualValue = $choice?->valor_equivalente;
+            } else {
+                abort_if(isset($data['escala_opcion_token']), 422, 'Esta planilla usa una escala numérica.');
+            }
+            if ($manualValue !== null) {
+                $value = BigDecimal::of((string) $manualValue);
+                abort_if($value->isLessThan((string) $config['valor_min'])
+                    || $value->isGreaterThan((string) $config['valor_max']), 422,
+                    'El resultado está fuera de la escala configurada.');
+            }
+            $key = ['matricula_id' => $enrollment->id, 'componente_id' => $component->id];
+            $previous = DB::table('resultados_manuales_componente')->where($key)->lockForUpdate()->first();
+            abort_unless((int) ($previous->version ?? 0) === (int) $data['version'], 409,
+                'Otra persona modificó este resultado. Recarga la planilla.');
+            abort_if($manualValue === null && (! $previous || $previous->estado !== 'vigente'), 422,
+                'No hay un resultado manual vigente para anular.');
+            $values = ['valor' => $manualValue, 'estado' => $manualValue === null ? 'anulado' : 'vigente',
+                'motivo' => $reason, 'version' => (int) ($previous->version ?? 0) + 1,
+                'updated_by' => $request->user()->id, 'updated_at' => now()];
+            if ($previous) {
+                DB::table('resultados_manuales_componente')->where('id', $previous->id)->update($values);
+                $id = $previous->id;
+            } else {
+                $id = DB::table('resultados_manuales_componente')->insertGetId([...$key, ...$values, 'created_at' => now()]);
+            }
+            AuditLogger::tenant($request->user(), $manualValue === null ? 'ANULAR' : ($previous ? 'UPDATE' : 'CREATE'),
+                'resultado_manual_componente', (string) $id, $previous ? (array) $previous : null,
+                [...$key, ...$values], $reason);
+        });
 
         return $this->planilla($request, $asignacion, $periodo);
     }

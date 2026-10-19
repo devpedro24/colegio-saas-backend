@@ -12,6 +12,7 @@ use App\Models\Academico\EscalaValorativa;
 use App\Models\Academico\Grado;
 use App\Models\Academico\Materia;
 use App\Models\Academico\MetodoAprobacion;
+use App\Models\Academico\Periodo;
 use App\Services\GradeCalculationService;
 use App\Services\AulaProvisioningService;
 use App\Services\SieeConfiguration;
@@ -137,15 +138,47 @@ class SieeController extends Controller
                 EscalaValorativa::where('ano_lectivo_id', $id), 'escala_token');
             $method = $this->resolveSelector('metodo-aprobacion', $data['metodo_token'],
                 MetodoAprobacion::where('ano_lectivo_id', $id), 'metodo_token');
-            foreach (['modo_area', 'modo_asignatura', 'modo_anual'] as $field) {
-                abort_if($data[$field] === 'MANUAL' && ($year->siee[$field] ?? null) !== 'MANUAL', 422,
-                    'La captura de resultados manuales todavía no está disponible. Selecciona un cálculo simple o ponderado.');
+            if (($year->siee['modo_anual'] ?? null) === 'MANUAL'
+                && ($data['modo_anual'] !== 'MANUAL' || $scale->id !== ($year->siee['escala_id'] ?? null)
+                    || $data['usar_areas'] !== (bool) ($year->siee['usar_areas'] ?? false))) {
+                abort_if(DB::table('resultados_manuales_anuales as resultado')
+                    ->join('matriculas as matricula', 'matricula.id', '=', 'resultado.matricula_id')
+                    ->where('matricula.ano_lectivo_id', $year->id)->where('resultado.estado', 'vigente')->exists(), 422,
+                    'Hay definitivas anuales manuales vigentes. Anúlalas antes de cambiar el modo, el uso de áreas o la escala.');
             }
-            abort_if($year->periodo_sumatorio && $data['modo_anual'] === 'MANUAL', 422,
-                'El período sumatorio necesita un cálculo anual simple o ponderado. Cambia el método anual o desactiva el período sumatorio.');
+            if (($year->siee['modo_area'] ?? null) === 'MANUAL'
+                && (! $data['usar_areas'] || $data['modo_area'] !== 'MANUAL'
+                    || $scale->id !== ($year->siee['escala_id'] ?? null))) {
+                abort_if(DB::table('resultados_manuales_area')->whereIn('periodo_id',
+                    Periodo::where('ano_lectivo_id', $year->id)->select('id'))->where('estado', 'vigente')->exists(), 422,
+                    'Hay resultados manuales de área vigentes. Anúlalos antes de cambiar el modo, el uso de áreas o la escala.');
+            }
+            if ($data['modo_asignatura'] === 'MANUAL' && ($year->siee['modo_asignatura'] ?? null) !== 'MANUAL') {
+                abort_if(DB::table('calificaciones as nota')
+                    ->join('actividades_evaluacion as actividad', 'actividad.id', '=', 'nota.actividad_id')
+                    ->join('componentes_evaluacion as componente', 'componente.id', '=', 'actividad.componente_id')
+                    ->join('periodos as periodo', 'periodo.id', '=', 'componente.periodo_id')
+                    ->where('periodo.ano_lectivo_id', $year->id)->exists(), 422,
+                    'Ya hay notas de actividades en este año; cambiar a definitiva manual ocultaría esos resultados.');
+            }
+            if ($data['modo_asignatura'] === 'MANUAL' || $scale->id !== ($year->siee['escala_id'] ?? null)) {
+                abort_if(DB::table('resultados_manuales_componente as resultado')
+                    ->join('componentes_evaluacion as componente', 'componente.id', '=', 'resultado.componente_id')
+                    ->join('periodos as periodo', 'periodo.id', '=', 'componente.periodo_id')
+                    ->where('periodo.ano_lectivo_id', $year->id)->where('resultado.estado', 'vigente')->exists(), 422,
+                    'Hay resultados manuales de componentes vigentes. Anúlalos antes de cambiar el modo de materia o la escala.');
+            }
+            if (($year->siee['modo_asignatura'] ?? null) === 'MANUAL'
+                && ($data['modo_asignatura'] !== 'MANUAL' || $scale->id !== ($year->siee['escala_id'] ?? null))) {
+                abort_if(DB::table('resultados_manuales_materia')->whereIn('periodo_id',
+                    Periodo::where('ano_lectivo_id', $year->id)->select('id'))->where('estado', 'vigente')->exists(), 422,
+                    'Hay definitivas manuales vigentes. Anúlalas justificadamente antes de cambiar el modo o la escala de cálculo.');
+            }
             abort_if($year->estaCerrado(), 422, 'El año está cerrado; su SIEE es inmutable.');
             abort_if($year->periodos()->where('estado', 'cerrado')->exists(), 422, 'Hay períodos cerrados; no se puede alterar su configuración SIEE.');
             abort_if($data['usar_areas'] && $data['modo_area'] === 'DISABLED', 422, 'Selecciona un cálculo de área o desactiva el uso de áreas.');
+            abort_if(! $data['usar_areas'] && $data['modo_area'] === 'MANUAL', 422,
+                'Activa el uso de áreas antes de elegir el resultado manual de área.');
             abort_unless($scale->tipo === 'numerica' && $scale->valor_min < $scale->valor_max && $method->nota_minima >= $scale->valor_min && $method->nota_minima <= $scale->valor_max, 422, 'La nota aprobatoria debe pertenecer a la escala numérica.');
             $previous = $year->siee;
             unset($data['escala_token'], $data['metodo_token']);
@@ -171,7 +204,7 @@ class SieeController extends Controller
         DB::transaction(function () use ($id, $data, $request) {
             $year = AnoLectivo::lockForUpdate()->findOrFail($id);
             abort_unless($this->curriculoEditable($year), 422,
-                'No se puede cambiar el currículo: el año está cerrado o hay calificaciones en períodos cerrados.');
+                'No se puede cambiar el currículo: el año está cerrado, hay notas en períodos cerrados o resultados manuales de área vigentes.');
             $grade = $this->resolveSelector('grado', $data['grado_token'],
                 Grado::where('ano_lectivo_id', $id)->where('estado', 'activo'), 'grado_token');
             $subject = $this->resolveSelector('materia', $data['materia_token'],
@@ -221,7 +254,7 @@ class SieeController extends Controller
         $changed = DB::transaction(function () use ($id, $data, $request) {
             $year = AnoLectivo::lockForUpdate()->findOrFail($id);
             abort_unless($this->curriculoEditable($year), 422,
-                'No se puede cambiar el currículo: el año está cerrado o hay calificaciones en períodos cerrados.');
+                'No se puede cambiar el currículo: el año está cerrado, hay notas en períodos cerrados o resultados manuales de área vigentes.');
             $weighted = ($year->siee['usar_areas'] ?? false) && ($year->siee['modo_area'] ?? null) === 'WEIGHTED_AVERAGE';
             $grades = Grado::where('ano_lectivo_id', $id)->where('estado', 'activo')->get()
                 ->keyBy(fn ($grade) => OpaqueUrlToken::for('grado', $grade->id));
@@ -318,6 +351,13 @@ class SieeController extends Controller
     private function curriculoEditable(AnoLectivo $year): bool
     {
         if ($year->estaCerrado()) {
+            return false;
+        }
+
+        // Un cambio de pertenencia de materias/áreas haría inaccesibles resultados
+        // manuales ya auditados; exigir anulación y revisión antes de alterar el plan.
+        if (DB::table('resultados_manuales_area')->whereIn('periodo_id',
+            Periodo::where('ano_lectivo_id', $year->id)->select('id'))->where('estado', 'vigente')->exists()) {
             return false;
         }
 

@@ -130,6 +130,8 @@ final class PreinformeController extends Controller
             $removed = Preinforme::where('periodo_id', $period->id)->whereNotIn('id', $keep)->get();
             foreach ($removed as $pre) {
                 $components = ComponenteEvaluacion::where('preinforme_id', $pre->id)->get();
+                abort_if(DB::table('resultados_manuales_componente')->whereIn('componente_id', $components->modelKeys())->exists(), 422,
+                    'Este preinforme conserva resultados manuales; no se puede eliminar.');
                 abort_if(DB::table('actividades_evaluacion')->whereIn('componente_id', $components->modelKeys())->exists(), 422, 'Este preinforme contiene actividades; no se puede eliminar ni desactivar sin resolverlas.');
                 foreach ($components as $component) {
                     $component->delete();
@@ -138,6 +140,8 @@ final class PreinformeController extends Controller
             }
             if ($enabled) {
                 $legacy = ComponenteEvaluacion::where('periodo_id', $period->id)->whereNull('preinforme_id')->get();
+                abort_if(DB::table('resultados_manuales_componente')->whereIn('componente_id', $legacy->modelKeys())->exists(), 422,
+                    'El período conserva resultados manuales directos; no se pueden ocultar con preinformes.');
                 abort_if(DB::table('actividades_evaluacion')->whereIn('componente_id', $legacy->modelKeys())->exists(), 422,
                     'El período ya tiene actividades directas o una evaluación anterior. No se modificaron sus notas; configura los preinformes antes de registrar actividades.');
                 foreach ($legacy as $component) {

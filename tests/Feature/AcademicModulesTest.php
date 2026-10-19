@@ -78,6 +78,48 @@ class AcademicModulesTest extends TestCase
     use \Tests\Support\FlexibleGradingTests;
     use \Tests\Support\AcademicWorkflowTests;
     use \Tests\Support\EventWorkflowTests;
+    use \Tests\Support\BulletinObservationTests;
+    use \Tests\Support\AcademicIndicatorTests;
+    use \Tests\Support\BulletinTemplateTests;
+    use \Tests\Support\BulletinIssueTests;
+    use \Tests\Support\AcademicYearJourneyTests;
+
+    public function test_group_director_is_scoped_versioned_and_does_not_create_subject_assignment(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.estructura.gestionar', 'web'));
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('group-director')->plainTextToken);
+        $base = 'http://localhost/api/estructura/grupos/'.OpaqueUrlToken::for('grupo', $this->group->id).'/director?opaque=1';
+        $teacherToken = OpaqueUrlToken::for('usuario', $this->teacher->id);
+        $this->getJson($base)->assertOk()->assertJsonPath('data.version', 0);
+        $this->putJson($base, ['docente_token' => OpaqueUrlToken::for('usuario', $this->rector->id),
+            'version' => 0])->assertUnprocessable();
+        $this->putJson($base, ['docente_token' => $teacherToken, 'version' => 0])
+            ->assertOk()->assertJsonPath('data.docente_token', $teacherToken)
+            ->assertJsonPath('data.version', 1);
+        $this->assertDatabaseCount('asignaciones_docentes', 1);
+        $this->assertDatabaseHas('directores_grupo_historial', ['grupo_id' => $this->group->id,
+            'docente_nuevo_id' => $this->teacher->id, 'version' => 1]);
+        $this->withToken($this->teacher->createToken('director-reader')->plainTextToken);
+        app('auth')->forgetGuards();
+        $this->getJson($base)->assertForbidden();
+        $this->getJson('http://localhost/api/director-grupo/mis-grupos?opaque=1')
+            ->assertOk()->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.grupo_token', OpaqueUrlToken::for('grupo', $this->group->id));
+        $this->withToken($this->rector->createToken('group-director-change')->plainTextToken);
+        app('auth')->forgetGuards();
+        $this->putJson($base, ['docente_token' => null, 'version' => 0, 'motivo' => 'Cambio solicitado'])
+            ->assertStatus(409);
+        $this->putJson($base, ['docente_token' => null, 'version' => 1])->assertUnprocessable();
+        $this->putJson($base, ['docente_token' => null, 'version' => 1, 'motivo' => 'Cambio solicitado'])
+            ->assertOk()->assertJsonPath('data.version', 2)->assertJsonPath('data.docente_token', null);
+
+        $this->withToken($this->teacher->createToken('director-reader-after-removal')->plainTextToken);
+        app('auth')->forgetGuards();
+        $this->getJson('http://localhost/api/director-grupo/mis-grupos?opaque=1')
+            ->assertOk()->assertJsonCount(0, 'data');
+    }
 
     public function test_aula_is_provisioned_from_curriculum_and_group_without_teacher_or_manual_creation(): void
     {
@@ -2111,16 +2153,567 @@ class AcademicModulesTest extends TestCase
         $this->assertArrayHasKey('calculation_version', $result);
         $this->assertDatabaseHas('audit_logs', ['accion' => 'UPDATE', 'recurso' => 'siee',
             'recurso_id' => (string) $this->year->id]);
-        foreach (['modo_area', 'modo_asignatura', 'modo_anual'] as $field) {
-            $manualRequest = Request::create('/', 'PUT', [...$configuration, $field => 'MANUAL']);
-            $manualRequest->setUserResolver(fn () => $this->rector);
-            try {
-                $controller->update($manualRequest, $this->year->id);
-                $this->fail('El modo manual no puede activarse sin persistencia y captura autorizada.');
-            } catch (HttpException $error) {
-                $this->assertSame(422, $error->getStatusCode());
-            }
+        $invalidAreaRequest = Request::create('/', 'PUT', [...$configuration, 'modo_area' => 'MANUAL']);
+        $invalidAreaRequest->setUserResolver(fn () => $this->rector);
+        try {
+            $controller->update($invalidAreaRequest, $this->year->id);
+            $this->fail('Un resultado manual de área exige habilitar áreas.');
+        } catch (HttpException $error) {
+            $this->assertSame(422, $error->getStatusCode());
         }
+        $annualRequest = Request::create('/', 'PUT', [...$configuration, 'modo_anual' => 'MANUAL']);
+        $annualRequest->setUserResolver(fn () => $this->rector);
+        $annualResponse = $controller->update($annualRequest, $this->year->id)->getData(true)['data'];
+        $this->assertSame('MANUAL', $annualResponse['configuracion']['modo_anual']);
+        $areaRequest = Request::create('/', 'PUT', [...$configuration,
+            'usar_areas' => true, 'modo_area' => 'MANUAL']);
+        $areaRequest->setUserResolver(fn () => $this->rector);
+        $areaResponse = $controller->update($areaRequest, $this->year->id)->getData(true)['data'];
+        $this->assertSame('MANUAL', $areaResponse['configuracion']['modo_area']);
+        $manualRequest = Request::create('/', 'PUT', [...$configuration, 'modo_asignatura' => 'MANUAL']);
+        $manualRequest->setUserResolver(fn () => $this->rector);
+        $manualResponse = $controller->update($manualRequest, $this->year->id)->getData(true)['data'];
+        $this->assertSame('MANUAL', $manualResponse['configuracion']['modo_asignatura']);
+    }
+
+    public function test_manual_subject_result_is_scoped_versioned_and_drives_report_without_an_activity(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS, 'modo_asignatura' => 'MANUAL',
+            'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primero', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31', 'peso' => 30,
+            'estado' => Periodo::ESTADO_ABIERTO]);
+        $student = User::create(['name' => 'Estudiante Manual', 'email' => 'manual@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $base = 'http://localhost/api/evaluacion/planillas/'.OpaqueUrlToken::for('asignacion-docente', $this->assignment->id)
+            .'/'.OpaqueUrlToken::for('periodo', $period->id);
+        $path = $base.'/resultados-manuales/'.OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->teacher->createToken('manual-subject')->plainTextToken);
+
+        $this->getJson($base.'?opaque=1')->assertOk()
+            ->assertJsonPath('data.resultados.0.estado', 'pendiente')
+            ->assertJsonPath('data.resultados.0.manual_version', 0);
+        $this->putJson($path, ['valor' => '4', 'motivo' => '          ', 'version' => 0])
+            ->assertUnprocessable();
+        $this->putJson($path, ['valor' => '6', 'motivo' => 'Evaluación institucional documentada', 'version' => 0])
+            ->assertUnprocessable();
+        $this->putJson($path, ['valor' => '4.25', 'motivo' => 'Evaluación institucional documentada', 'version' => 0])
+            ->assertOk()->assertJsonPath('data.resultados.0.estado', 'calculado')
+            ->assertJsonPath('data.resultados.0.origen', 'manual')
+            ->assertJsonPath('data.resultados.0.manual_version', 1);
+        $this->assertDatabaseCount('actividades_evaluacion', 0);
+        $report = app(GradebookService::class)->report($enrollment);
+        $this->assertSame('manual', $report['asignaturas']->first()['periodos'][0]['origen']);
+        $this->assertSame('4.2', $report['asignaturas']->first()['periodos'][0]['display_value']);
+        $sieePayload = [...$this->year->fresh()->siee, 'modo_asignatura' => 'SIMPLE_AVERAGE',
+            'escala_token' => OpaqueUrlToken::for('escala-valorativa', $scale->id),
+            'metodo_token' => OpaqueUrlToken::for('metodo-aprobacion', $method->id)];
+        unset($sieePayload['escala_id'], $sieePayload['metodo_id']);
+        $switchRequest = Request::create('/', 'PUT', $sieePayload);
+        $switchRequest->setUserResolver(fn () => $this->rector);
+        try {
+            app(SieeController::class)->update($switchRequest, $this->year->id);
+            $this->fail('No se puede ocultar una definitiva manual vigente al cambiar el SIEE.');
+        } catch (HttpException $error) {
+            $this->assertSame(422, $error->getStatusCode());
+        }
+        $this->putJson($path, ['valor' => '2', 'motivo' => 'Corrección debidamente justificada', 'version' => 0])
+            ->assertStatus(409);
+        $this->putJson($path, ['valor' => null, 'motivo' => 'Se anula por error en el registro', 'version' => 1])
+            ->assertOk()->assertJsonPath('data.resultados.0.estado', 'pendiente')
+            ->assertJsonPath('data.resultados.0.manual_version', 2);
+        $this->assertDatabaseHas('resultados_manuales_materia', ['matricula_id' => $enrollment->id,
+            'asignacion_id' => $this->assignment->id, 'periodo_id' => $period->id, 'estado' => 'anulado']);
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        $this->putJson($path, ['valor' => '3', 'motivo' => 'Intento posterior al cierre', 'version' => 2])
+            ->assertUnprocessable();
+        $this->withToken($student->createToken('manual-result-forbidden')->plainTextToken);
+        app('auth')->forgetGuards();
+        $this->putJson($path, ['valor' => '3', 'motivo' => 'Intento de estudiante', 'version' => 2])
+            ->assertForbidden();
+    }
+
+    public function test_manual_area_result_is_authorized_versioned_and_drives_the_area_report(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'area']);
+        $this->year->update(['num_periodos' => 1, 'siee' => [...SieeConfiguration::DEFAULTS,
+            'usar_areas' => true, 'modo_area' => 'MANUAL', 'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primero', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31', 'peso' => 100,
+            'estado' => Periodo::ESTADO_ABIERTO]);
+        $student = User::create(['name' => 'Estudiante Área', 'email' => 'area-manual@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $area = Area::findOrFail($this->subject->area_id);
+        $base = 'http://localhost/api/evaluacion/areas/manual';
+        $query = $base.'?opaque=1&grupo_token='.OpaqueUrlToken::for('grupo', $this->group->id)
+            .'&periodo_token='.OpaqueUrlToken::for('periodo', $period->id);
+        $path = $base.'/'.OpaqueUrlToken::for('grupo', $this->group->id)
+            .'/'.OpaqueUrlToken::for('periodo', $period->id)
+            .'/'.OpaqueUrlToken::for('area', $area->id)
+            .'/'.OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->teacher->createToken('manual-area-denied')->plainTextToken);
+        $this->putJson($path, ['valor' => '4', 'motivo' => 'Resultado institucional verificado', 'version' => 0])
+            ->assertForbidden();
+        $this->withToken($this->rector->createToken('manual-area')->plainTextToken);
+        app('auth')->forgetGuards();
+        $this->getJson('http://localhost/api/evaluacion/catalogo?opaque=1&vista=planillas&ano_lectivo_token='.
+            OpaqueUrlToken::for('ano-lectivo', $this->year->id))
+            ->assertOk()->assertJsonPath('data.anos.0.area_manual', true)
+            ->assertJsonPath('data.can_manage_manual_areas', true);
+        $this->getJson($query)->assertOk()->assertJsonPath('data.matriculas.0.resultado.estado', 'pendiente');
+        $this->putJson($path, ['valor' => '6', 'motivo' => 'Resultado institucional verificado', 'version' => 0])
+            ->assertUnprocessable();
+        $this->putJson($path, ['valor' => '4.25', 'motivo' => 'Resultado institucional verificado', 'version' => 0])
+            ->assertOk()->assertJsonPath('data.version', 1);
+        $this->getJson($query)->assertOk()->assertJsonPath('data.matriculas.0.resultado.estado', 'calculado')
+            ->assertJsonPath('data.matriculas.0.resultado.manual_version', 1);
+        $report = app(GradebookService::class)->report($enrollment);
+        $this->assertSame('manual', $report['areas'][0]['periodos'][0]['origen']);
+        $this->assertSame('4.2', $report['areas'][0]['anual']['display_value']);
+        $this->assertSame('pendiente', $report['asignaturas']->first()['periodos'][0]['estado']);
+        $this->assertSame([], app(GradebookService::class)->failedEnrollmentIds(collect([$enrollment])));
+        $this->putJson($path, ['valor' => '2', 'motivo' => 'Revisión del resultado del área', 'version' => 1])
+            ->assertOk()->assertJsonPath('data.version', 2);
+        $this->assertSame([$enrollment->id], app(GradebookService::class)->failedEnrollmentIds(collect([$enrollment])));
+        $this->putJson($path, ['valor' => '4.25', 'motivo' => 'Corrección de resultado de área', 'version' => 2])
+            ->assertOk()->assertJsonPath('data.version', 3);
+        $promotion = app(AcademicPromotionService::class);
+        $promotion->savePolicy($this->rector, $this->year, 0, [], null, 0);
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        $this->assertSame('promovido', $promotion->proposal($this->year->fresh(), $enrollment)['resultado']);
+        $period->update(['estado' => Periodo::ESTADO_ABIERTO]);
+        $sieePayload = [...$this->year->fresh()->siee, 'modo_area' => 'SIMPLE_AVERAGE',
+            'escala_token' => OpaqueUrlToken::for('escala-valorativa', $scale->id),
+            'metodo_token' => OpaqueUrlToken::for('metodo-aprobacion', $method->id)];
+        unset($sieePayload['escala_id'], $sieePayload['metodo_id']);
+        $switchRequest = Request::create('/', 'PUT', $sieePayload);
+        $switchRequest->setUserResolver(fn () => $this->rector);
+        try {
+            app(SieeController::class)->update($switchRequest, $this->year->id);
+            $this->fail('No se puede ocultar un resultado manual de área vigente.');
+        } catch (HttpException $error) {
+            $this->assertSame(422, $error->getStatusCode());
+        }
+        $this->putJson($path, ['valor' => '2', 'motivo' => 'Corrección de resultado institucional', 'version' => 0])
+            ->assertStatus(409);
+        $otherArea = Area::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Arte', 'estado' => 'activo']);
+        $invalidPath = str_replace(OpaqueUrlToken::for('area', $area->id),
+            OpaqueUrlToken::for('area', $otherArea->id), $path);
+        $this->putJson($invalidPath, ['valor' => '3', 'motivo' => 'Área sin currículo correspondiente', 'version' => 0])
+            ->assertUnprocessable();
+        $this->putJson($path, ['valor' => null, 'motivo' => 'Se anula tras revisión académica', 'version' => 3])
+            ->assertOk()->assertJsonPath('data.version', 4);
+        $this->assertSame('pendiente', app(GradebookService::class)->report($enrollment)['areas'][0]['periodos'][0]['estado']);
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        $this->putJson($path, ['valor' => '3', 'motivo' => 'Intento después del cierre', 'version' => 4])
+            ->assertUnprocessable();
+    }
+
+    public function test_manual_annual_subject_requires_closed_complete_terms_and_drives_promotion(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['num_periodos' => 1, 'periodo_sumatorio' => true,
+            'siee' => [...SieeConfiguration::DEFAULTS, 'modo_asignatura' => 'MANUAL', 'modo_anual' => 'MANUAL',
+                'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Único', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31', 'peso' => 100,
+            'estado' => Periodo::ESTADO_ABIERTO]);
+        $student = User::create(['name' => 'Estudiante Anual', 'email' => 'annual@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $base = 'http://localhost/api/evaluacion/anuales/manual';
+        $groupToken = OpaqueUrlToken::for('grupo', $this->group->id);
+        $subjectToken = OpaqueUrlToken::for('materia', $this->subject->id);
+        $path = $base.'/'.$groupToken.'/'.OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $payload = ['ambito' => 'materia', 'materia_token' => $subjectToken,
+            'valor' => '2', 'motivo' => 'Resultado anual documentado', 'version' => 0];
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->teacher->createToken('annual-teacher-denied')->plainTextToken);
+        $this->putJson($path, $payload)->assertForbidden();
+        $this->withToken($this->rector->createToken('annual-rector')->plainTextToken);
+        app('auth')->forgetGuards();
+        $this->getJson($base.'?opaque=1&grupo_token='.$groupToken.'&ambito=materia')
+            ->assertOk()->assertJsonPath('data.editable', false);
+        $this->putJson($path, $payload)->assertUnprocessable();
+        DB::table('resultados_manuales_materia')->insert([
+            'matricula_id' => $enrollment->id, 'asignacion_id' => $this->assignment->id,
+            'periodo_id' => $period->id, 'valor' => '4', 'estado' => 'vigente',
+            'motivo' => 'Resultado de período documentado', 'version' => 1,
+            'updated_by' => $this->rector->id, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $this->putJson($path, $payload)->assertUnprocessable();
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        $this->putJson($path, [...$payload, 'valor' => '6'])->assertUnprocessable();
+        $this->putJson($path, $payload)->assertOk()->assertJsonPath('data.version', 1);
+        $this->getJson($base.'?opaque=1&grupo_token='.$groupToken.'&ambito=materia')
+            ->assertOk()->assertJsonPath('data.matriculas.0.resultado.display_value', '2');
+        $report = app(GradebookService::class)->report($enrollment);
+        $this->assertSame('manual', $report['asignaturas']->first()['anual']['origen']);
+        $this->assertSame('2.0', $report['asignaturas']->first()['anual']['display_value']);
+        $this->assertSame('MANUAL', $report['periodo_sumatorio']['modo']);
+        $this->assertSame([$enrollment->id], app(GradebookService::class)->failedEnrollmentIds(collect([$enrollment])));
+        $promotion = app(AcademicPromotionService::class);
+        $promotion->savePolicy($this->rector, $this->year, 0, [], null, 0);
+        $this->assertSame('reprobado', $promotion->proposal($this->year->fresh(), $enrollment)['resultado']);
+        $this->putJson($path, [...$payload, 'valor' => '4', 'version' => 0])->assertStatus(409);
+        $this->putJson($path, [...$payload, 'valor' => '4', 'version' => 1])->assertOk();
+        $this->assertSame('promovido', $promotion->proposal($this->year->fresh(), $enrollment)['resultado']);
+        $period->update(['estado' => Periodo::ESTADO_ABIERTO]);
+        $sieePayload = [...$this->year->fresh()->siee, 'modo_anual' => 'SIMPLE_AVERAGE',
+            'escala_token' => OpaqueUrlToken::for('escala-valorativa', $scale->id),
+            'metodo_token' => OpaqueUrlToken::for('metodo-aprobacion', $method->id)];
+        unset($sieePayload['escala_id'], $sieePayload['metodo_id']);
+        $switchRequest = Request::create('/', 'PUT', $sieePayload);
+        $switchRequest->setUserResolver(fn () => $this->rector);
+        try {
+            app(SieeController::class)->update($switchRequest, $this->year->id);
+            $this->fail('No se puede ocultar una definitiva anual manual vigente.');
+        } catch (HttpException $error) {
+            $this->assertSame(422, $error->getStatusCode());
+            $this->assertStringContainsString('definitivas anuales manuales vigentes', $error->getMessage());
+        }
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        $this->putJson($path, [...$payload, 'valor' => null, 'version' => 2])->assertOk();
+        $this->assertSame('pendiente', app(GradebookService::class)->report($enrollment)['asignaturas']->first()['anual']['estado']);
+        $this->assertSame('pendiente', $promotion->proposal($this->year->fresh(), $enrollment)['estado']);
+    }
+
+    public function test_manual_annual_visual_uses_category_and_hides_numeric_value(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['num_periodos' => 1, 'siee' => [...SieeConfiguration::DEFAULTS,
+            'modo_asignatura' => 'MANUAL', 'modo_anual' => 'MANUAL',
+            'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $visual = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id,
+            'nivel_educativo' => 'primaria', 'nombre' => 'Categorías', 'tipo' => 'imagenes']);
+        $choice = \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'Avanzado', 'orden' => 1, 'valor_equivalente' => '4', 'emoji' => '🙂', 'aprueba' => true]);
+        \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'En proceso', 'orden' => 2, 'valor_equivalente' => '2', 'emoji' => '😐', 'aprueba' => false]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Único', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31', 'peso' => 100,
+            'estado' => Periodo::ESTADO_CERRADO]);
+        $student = User::create(['name' => 'Estudiante Visual Anual', 'email' => 'visual-annual@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        DB::table('resultados_manuales_materia')->insert([
+            'matricula_id' => $enrollment->id, 'asignacion_id' => $this->assignment->id,
+            'periodo_id' => $period->id, 'valor' => '4', 'estado' => 'vigente',
+            'motivo' => 'Resultado de período documentado', 'version' => 1,
+            'updated_by' => $this->rector->id, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $base = 'http://localhost/api/evaluacion/anuales/manual';
+        $groupToken = OpaqueUrlToken::for('grupo', $this->group->id);
+        $path = $base.'/'.$groupToken.'/'.OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $payload = ['ambito' => 'materia', 'materia_token' => OpaqueUrlToken::for('materia', $this->subject->id),
+            'motivo' => 'Resultado anual documentado', 'version' => 0];
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('annual-visual')->plainTextToken);
+        $this->putJson($path, [...$payload, 'valor' => '4'])->assertUnprocessable();
+        $this->putJson($path, [...$payload, 'valor' => null,
+            'escala_opcion_token' => OpaqueUrlToken::for('escala-opcion', $choice->id)])->assertOk();
+        $this->getJson($base.'?opaque=1&grupo_token='.$groupToken.'&ambito=materia')
+            ->assertOk()->assertJsonPath('data.matriculas.0.resultado.valoracion.nombre', 'Avanzado')
+            ->assertJsonMissingPath('data.matriculas.0.resultado.display_value');
+        $this->assertSame('Avanzado', app(GradebookService::class)->report($enrollment)['asignaturas']->first()['anual']['valoracion']['nombre']);
+    }
+
+    public function test_manual_annual_area_requires_area_period_result_and_rejects_other_group(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'area']);
+        $this->year->update(['num_periodos' => 1, 'siee' => [...SieeConfiguration::DEFAULTS,
+            'usar_areas' => true, 'modo_area' => 'MANUAL', 'modo_anual' => 'MANUAL',
+            'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Único', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31', 'peso' => 100,
+            'estado' => Periodo::ESTADO_CERRADO]);
+        $student = User::create(['name' => 'Estudiante Anual Área', 'email' => 'annual-area@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $base = 'http://localhost/api/evaluacion/anuales/manual';
+        $groupToken = OpaqueUrlToken::for('grupo', $this->group->id);
+        $path = $base.'/'.$groupToken.'/'.OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $payload = ['ambito' => 'area', 'area_token' => OpaqueUrlToken::for('area', $this->subject->area_id),
+            'valor' => '4', 'motivo' => 'Resultado anual de área documentado', 'version' => 0];
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('annual-area-rector')->plainTextToken);
+        $this->putJson($path, $payload)->assertUnprocessable();
+        DB::table('resultados_manuales_area')->insert([
+            'matricula_id' => $enrollment->id, 'area_id' => $this->subject->area_id,
+            'periodo_id' => $period->id, 'valor' => '4', 'estado' => 'vigente',
+            'motivo' => 'Resultado del área documentado', 'version' => 1,
+            'updated_by' => $this->rector->id, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $this->putJson($path, $payload)->assertOk();
+        $report = app(GradebookService::class)->report($enrollment);
+        $this->assertSame('manual', $report['areas'][0]['anual']['origen']);
+        $this->assertSame('4.0', $report['areas'][0]['anual']['display_value']);
+        $this->putJson($path, [...$payload, 'materia_token' => OpaqueUrlToken::for('materia', $this->subject->id)])
+            ->assertUnprocessable();
+        $otherGroup = Grupo::create(['grado_id' => $this->group->grado_id,
+            'ano_lectivo_id' => $this->year->id, 'nombre' => 'B',
+            'jornada_id' => $this->group->jornada_id, 'sede_id' => $this->group->sede_id,
+            'estado' => 'activo']);
+        $wrongPath = str_replace($groupToken, OpaqueUrlToken::for('grupo', $otherGroup->id), $path);
+        $this->putJson($wrongPath, [...$payload, 'version' => 1])->assertNotFound();
+    }
+
+    public function test_manual_area_uses_visual_choices_and_hides_numeric_result(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'area']);
+        $this->year->update(['num_periodos' => 1, 'siee' => [...SieeConfiguration::DEFAULTS,
+            'usar_areas' => true, 'modo_area' => 'MANUAL', 'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $visual = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id,
+            'nivel_educativo' => 'primaria', 'nombre' => 'Caritas', 'tipo' => 'imagenes']);
+        $choice = \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'Avanzado', 'orden' => 1, 'valor_equivalente' => '4', 'emoji' => '🙂', 'aprueba' => true]);
+        \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'En proceso', 'orden' => 2, 'valor_equivalente' => '2', 'emoji' => '😐', 'aprueba' => false]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primero', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31', 'peso' => 100,
+            'estado' => Periodo::ESTADO_ABIERTO]);
+        $student = User::create(['name' => 'Estudiante Visual Área', 'email' => 'visual-area@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $base = 'http://localhost/api/evaluacion/areas/manual';
+        $path = $base.'/'.OpaqueUrlToken::for('grupo', $this->group->id)
+            .'/'.OpaqueUrlToken::for('periodo', $period->id)
+            .'/'.OpaqueUrlToken::for('area', $this->subject->area_id)
+            .'/'.OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $query = $base.'?opaque=1&grupo_token='.OpaqueUrlToken::for('grupo', $this->group->id)
+            .'&periodo_token='.OpaqueUrlToken::for('periodo', $period->id);
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('manual-visual-area')->plainTextToken);
+        $this->putJson($path, ['valor' => '4', 'motivo' => 'Evaluación institucional documentada', 'version' => 0])
+            ->assertUnprocessable();
+        $this->putJson($path, ['valor' => null, 'escala_opcion_token' => OpaqueUrlToken::for('escala-opcion', $choice->id),
+            'motivo' => 'Evaluación institucional documentada', 'version' => 0])
+            ->assertOk();
+        $this->getJson($query)->assertOk()->assertJsonPath('data.matriculas.0.resultado.valoracion.nombre', 'Avanzado')
+            ->assertJsonMissingPath('data.matriculas.0.resultado.display_value');
+    }
+
+    public function test_manual_subject_result_uses_visual_choice_for_visual_group(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS, 'modo_asignatura' => 'MANUAL',
+            'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $visual = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id,
+            'nivel_educativo' => 'primaria', 'nombre' => 'Caritas', 'tipo' => 'imagenes']);
+        $choice = \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'Avanzado', 'orden' => 1, 'valor_equivalente' => '4', 'emoji' => '🙂', 'aprueba' => true]);
+        \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'En proceso', 'orden' => 2, 'valor_equivalente' => '2', 'emoji' => '😐', 'aprueba' => false]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primero', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31', 'peso' => 30,
+            'estado' => Periodo::ESTADO_ABIERTO]);
+        $student = User::create(['name' => 'Estudiante Visual', 'email' => 'visual-manual@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $path = 'http://localhost/api/evaluacion/planillas/'.OpaqueUrlToken::for('asignacion-docente', $this->assignment->id)
+            .'/'.OpaqueUrlToken::for('periodo', $period->id).'/resultados-manuales/'
+            .OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->teacher->createToken('manual-visual')->plainTextToken);
+        $this->putJson($path, ['valor' => '4', 'motivo' => 'Evaluación institucional documentada', 'version' => 0])
+            ->assertUnprocessable();
+        $this->putJson($path, ['valor' => null, 'escala_opcion_token' => OpaqueUrlToken::for('escala-opcion', $choice->id),
+            'motivo' => 'Evaluación institucional documentada', 'version' => 0])
+            ->assertOk()->assertJsonPath('data.resultados.0.valoracion.nombre', 'Avanzado')
+            ->assertJsonMissingPath('data.resultados.0.display_value');
+        $this->assertTrue(\Brick\Math\BigDecimal::of((string) DB::table('resultados_manuales_materia')->value('valor'))->isEqualTo('4'));
+    }
+
+    public function test_manual_component_result_is_versioned_and_used_in_report_without_activities(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS,
+            'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primero', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31', 'peso' => 30,
+            'estado' => Periodo::ESTADO_ABIERTO]);
+        $student = User::create(['name' => 'Estudiante Componente', 'email' => 'manual-component@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $component = ComponenteEvaluacion::create(['asignacion_id' => $this->assignment->id,
+            'periodo_id' => $period->id, 'nombre' => 'Proyecto', 'peso' => 100,
+            'modo' => 'SIMPLE_AVERAGE', 'es_directo' => true, 'version' => 0]);
+        $base = 'http://localhost/api/evaluacion/planillas/'.OpaqueUrlToken::for('asignacion-docente', $this->assignment->id)
+            .'/'.OpaqueUrlToken::for('periodo', $period->id);
+        $componentToken = OpaqueUrlToken::for('componente-evaluacion', $component->id);
+        $path = $base.'/componentes/'.$componentToken.'/resultados-manuales/'
+            .OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('manual-component-config')->plainTextToken);
+        $this->putJson($base.'/actividades', ['operacion' => 'modo', 'componente_token' => $componentToken,
+            'preinforme_token' => null, 'version' => 0, 'modo' => 'MANUAL'])->assertOk();
+        $this->getJson($base.'?opaque=1')->assertOk()
+            ->assertJsonPath('data.resultados.0.secciones.0.manual_version', 0)
+            ->assertJsonPath('data.resultados.0.estado', 'pendiente');
+        $this->putJson($path, ['valor' => '6', 'motivo' => 'Resultado documentado del proyecto', 'version' => 0])
+            ->assertUnprocessable();
+        $this->putJson($path, ['valor' => '4.25', 'motivo' => 'Resultado documentado del proyecto', 'version' => 0])
+            ->assertOk()->assertJsonPath('data.resultados.0.secciones.0.manual_version', 1)
+            ->assertJsonPath('data.resultados.0.estado', 'calculado');
+        $this->assertDatabaseCount('actividades_evaluacion', 0);
+        $this->assertSame('4.2', app(GradebookService::class)->report($enrollment)['asignaturas']->first()['periodos'][0]['display_value']);
+        $this->putJson($path, ['valor' => '3', 'motivo' => 'Corrección del resultado original', 'version' => 0])
+            ->assertStatus(409);
+        $this->putJson($base.'/actividades', ['operacion' => 'modo', 'componente_token' => $componentToken,
+            'preinforme_token' => null, 'version' => 1, 'modo' => 'SIMPLE_AVERAGE'])->assertUnprocessable();
+        $sieePayload = [...$this->year->fresh()->siee, 'modo_asignatura' => 'MANUAL',
+            'escala_token' => OpaqueUrlToken::for('escala-valorativa', $scale->id),
+            'metodo_token' => OpaqueUrlToken::for('metodo-aprobacion', $method->id)];
+        unset($sieePayload['escala_id'], $sieePayload['metodo_id']);
+        $switchRequest = Request::create('/', 'PUT', $sieePayload);
+        $switchRequest->setUserResolver(fn () => $this->rector);
+        try {
+            app(SieeController::class)->update($switchRequest, $this->year->id);
+            $this->fail('El SIEE no puede ocultar resultados manuales de componentes vigentes.');
+        } catch (HttpException $error) {
+            $this->assertSame(422, $error->getStatusCode());
+        }
+        $this->putJson($path, ['valor' => '2', 'motivo' => 'Ajuste justificado del resultado', 'version' => 1])
+            ->assertOk()->assertJsonPath('data.resultados.0.aprobado', false)
+            ->assertJsonPath('data.resultados.0.secciones.0.manual_version', 2);
+        $this->assertContains($enrollment->id, app(GradebookService::class)->failedEnrollmentIds(collect([$enrollment])));
+        $this->putJson($path, ['valor' => null, 'motivo' => 'Se anula el resultado del proyecto', 'version' => 2])
+            ->assertOk()->assertJsonPath('data.resultados.0.estado', 'pendiente')
+            ->assertJsonPath('data.resultados.0.secciones.0.manual_version', 3);
+        $this->putJson($base.'/actividades', ['operacion' => 'modo', 'componente_token' => $componentToken,
+            'preinforme_token' => null, 'version' => 1, 'modo' => 'SIMPLE_AVERAGE'])->assertOk();
+        ActividadEvaluacion::create(['componente_id' => $component->id, 'nombre' => 'Actividad nueva',
+            'fecha' => '2026-02-01', 'version' => 1]);
+        $this->putJson($base.'/actividades', ['operacion' => 'modo', 'componente_token' => $componentToken,
+            'preinforme_token' => null, 'version' => 2, 'modo' => 'MANUAL'])->assertUnprocessable();
+        $period->update(['estado' => Periodo::ESTADO_CERRADO]);
+        $this->putJson($path, ['valor' => '3', 'motivo' => 'Después del cierre del período', 'version' => 3])
+            ->assertUnprocessable();
+    }
+
+    public function test_manual_component_uses_visual_choice_and_rejects_wrong_group_or_unassigned_user(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_simple', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS,
+            'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $visual = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id,
+            'nivel_educativo' => 'primaria', 'nombre' => 'Caritas', 'tipo' => 'imagenes']);
+        $choice = \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'Alcanzado', 'orden' => 1, 'valor_equivalente' => '4', 'emoji' => '🙂', 'aprueba' => true]);
+        \App\Models\Academico\EscalaOpcion::create(['escala_id' => $visual->id,
+            'nombre' => 'En proceso', 'orden' => 2, 'valor_equivalente' => '2', 'emoji' => '😐', 'aprueba' => false]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primero', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31', 'peso' => 30,
+            'estado' => Periodo::ESTADO_ABIERTO]);
+        $student = User::create(['name' => 'Estudiante Visual', 'email' => 'visual-component@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $component = ComponenteEvaluacion::create(['asignacion_id' => $this->assignment->id,
+            'periodo_id' => $period->id, 'nombre' => 'Proyecto', 'peso' => 100,
+            'modo' => 'MANUAL', 'es_directo' => true, 'version' => 1]);
+        $path = 'http://localhost/api/evaluacion/planillas/'
+            .OpaqueUrlToken::for('asignacion-docente', $this->assignment->id).'/'.OpaqueUrlToken::for('periodo', $period->id)
+            .'/componentes/'.OpaqueUrlToken::for('componente-evaluacion', $component->id)
+            .'/resultados-manuales/'.OpaqueUrlToken::for('matricula', $enrollment->id).'?opaque=1';
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->teacher->createToken('manual-component-visual')->plainTextToken);
+        $this->putJson($path, ['valor' => '4', 'motivo' => 'Resultado visual documentado', 'version' => 0])
+            ->assertUnprocessable();
+        $this->putJson($path, ['valor' => null, 'escala_opcion_token' => OpaqueUrlToken::for('escala-opcion', $choice->id),
+            'motivo' => 'Resultado visual documentado', 'version' => 0])
+            ->assertOk()->assertJsonPath('data.resultados.0.secciones.0.valoracion.nombre', 'Alcanzado')
+            ->assertJsonMissingPath('data.resultados.0.secciones.0.display_value');
+        $this->assertDatabaseHas('resultados_manuales_componente', ['componente_id' => $component->id,
+            'matricula_id' => $enrollment->id, 'estado' => 'vigente']);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($student->createToken('manual-component-forbidden')->plainTextToken);
+        $this->putJson($path, ['valor' => null, 'motivo' => 'Intento de estudiante', 'version' => 1])->assertForbidden();
+    }
+
+    public function test_manual_component_combines_with_calculated_component_using_exact_subject_weights(): void
+    {
+        $scale = EscalaValorativa::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Numérica',
+            'tipo' => 'numerica', 'valor_min' => '0', 'valor_max' => '5', 'decimales' => 1]);
+        $method = MetodoAprobacion::create(['ano_lectivo_id' => $this->year->id,
+            'calculo_nota' => 'promedio_ponderado', 'nota_minima' => '3', 'ambito' => 'materia']);
+        $this->year->update(['siee' => [...SieeConfiguration::DEFAULTS, 'modo_asignatura' => 'WEIGHTED_AVERAGE',
+            'escala_id' => $scale->id, 'metodo_id' => $method->id]]);
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'Primero', 'orden' => 1,
+            'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-03-31', 'peso' => 30,
+            'estado' => Periodo::ESTADO_ABIERTO]);
+        $student = User::create(['name' => 'Estudiante Mixto', 'email' => 'mixed-component@test.test',
+            'password' => 'StudentPassword123', 'role' => 'estudiante', 'status' => 'active']);
+        $enrollment = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $manual = ComponenteEvaluacion::create(['asignacion_id' => $this->assignment->id,
+            'periodo_id' => $period->id, 'nombre' => 'Proyecto', 'peso' => 50,
+            'modo' => 'MANUAL', 'es_directo' => false, 'version' => 1]);
+        $calculated = ComponenteEvaluacion::create(['asignacion_id' => $this->assignment->id,
+            'periodo_id' => $period->id, 'nombre' => 'Trabajo', 'peso' => 50,
+            'modo' => 'SIMPLE_AVERAGE', 'es_directo' => false, 'version' => 1]);
+        $activity = ActividadEvaluacion::create(['componente_id' => $calculated->id,
+            'nombre' => 'Actividad', 'fecha' => '2026-02-01', 'version' => 1]);
+        Calificacion::create(['actividad_id' => $activity->id, 'matricula_id' => $enrollment->id,
+            'valor' => '2', 'updated_by' => $this->teacher->id, 'version' => 1]);
+        DB::table('resultados_manuales_componente')->insert(['componente_id' => $manual->id,
+            'matricula_id' => $enrollment->id, 'valor' => '4', 'estado' => 'vigente',
+            'motivo' => 'Evaluación documentada del proyecto', 'version' => 1,
+            'updated_by' => $this->teacher->id, 'created_at' => now(), 'updated_at' => now()]);
+        $result = app(GradebookService::class)->subjectResult($this->assignment, $enrollment, $period,
+            app(SieeConfiguration::class)->resolve($this->year->fresh()));
+        $this->assertSame('calculado', $result['estado']);
+        $this->assertSame('3.0', $result['display_value']);
+        $this->assertSame('3.0', app(GradebookService::class)->report($enrollment)['asignaturas']->first()['periodos'][0]['display_value']);
     }
 
     public function test_historical_siee_uses_one_decimal_half_down_without_changing_original_configuration(): void
@@ -2484,6 +3077,22 @@ class AcademicModulesTest extends TestCase
         $this->assertNull($target->fresh()->siee);
     }
 
+    public function test_structure_rejects_retired_terminal_grade_marker(): void
+    {
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.estructura.gestionar', 'web'));
+        $path = 'http://localhost/api/estructura/grados/'
+            .OpaqueUrlToken::for('grado', $this->group->grado_id).'?opaque=1';
+        $payload = ['ano_lectivo_token' => OpaqueUrlToken::for('ano-lectivo', $this->year->id),
+            'es_terminal' => true];
+
+        $this->withHeader('X-Tenant', $this->school->id)
+            ->withToken($this->rector->createToken('terminal-grade-manager')->plainTextToken);
+        $this->putJson($path, $payload)->assertUnprocessable();
+        $this->getJson($path)->assertOk()->assertJsonMissingPath('data.es_terminal');
+        $this->assertFalse(\Illuminate\Support\Facades\Schema::hasColumn('grados', 'es_terminal'));
+    }
+
     public function test_periods_are_optional_on_duplication_and_can_be_copied_later(): void
     {
         Periodo::create([
@@ -2682,7 +3291,8 @@ class AcademicModulesTest extends TestCase
         foreach ([
             'academico.anos.transicionar', 'academico.periodos.transicionar',
             'notas.planilla.configurar', 'notas.actividades.crear', 'notas.actividades.editar', 'notas.actividades.eliminar',
-            'notas.ver_consolidado_todos', 'notas.editar_no_dicta',
+            'notas.ver_consolidado_todos', 'notas.editar_no_dicta', 'notas.resultados_area.gestionar',
+            'notas.resultados_anuales.gestionar',
             'academico.matriculas.gestionar', 'eventos.gestionar', 'eventos.configurar',
             'eventos.publicar_institucional', 'eventos.publicar_asignados',
         ] as $permission) {
@@ -4340,6 +4950,20 @@ class AcademicModulesTest extends TestCase
             $this->fail('Un docente no debe aprobar la promoción.');
         } catch (HttpException $error) {
             $this->assertSame(403, $error->getStatusCode());
+        }
+        try {
+            $service->approve($this->rector, $this->year, $enrollment, $proposal['huella'],
+                'reprobado', null, 'Resultado diferente por decisión de consejo', 0);
+            $this->fail('La revisión no puede cambiar el resultado calculado por votación o consenso.');
+        } catch (HttpException $error) {
+            $this->assertSame(422, $error->getStatusCode());
+        }
+        try {
+            $service->approve($this->rector, $this->year, $enrollment, $proposal['huella'],
+                'egresado', null, 'Intento de usar salida institucional como resultado académico', 0);
+            $this->fail('Egresado no es un resultado de promoción académica.');
+        } catch (HttpException $error) {
+            $this->assertSame(422, $error->getStatusCode());
         }
         $decision = $service->approve($this->rector, $this->year, $enrollment, $proposal['huella'],
             'promovido', $target, 'Resultados anuales revisados', 0);

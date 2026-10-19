@@ -32,6 +32,18 @@ final class AcademicPlanAccess
         abort_unless($this->aula(), 403, 'El plan del colegio no incluye Aula.');
     }
 
+    public function customBulletins(): bool
+    {
+        $planKey = tenant()?->fresh()?->plan;
+
+        return $planKey && in_array('boletines_personalizables', Plan::where('key', $planKey)->value('features') ?? [], true);
+    }
+
+    public function requireCustomBulletins(): void
+    {
+        abort_unless($this->customBulletins(), 403, 'El plan del colegio no incluye edición de plantillas de boletín.');
+    }
+
     public function aulaColors(): bool
     {
         $planKey = tenant()?->fresh()?->plan;

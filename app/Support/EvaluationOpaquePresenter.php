@@ -172,6 +172,12 @@ final class EvaluationOpaquePresenter
                 'periodos' => array_map(fn ($item) => self::resultWithPeriod($item, $visual), $area['periodos']),
                 'anual' => self::result($area['anual'], $visual),
             ])->all(),
+            'indicadores' => collect($report['indicadores'] ?? [])->map(fn ($item) => [
+                'periodo_token' => self::token('periodo', $item['periodo_id']),
+                'materia_token' => self::token('materia', $item['materia_id']),
+                'materia' => $item['materia'], 'area_token' => self::token('area', $item['area_id']),
+                'periodo' => $item['periodo'], 'texto' => $item['texto'],
+            ])->all(),
             'advertencias' => $report['advertencias'],
         ];
 
