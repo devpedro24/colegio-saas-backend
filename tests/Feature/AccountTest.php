@@ -90,6 +90,13 @@ class AccountTest extends TestCase
 
         $this->assertSame('nuevo@plataforma.test', $user->fresh()->email);
         $this->assertNull($user->fresh()->email_verified_at);
+
+        $longEmail = str_repeat('docente.', 7).'docente@plataforma.test';
+        $this->assertGreaterThan(50, strlen($longEmail));
+        $this->withToken($token)->postJson('/api/account/email', [
+            'email' => $longEmail,
+            'password' => self::PASSWORD,
+        ])->assertOk()->assertJsonPath('user.email', $longEmail);
     }
 
     public function test_cambiar_contrasena_verifica_actual_y_politica(): void
