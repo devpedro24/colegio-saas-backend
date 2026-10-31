@@ -342,7 +342,7 @@ class EvaluacionController extends Controller
                 'Hay resultados manuales vigentes. Anúlalos antes de cambiar este componente.');
             abort_if(ComponenteEvaluacion::where('asignacion_id', $assignment->id)->where('periodo_id', $data['periodo_id'])->where('nombre', $data['nombre'])->when($id, fn ($q) => $q->where('id', '!=', $id))->exists(), 422, 'Ya existe un componente con ese nombre.');
             $previous = $component->exists ? $component->toArray() : null;
-            $component->fill($data)->save();
+            $component->fill([...$data, 'version' => ($component->version ?? 0) + 1])->save();
             AuditLogger::tenant($request->user(), $previous ? 'UPDATE' : 'CREATE', 'componente_evaluacion', (string) $component->id, $previous, $component->toArray());
 
             return $component;
@@ -369,13 +369,16 @@ class EvaluacionController extends Controller
         $this->book->authorizeAssignment($request->user(), $component->asignacion, write: true);
         $activity = DB::transaction(function () use ($data, $component, $request, $id) {
             $period = $this->book->writable($component->asignacion, $component->periodo_id);
+            $component->refresh();
             abort_if($component->modo === 'MANUAL', 422, 'Un componente manual no admite actividades.');
             abort_if($period->configuracion_notas !== null || $component->es_directo, 422, 'Gestiona esta actividad desde la planilla actualizada.');
             abort_if($data['fecha'] < $period->fecha_inicio->toDateString() || $data['fecha'] > $period->fecha_fin->toDateString(), 422, 'La actividad debe estar dentro de las fechas del período.');
-            $activity = $id ? ActividadEvaluacion::where('componente_id', $component->id)->findOrFail($id) : new ActividadEvaluacion;
-            app(FlexibleGradingService::class)->assertActivityWeight($component, $data['peso'] ?? null, $activity->exists ? $activity->id : null);
+            $activity = $id ? ActividadEvaluacion::where('componente_id', $component->id)->lockForUpdate()->findOrFail($id) : new ActividadEvaluacion;
+            $sheets = app(FlexibleGradingService::class);
+            $data['peso'] = $sheets->activityWeight($component, $data['peso'] ?? null, $activity);
+            $sheets->assertActivityWeight($component, $data['peso'], $activity->exists ? $activity->id : null);
             $previous = $activity->exists ? $activity->toArray() : null;
-            $activity->fill($data)->save();
+            $activity->fill([...$data, 'version' => ($activity->version ?? 0) + 1])->save();
             AuditLogger::tenant($request->user(), $previous ? 'UPDATE' : 'CREATE', 'actividad_evaluacion', (string) $activity->id, $previous, $activity->toArray());
 
             return $activity;

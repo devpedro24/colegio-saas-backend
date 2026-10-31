@@ -70,6 +70,26 @@ class GradeCalculationServiceTest extends TestCase
         (new GradeCalculationService)->evaluate($this->weighted(['4', '3'], ['33.33', '33.33']));
     }
 
+    public function test_reported_decimal_pairs_are_exact_in_weighted_and_simple_modes(): void
+    {
+        $service = new GradeCalculationService;
+        $config = ['nota_minima' => '3', 'decimales' => 1, 'precision_calculo' => 8, 'redondeo' => 'HALF_DOWN'];
+        foreach ([
+            [['3.4', '3.3'], [20, 80], '3.32000000', '83/25', '3.3', '3.35000000', '67/20', '3.3'],
+            [['3.8', '4.1'], ['90', '10'], '3.83000000', '383/100', '3.8', '3.95000000', '79/20', '3.9'],
+        ] as [$values, $weights, $raw, $exact, $display, $simpleRaw, $simpleExact, $simpleDisplay]) {
+            $node = $this->weighted($values, $weights);
+            $result = $service->result($node, $config);
+            $this->assertSame($raw, $result['raw_value']);
+            $this->assertSame($exact, $result['exact_value']);
+            $this->assertSame($display, $result['display_value']);
+            $simple = $service->result([...$node, 'mode' => 'SIMPLE_AVERAGE'], $config);
+            $this->assertSame($simpleRaw, $simple['raw_value']);
+            $this->assertSame($simpleExact, $simple['exact_value']);
+            $this->assertSame($simpleDisplay, $simple['display_value']);
+        }
+    }
+
     public function test_missing_weight_is_rejected_even_if_other_weights_total_one_hundred(): void
     {
         $this->expectException(ValidationException::class);

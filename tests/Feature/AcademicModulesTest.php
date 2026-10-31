@@ -97,6 +97,7 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\AcademicIndicatorTests;
 use Tests\Support\AcademicWorkflowTests;
 use Tests\Support\AcademicYearJourneyTests;
+use Tests\Support\ActivityBatchTests;
 use Tests\Support\AttendanceCorrectionTests;
 use Tests\Support\BulletinIssueTests;
 use Tests\Support\BulletinObservationBatchTests;
@@ -115,6 +116,7 @@ class AcademicModulesTest extends TestCase
     use AcademicIndicatorTests;
     use AcademicWorkflowTests;
     use AcademicYearJourneyTests;
+    use ActivityBatchTests;
     use AttendanceCorrectionTests;
     use BulletinIssueTests;
     use BulletinObservationBatchTests;

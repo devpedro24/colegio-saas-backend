@@ -125,7 +125,11 @@ trait GradePreviewTests
             'nombre' => 'A', 'fecha' => '2026-02-05', 'version' => 2, 'peso' => '33.3333'])->assertOk();
         $this->putJson($path.'/actividades', [...$selector, 'operacion' => 'modo', 'modo' => 'SIMPLE_AVERAGE', 'version' => 1])->assertOk();
         $this->assertSame(['SIMPLE_AVERAGE'], ComponenteEvaluacion::pluck('modo')->unique()->all());
-        $this->assertSame(0, ActividadEvaluacion::whereNotNull('peso')->count());
+        $this->assertSame(['33.3333', '33.3333', '33.3334'], $component->actividades()->pluck('peso')->all());
+        $this->assertSame(['20', '80'], $other->actividades()->pluck('peso')->all());
+        $this->putJson($path.'/actividades', [...$selector, 'operacion' => 'modo', 'modo' => 'WEIGHTED_AVERAGE', 'version' => 2])->assertOk();
+        $this->assertSame(['33.3333', '33.3333', '33.3334'], $component->actividades()->pluck('peso')->all());
+        $this->assertSame(['20', '80'], $other->actividades()->pluck('peso')->all());
         $this->assertDatabaseHas('audit_logs', ['recurso' => 'componente_evaluacion', 'accion' => 'UPDATE']);
     }
 

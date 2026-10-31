@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Models\Academico\ActividadEvaluacion;
 use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\Preinforme;
 use App\Models\User;
+use App\Support\AcademicDecimal;
 use App\Support\Audit\AuditLogger;
 use App\Support\EvaluationOpaquePresenter as Presenter;
 use App\Support\OpaqueUrlToken;
@@ -18,16 +20,38 @@ use Illuminate\Support\Collection;
 
 final class FlexibleGradingService
 {
+    /** Null/omitted weights in simple mode must not erase a saved percentage. */
+    public function activityWeight(ComponenteEvaluacion $component, mixed $weight, ?ActividadEvaluacion $activity = null): ?string
+    {
+        return AcademicDecimal::normalize($component->modo === 'SIMPLE_AVERAGE' && $weight === null ? $activity?->peso : $weight);
+    }
+
     public function assertActivityWeight(ComponenteEvaluacion $component, mixed $weight, ?int $except = null): void
     {
-        if ($component->modo !== 'WEIGHTED_AVERAGE') {
-            return;
-        }
-        abort_if($weight === null || BigDecimal::of((string) $weight)->isLessThanOrEqualTo(0), 422,
+        $weights = $component->actividades()->when($except, fn ($q) => $q->where('id', '!=', $except))->pluck('peso')->all();
+        // Other unconfigured activities may remain pending after a mode change.
+        abort_if($component->modo === 'WEIGHTED_AVERAGE' && $weight === null, 422,
             'Cada actividad ponderada necesita un porcentaje mayor que cero.');
-        $sum = $component->actividades()->when($except, fn ($q) => $q->where('id', '!=', $except))->pluck('peso')
-            ->reduce(fn ($sum, $value) => $sum->plus((string) ($value ?? 0)), BigDecimal::zero());
-        abort_if($sum->plus((string) $weight)->isGreaterThan(100), 422,
+        $this->assertActivityWeights([...$weights, $weight], allowZero: $component->modo === 'SIMPLE_AVERAGE');
+    }
+
+    /** Partial totals are allowed for drafts; the calculation engine still requires exactly 100. */
+    public function assertActivityWeights(array $weights, bool $requireAll = false, bool $allowZero = false): void
+    {
+        $sum = BigDecimal::zero();
+        foreach ($weights as $weight) {
+            abort_if($requireAll && $weight === null, 422, 'Cada actividad ponderada necesita un porcentaje mayor que cero.');
+            if ($weight === null) {
+                continue;
+            }
+            $decimal = BigDecimal::of((string) $weight);
+            abort_if(! $allowZero && $decimal->isZero(), 422,
+                'Hay actividades con porcentaje cero. Corrige sus pesos en promedio simple antes de activar o guardar el promedio ponderado.');
+            abort_if($decimal->isLessThan(0) || $decimal->isGreaterThan(100), 422,
+                'Cada porcentaje de actividad debe ser mayor que cero y no superar el 100 %.');
+            $sum = $sum->plus($decimal);
+        }
+        abort_if($sum->isGreaterThan(100), 422,
             'Los porcentajes de las actividades de este preinforme no pueden superar el 100 %.');
     }
 
@@ -48,15 +72,21 @@ final class FlexibleGradingService
                 continue;
             }
             $before = $component->toArray();
-            $activities = $component->actividades()->get();
-            // Converting a simple average starts with equal percentages; preserve
-            // already weighted siblings. The final remainder makes the sum exact.
-            $equal = $activities->isEmpty() ? null : BigDecimal::of(100)->dividedBy($activities->count(), 4, RoundingMode::Down);
+            $activities = $component->actividades()->orderBy('id')->lockForUpdate()->get();
+            // Only a section without saved percentages gets an initial equal split.
+            // Added/unconfigured activities stay pending; never rescale custom weights.
+            $initialize = $mode === 'WEIGHTED_AVERAGE' && $activities->isNotEmpty()
+                && $activities->every(fn ($activity) => $activity->peso === null);
+            if ($mode === 'WEIGHTED_AVERAGE') {
+                $this->assertActivityWeights($activities->pluck('peso')->all());
+            }
+            $equal = $initialize ? BigDecimal::of(100)->dividedBy($activities->count(), 4, RoundingMode::Down) : null;
             $remaining = BigDecimal::of(100);
             foreach ($activities as $index => $activity) {
                 $previous = $activity->toArray();
-                $weight = $mode === 'WEIGHTED_AVERAGE' ? ($index === $activities->count() - 1 ? $remaining : $equal) : null;
-                if ($weight !== null) {
+                $weight = $activity->peso;
+                if ($initialize) {
+                    $weight = $index === $activities->count() - 1 ? $remaining : $equal;
                     $remaining = $remaining->minus($weight);
                 }
                 $activity->update(['peso' => $weight === null ? null : (string) $weight, 'version' => $activity->version + 1]);
