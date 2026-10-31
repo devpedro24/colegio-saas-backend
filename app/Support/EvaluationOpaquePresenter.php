@@ -10,8 +10,8 @@ use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\Calificacion;
 use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\Grupo;
-use App\Models\Academico\Matricula;
 use App\Models\Academico\Materia;
+use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\User;
 
@@ -124,6 +124,7 @@ final class EvaluationOpaquePresenter
             if (isset($result['resultado_original']) && is_array($result['resultado_original'])) {
                 $result['resultado_original'] = self::result($result['resultado_original'], true);
             }
+
             return $result;
         }
         // Preserve the engine's rounding and exact arithmetic; only remove
@@ -177,6 +178,7 @@ final class EvaluationOpaquePresenter
                 'materia_token' => self::token('materia', $item['materia_id']),
                 'materia' => $item['materia'], 'area_token' => self::token('area', $item['area_id']),
                 'periodo' => $item['periodo'], 'texto' => $item['texto'],
+                'texto_html' => $item['texto_html'] ?? null,
             ])->all(),
             'advertencias' => $report['advertencias'],
         ];

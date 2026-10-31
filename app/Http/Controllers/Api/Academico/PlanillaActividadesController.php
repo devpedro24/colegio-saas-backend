@@ -6,11 +6,13 @@ namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
 use App\Models\Academico\ActividadEvaluacion;
+use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\Calificacion;
 use App\Models\Academico\Preinforme;
 use App\Services\FlexibleGradingService;
 use App\Services\GradebookService;
+use App\Services\SieeConfiguration;
 use App\Support\AcademicDecimal;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
@@ -46,8 +48,8 @@ final class PlanillaActividadesController extends Controller
             $component = $sheets->section($assignment, $period, $data);
             if ($data['operacion'] === 'modo') {
                 if ($data['modo'] === 'MANUAL') {
-                    $config = app(\App\Services\SieeConfiguration::class)->resolve(
-                        \App\Models\Academico\AnoLectivo::findOrFail($assignment->ano_lectivo_id));
+                    $config = app(SieeConfiguration::class)->resolve(
+                        AnoLectivo::findOrFail($assignment->ano_lectivo_id));
                     abort_if($config['modo_asignatura'] === 'MANUAL', 422,
                         'La definitiva de materia ya es manual; no se usa el cálculo de componentes.');
                 }
@@ -61,9 +63,7 @@ final class PlanillaActividadesController extends Controller
                         ->where('estado', 'vigente')->exists(), 422,
                         'Hay resultados manuales vigentes. Anúlalos justificadamente antes de cambiar el modo.');
                 }
-                $before = $component->toArray();
-                $component->update(['modo' => $data['modo'], 'version' => $component->version + 1]);
-                AuditLogger::tenant($request->user(), 'UPDATE', 'componente_evaluacion', (string) $component->id, $before, $component->toArray());
+                $sheets->changeMode($component, $period, $data['modo'], $request->user());
 
                 return;
             }
@@ -83,6 +83,7 @@ final class PlanillaActividadesController extends Controller
             abort_if($component->modo === 'MANUAL', 422,
                 'Este componente usa un resultado manual y no admite actividades.');
             abort_if($component->modo === 'WEIGHTED_AVERAGE' && ! isset($data['peso']), 422, 'Indica el porcentaje de esta actividad.');
+            $sheets->assertActivityWeight($component, $data['peso'] ?? null, $activity->exists ? $activity->id : null);
             abort_if($data['fecha'] < $period->fecha_inicio->toDateString() || $data['fecha'] > $period->fecha_fin->toDateString(), 422, 'La actividad debe estar dentro de las fechas del período.');
             if ($component->preinforme_id && ($period->configuracion_notas['fechas_estrictas'] ?? false)) {
                 $pre = Preinforme::findOrFail($component->preinforme_id);

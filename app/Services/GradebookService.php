@@ -8,16 +8,19 @@ use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\Calificacion;
 use App\Models\Academico\ComponenteEvaluacion;
+use App\Models\Academico\Grupo;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\MetodoAprobacion;
 use App\Models\Academico\Periodo;
+use App\Models\Academico\Preinforme;
 use App\Models\Academico\RecuperacionAcademica;
-use App\Models\Academico\Grupo;
 use App\Models\User;
+use App\Support\AcademicDecimal;
 use App\Support\Audit\AuditLogger;
+use App\Support\OpaqueUrlToken;
 use Brick\Math\BigDecimal;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 final class GradebookService
@@ -32,6 +35,30 @@ final class GradebookService
         return $user->can('academico.matriculas.gestionar');
     }
 
+    public function canReadAssignedReport(User $user, Matricula $enrollment): bool
+    {
+        return $this->canReadGroupReport($user, $enrollment->grupo_id, $enrollment->ano_lectivo_id);
+    }
+
+    public function canReadGroupReport(User $user, int $groupId, int $yearId): bool
+    {
+        if (! $user->can('boletines.grupo.ver')) {
+            return false;
+        }
+
+        return AsignacionDocente::where('docente_id', $user->id)
+            ->where('grupo_id', $groupId)
+            ->where('ano_lectivo_id', $yearId)
+            ->whereNull('deleted_at')->exists()
+            || DB::table('directores_grupo as director')
+                ->join('grupos as grupo', 'grupo.id', '=', 'director.grupo_id')
+                ->where('director.docente_id', $user->id)
+                ->where('grupo.id', $groupId)
+                ->where('grupo.ano_lectivo_id', $yearId)
+                ->where('grupo.estado', Grupo::ESTADO_ACTIVO)
+                ->whereNull('grupo.deleted_at')->exists();
+    }
+
     public function requiresReason(User $actor, AsignacionDocente $assignment): bool
     {
         // El docente asignado registra notas ordinarias sin justificar cada lote.
@@ -41,8 +68,11 @@ final class GradebookService
 
     public function provisionalFromResult(array $result, array $config): ?string
     {
-        if (($result['estado'] ?? null) === 'calculado') return null;
-        return isset($result['trace']) ? \App\Support\AcademicDecimal::normalize(
+        if (($result['estado'] ?? null) === 'calculado') {
+            return null;
+        }
+
+        return isset($result['trace']) ? AcademicDecimal::normalize(
             app(GradeCalculationService::class)->provisional($result['trace'], $config)) : null;
     }
 
@@ -74,10 +104,12 @@ final class GradebookService
             $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));
             abort_if($config['modo_asignatura'] === 'MANUAL',
                 422, 'Esta asignatura usa una definitiva manual; registra el resultado en la columna de definitiva.');
-            if ($period->configuracion_notas['usar_preinformes'] ?? false) app(AcademicPlanAccess::class)->requirePreinformes();
+            if ($period->configuracion_notas['usar_preinformes'] ?? false) {
+                app(AcademicPlanAccess::class)->requirePreinformes();
+            }
             $visualScale = app(EscalaVisualService::class)->forGroup(Grupo::findOrFail($assignment->grupo_id));
             $visualChoices = $visualScale?->opciones->mapWithKeys(fn ($choice) => [
-                \App\Support\OpaqueUrlToken::for('escala-opcion', $choice->id) => $choice,
+                OpaqueUrlToken::for('escala-opcion', $choice->id) => $choice,
             ]);
             $activities = DB::table('actividades_evaluacion as a')->join('componentes_evaluacion as c', 'c.id', '=', 'a.componente_id')
                 ->where('c.asignacion_id', $assignment->id)->where('c.periodo_id', $periodId)->pluck('a.id')->all();
@@ -120,6 +152,44 @@ final class GradebookService
     }
 
     /** Ninguna nota pendiente se convierte en cero. Los derivados se calculan bajo demanda. */
+    public function previewGrades(User $actor, AsignacionDocente $assignment, Collection $grades, Collection $components,
+        Collection $enrollments, array $rows, array $config, ?object $visualScale): Collection
+    {
+        $this->authorizeAssignment($actor, $assignment, write: true);
+        abort_if($config['modo_asignatura'] === 'MANUAL', 422, 'Esta asignatura usa una definitiva manual.');
+        $activities = $components->flatMap(fn ($component) => $component->actividades)
+            ->mapWithKeys(fn ($activity) => [$activity->id => $components->firstWhere('id', $activity->componente_id)->modo]);
+        $choices = $visualScale?->opciones->keyBy(fn ($choice) => OpaqueUrlToken::for('escala-opcion', $choice->id));
+        $preview = $grades->keyBy(fn ($grade) => $grade->actividad_id.':'.$grade->matricula_id);
+        $seen = [];
+        foreach ($rows as $row) {
+            $key = $row['actividad_id'].':'.$row['matricula_id'];
+            abort_if(isset($seen[$key]), 422, 'La misma nota aparece más de una vez.');
+            $seen[$key] = true;
+            abort_unless($activities->has($row['actividad_id']) && $enrollments->contains('id', $row['matricula_id']), 404);
+            abort_if($activities->get($row['actividad_id']) === 'MANUAL', 422, 'Este componente usa resultado manual.');
+            $current = $preview->get($key);
+            abort_unless(($current?->version ?? 0) === $row['version'], 409, 'La nota cambió. Revisa la planilla antes de guardar.');
+            $choiceToken = $row['escala_opcion_token'] ?? null;
+            $choice = $choiceToken ? $choices?->get($choiceToken) : null;
+            abort_if($visualScale ? $row['valor'] !== null || ($choiceToken && ! $choice) : (bool) $choiceToken, 422,
+                'Usa la escala de calificación configurada para el grupo.');
+            $value = $visualScale ? $choice?->valor_equivalente : $row['valor'];
+            if ($value !== null) {
+                abort_if(BigDecimal::of((string) $value)->isLessThan($config['valor_min'])
+                    || BigDecimal::of((string) $value)->isGreaterThan($config['valor_max']), 422, 'La nota está fuera de la escala configurada.');
+            }
+            // Detached models only: preview never saves, audits or broadcasts an academic change.
+            $grade = $current ? clone $current : new Calificacion(['actividad_id' => $row['actividad_id'], 'matricula_id' => $row['matricula_id']]);
+            $grade->valor = $value;
+            $grade->escala_opcion_id = $choice?->id;
+            $grade->version = $current?->version ?? 0;
+            $preview->put($key, $grade);
+        }
+
+        return $preview->values();
+    }
+
     public function subjectResult(AsignacionDocente $assignment, Matricula $enrollment, Periodo $period, array $config): array
     {
         if ($config['modo_asignatura'] === 'MANUAL') {
@@ -139,8 +209,9 @@ final class GradebookService
     {
         $config['_periodo'] = $period->configuracion_notas;
         if ($period->configuracion_notas['usar_preinformes'] ?? false) {
-            $config['_preinformes'] = \App\Models\Academico\Preinforme::where('periodo_id', $period->id)->orderBy('orden')->get();
+            $config['_preinformes'] = Preinforme::where('periodo_id', $period->id)->orderBy('orden')->get();
         }
+
         return $config;
     }
 
@@ -153,14 +224,17 @@ final class GradebookService
         if ($config['_periodo']['usar_preinformes'] ?? false) {
             $inputs = $config['_preinformes']->map(function ($pre) use ($components, $grades, $componentManuals) {
                 $component = $components->firstWhere('preinforme_id', $pre->id);
+
                 return ['reference' => 'preinforme:'.$pre->id, 'label' => $pre->nombre, 'weight' => $pre->peso,
                     'node' => $component ? $this->componentNode($component, $grades, $componentManuals) :
                         ['mode' => 'SIMPLE_AVERAGE', 'inputs' => []]];
             })->all();
+
             return $this->calculate(['mode' => $config['_periodo']['modo'], 'inputs' => $inputs], $config);
         }
         if ($components->count() === 1 && $components->first()->es_directo) {
             $component = $components->first();
+
             return $this->calculate($this->componentNode($component, $grades, $componentManuals), $config);
         }
         $inputs = $components->map(fn ($component) => [
@@ -176,6 +250,7 @@ final class GradebookService
     {
         if ($component->modo === 'MANUAL') {
             $manual = $manuals?->get($component->id);
+
             return ['mode' => 'MANUAL', 'manual' => $manual?->estado === 'vigente' ? $manual->valor : null];
         }
 
@@ -188,6 +263,7 @@ final class GradebookService
     public function componentResult(ComponenteEvaluacion $component, Collection $grades, array $config, ?object $manual): array
     {
         $result = $this->calculate($this->componentNode($component, $grades, collect([$component->id => $manual])), $config);
+
         return $component->modo === 'MANUAL' ? [...$result, 'origen' => 'manual',
             'manual_version' => (int) ($manual->version ?? 0)] : $result;
     }
@@ -195,7 +271,10 @@ final class GradebookService
     /** Consulta agrupada: nunca una lectura por estudiante en boletines o planillas. */
     public function componentManuals(array $componentIds, Collection $enrollmentIds): Collection
     {
-        if ($componentIds === [] || $enrollmentIds->isEmpty()) return collect();
+        if ($componentIds === [] || $enrollmentIds->isEmpty()) {
+            return collect();
+        }
+
         return DB::table('resultados_manuales_componente')->whereIn('componente_id', $componentIds)
             ->whereIn('matricula_id', $enrollmentIds)->get()
             ->groupBy('matricula_id')->map(fn (Collection $rows) => $rows->keyBy('componente_id'));
@@ -323,7 +402,7 @@ final class GradebookService
 
         $report = ['tipo' => 'VISTA_PREVIA', 'generado_en' => now()->toIso8601String(), 'institucion' => tenant('name'),
             'estudiante' => $enrollment->estudiante->only('id', 'name'), 'grupo' => $enrollment->grupo->nombre, 'grado' => $enrollment->grupo->grado->nombre,
-            'ano' => $year->nombre, 'configuracion' => $config, 'periodos' => $periods->map->only(['id', 'nombre', 'peso', 'estado']),
+            'ano' => $year->nombre, 'configuracion' => $config, 'periodos' => $periods->map->only(['id', 'nombre', 'orden', 'peso', 'estado']),
             'periodo_sumatorio' => $year->periodo_sumatorio ? ['orden' => $year->num_periodos + 1, 'nombre' => 'P'.($year->num_periodos + 1), 'modo' => $config['modo_anual']] : null,
             'asignaturas' => $rows->values(), 'areas' => $areas,
             'indicadores' => app(IndicatorBulletinService::class)->forEnrollment($enrollment, $periods, $rows->values()),
@@ -367,7 +446,9 @@ final class GradebookService
             if ($config['modo_anual'] === 'MANUAL' && $method?->ambito === MetodoAprobacion::AMBITO_AREA
                 && $config['modo_area'] !== 'MANUAL') {
                 foreach ($annualManuals as $key => $manual) {
-                    if ($manual->area_id === null || $manual->estado !== 'vigente' || $manual->valor === null) continue;
+                    if ($manual->area_id === null || $manual->estado !== 'vigente' || $manual->valor === null) {
+                        continue;
+                    }
                     $result = $this->calculate(['mode' => 'MANUAL', 'manual' => (string) $manual->valor], $config);
                     if ($result['estado'] === 'calculado' && ! $result['aprobado']) {
                         $failed[$manual->matricula_id] = true;
@@ -399,6 +480,7 @@ final class GradebookService
                         }
                     }
                 }
+
                 continue;
             }
             $assignments = AsignacionDocente::where('ano_lectivo_id', $year->id)
@@ -508,6 +590,6 @@ final class GradebookService
             'origen' => 'recuperacion', 'resultado_original' => $original,
             'nota_recuperacion' => $recovery->nota_recuperacion,
             'politica_recuperacion' => $recovery->politica,
-            'recuperacion_token' => \App\Support\OpaqueUrlToken::for('recuperacion-academica', $recovery->id)];
+            'recuperacion_token' => OpaqueUrlToken::for('recuperacion-academica', $recovery->id)];
     }
 }

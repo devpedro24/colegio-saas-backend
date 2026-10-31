@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Http\Controllers\Api\Academico\EscalaOpcionController;
+use App\Models\Academico\EscalaOpcion;
 use App\Models\Academico\EscalaValorativa;
 use App\Models\Academico\Grupo;
 use Brick\Math\BigRational;
@@ -38,7 +39,8 @@ final class EscalaVisualService
         if ($exact !== null) {
             $choice = $this->nearestChoice((string) $exact, $options);
             $result['valoracion'] = EscalaOpcionController::present($choice);
-            $result['aprobado'] = $choice->aprueba;
+            // La categoría describe el resultado; la aprobación ya fue resuelta
+            // por el motor con la nota mínima y el redondeo del SIEE.
         }
         if ($provisional !== null) {
             $result['valoracion_provisional'] = EscalaOpcionController::present($this->nearestChoice($provisional, $options));
@@ -47,7 +49,7 @@ final class EscalaVisualService
         return $result;
     }
 
-    public function nearestChoice(string $value, Collection $options): \App\Models\Academico\EscalaOpcion
+    public function nearestChoice(string $value, Collection $options): EscalaOpcion
     {
         // El motor conserva resultados exactos como fracciones (p. ej. 13/4).
         // Convertirlos a decimal aquí puede fallar o cambiar un empate.

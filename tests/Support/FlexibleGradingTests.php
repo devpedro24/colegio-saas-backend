@@ -8,11 +8,15 @@ use App\Http\Middleware\EnsureOnboardingComplete;
 use App\Models\Academico\ActividadEvaluacion;
 use App\Models\Academico\Calificacion;
 use App\Models\Academico\ComponenteEvaluacion;
+use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\Preinforme;
 use App\Models\Plan;
+use App\Models\Tenant;
+use App\Models\User;
 use App\Services\DuplicarAnoLectivoService;
 use App\Services\GradebookService;
+use App\Services\SieeConfiguration;
 use App\Support\OpaqueUrlToken;
 use Spatie\Permission\Models\Permission;
 
@@ -78,9 +82,9 @@ trait FlexibleGradingTests
         [$period, $enrollment, $path] = $this->flexibleFixture();
         $enrollment->estudiante->update(['name' => 'Mariana Rodríguez Peña']);
         foreach (['Andrés Andrade Ortiz', 'Sofía Andrade Anzuate'] as $index => $name) {
-            $student = \App\Models\User::create(['name' => $name, 'email' => 'roster'.$index.'@test.test',
+            $student = User::create(['name' => $name, 'email' => 'roster'.$index.'@test.test',
                 'password' => 'Student123456', 'role' => 'estudiante', 'status' => 'active']);
-            \App\Models\Academico\Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
                 'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
         }
         foreach (['Quiz', 'Taller'] as $name) {
@@ -102,7 +106,7 @@ trait FlexibleGradingTests
         $this->assertSame('pendiente', $graded['estado']);
         $this->assertSame('4.5', $graded['provisional']);
         $this->assertSame('pendiente', app(GradebookService::class)->subjectResult($this->assignment, $enrollment, $period,
-            app(\App\Services\SieeConfiguration::class)->resolve($this->year))['estado']);
+            app(SieeConfiguration::class)->resolve($this->year))['estado']);
     }
 
     public function test_flexible_preinformes_weighted_and_equal_subtotals_match_reports_and_never_skip_empty_sections(): void
@@ -186,6 +190,8 @@ trait FlexibleGradingTests
         $activity = ActividadEvaluacion::firstOrFail();
         $payload = ['operacion' => 'editar', 'version' => 1, 'actividad_token' => OpaqueUrlToken::for('actividad-evaluacion', $activity->id),
             'nombre' => 'Quiz corregido', 'peso' => 40, 'fecha' => '2026-02-02'];
+        $this->putJson($path.'/actividades', $payload)->assertUnprocessable();
+        $payload['peso'] = 20;
         $this->putJson($path.'/actividades', $payload)->assertOk();
         $updated = $this->getJson($path.'?opaque=1')->assertJsonPath('data.resultados.0.estado', 'pendiente')->json('data');
         $this->assertSame(['Quiz corregido', 'Taller'], array_column($updated['secciones'][0]['actividades'], 'nombre'));
@@ -248,7 +254,7 @@ trait FlexibleGradingTests
     public function test_flexible_tokens_from_another_tenant_and_numeric_selectors_are_rejected(): void
     {
         [$period, , $path] = $this->flexibleFixture(true);
-        $other = \App\Models\Tenant::withoutEvents(fn () => \App\Models\Tenant::create([
+        $other = Tenant::withoutEvents(fn () => Tenant::create([
             'id' => 'other-flexible-school', 'name' => 'Otro', 'slug' => 'other-flexible-school', 'plan' => 'esencial', 'tipo' => 'colegio', 'status' => 'active',
         ]));
         $foreignPeriod = $other->run(fn () => OpaqueUrlToken::for('periodo', $period->id));

@@ -11,6 +11,7 @@ use App\Models\Academico\Periodo;
 use App\Models\Academico\RecuperacionAcademica;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
+use App\Support\OpaqueUrlToken;
 use Brick\Math\BigRational;
 use Illuminate\Support\Facades\DB;
 
@@ -22,11 +23,14 @@ final class AcademicRecoveryService
     public function create(User $actor, Matricula $enrollment, AsignacionDocente $assignment,
         ?Periodo $period, ?string $plan = null): RecuperacionAcademica
     {
-        abort_unless($actor->can('notas.gestionar_nivelaciones'), 403);
+        abort_unless($this->canManage($actor, $assignment), 403);
 
         return DB::transaction(function () use ($actor, $enrollment, $assignment, $period, $plan) {
             $year = AnoLectivo::lockForUpdate()->findOrFail($enrollment->ano_lectivo_id);
             $enrollment = Matricula::lockForUpdate()->findOrFail($enrollment->id);
+            $assignment = AsignacionDocente::findOrFail($assignment->id);
+            abort_unless($this->canManage($actor, $assignment), 403);
+            $period = $period ? Periodo::lockForUpdate()->findOrFail($period->id) : null;
             $this->assertScope($year, $enrollment, $assignment, $period);
             $config = app(SieeConfiguration::class)->resolve($year);
             $original = $this->original($enrollment, $assignment, $period, $config);
@@ -58,19 +62,20 @@ final class AcademicRecoveryService
         });
     }
 
-    public function record(User $actor, RecuperacionAcademica $recovery, string $grade,
-        ?string $manual, int $version, string $reason): RecuperacionAcademica
+    public function record(User $actor, RecuperacionAcademica $recovery, ?string $grade,
+        ?string $manual, int $version, string $reason, ?string $choiceToken = null,
+        ?string $manualChoiceToken = null): RecuperacionAcademica
     {
-        return DB::transaction(function () use ($actor, $recovery, $grade, $manual, $version, $reason) {
+        return DB::transaction(function () use ($actor, $recovery, $grade, $manual, $version, $reason, $choiceToken, $manualChoiceToken) {
             $year = AnoLectivo::lockForUpdate()->findOrFail($recovery->ano_lectivo_id);
             $recovery = RecuperacionAcademica::lockForUpdate()->findOrFail($recovery->id);
             $assignment = AsignacionDocente::findOrFail($recovery->asignacion_id);
-            $this->authorizeRecorder($actor, $assignment);
+            abort_unless($this->canManage($actor, $assignment), 403);
             abort_unless($recovery->version === $version, 409,
                 'Otra persona actualizó esta recuperación. Recarga antes de guardar.');
             abort_if($recovery->estado === 'anulada', 422, 'La recuperación anulada no admite notas.');
             $enrollment = Matricula::findOrFail($recovery->matricula_id);
-            $period = $recovery->periodo_id ? Periodo::findOrFail($recovery->periodo_id) : null;
+            $period = $recovery->periodo_id ? Periodo::lockForUpdate()->findOrFail($recovery->periodo_id) : null;
             $this->assertScope($year, $enrollment, $assignment, $period);
             $config = app(SieeConfiguration::class)->resolve($year);
             abort_unless($config['recuperacion'] === $recovery->politica, 409,
@@ -78,6 +83,29 @@ final class AcademicRecoveryService
             $original = $this->original($enrollment, $assignment, $period, $config);
             abort_unless($original['exact_value'] === $recovery->valor_original_exacto, 409,
                 'El resultado original cambió. Revisa la recuperación antes de guardar.');
+            $visualScale = app(EscalaVisualService::class)->forGroup($assignment->grupo);
+            $choiceAudit = [];
+            if ($visualScale) {
+                abort_if($grade !== null || $manual !== null, 422,
+                    'Selecciona una categoría visual, no una nota numérica.');
+                $resolve = function (?string $token, string $field) use ($visualScale, &$choiceAudit): string {
+                    $choice = $token ? $visualScale->opciones->first(fn ($option) => OpaqueUrlToken::for('escala-opcion', $option->id) === $token) : null;
+                    abort_unless($choice, 422, 'Selecciona una categoría de la escala visual del grupo.');
+                    $choiceAudit[$field] = ['escala_opcion_id' => $choice->id,
+                        'nombre' => $choice->nombre, 'valor_equivalente' => (string) $choice->valor_equivalente];
+
+                    return (string) $choice->valor_equivalente;
+                };
+                $grade = $resolve($choiceToken, 'valoracion_recuperacion');
+                if ($recovery->politica === 'MANUAL') {
+                    $manual = $resolve($manualChoiceToken, 'valoracion_manual');
+                } else {
+                    abort_if($manualChoiceToken !== null, 422, 'La política configurada no admite una definitiva manual.');
+                }
+            } else {
+                abort_if($choiceToken !== null || $manualChoiceToken !== null, 422, 'Esta materia usa una escala numérica.');
+                abort_if($grade === null, 422, 'Indica la nota de recuperación.');
+            }
             $this->assertGradeInScale($grade, $config);
             if ($recovery->politica === 'MANUAL') {
                 abort_if($manual === null, 422, 'Indica la nota definitiva manual de la recuperación.');
@@ -98,7 +126,7 @@ final class AcademicRecoveryService
                 'version' => $recovery->version + 1,
             ])->save();
             AuditLogger::tenant($actor, 'UPDATE', 'recuperacion_academica',
-                (string) $recovery->id, $before, $recovery->toArray(), $reason);
+                (string) $recovery->id, $before, [...$recovery->toArray(), ...$choiceAudit], $reason);
 
             return $recovery;
         });
@@ -111,8 +139,10 @@ final class AcademicRecoveryService
         return DB::transaction(function () use ($actor, $recovery, $version, $reason) {
             $year = AnoLectivo::lockForUpdate()->findOrFail($recovery->ano_lectivo_id);
             $recovery = RecuperacionAcademica::lockForUpdate()->findOrFail($recovery->id);
-            abort_unless($year->estado === AnoLectivo::ESTADO_EN_CURSO, 422,
-                'No se puede anular una recuperación de un año cerrado.');
+            $assignment = AsignacionDocente::findOrFail($recovery->asignacion_id);
+            abort_unless($this->canManage($actor, $assignment), 403);
+            $period = $recovery->periodo_id ? Periodo::lockForUpdate()->findOrFail($recovery->periodo_id) : null;
+            $this->assertScope($year, Matricula::findOrFail($recovery->matricula_id), $assignment, $period);
             abort_unless($recovery->version === $version, 409,
                 'Otra persona actualizó esta recuperación. Recarga antes de anular.');
             abort_if($recovery->estado === 'anulada', 422, 'La recuperación ya está anulada.');
@@ -129,22 +159,32 @@ final class AcademicRecoveryService
     private function assertScope(AnoLectivo $year, Matricula $enrollment,
         AsignacionDocente $assignment, ?Periodo $period): void
     {
-        abort_unless($year->estado === AnoLectivo::ESTADO_EN_CURSO, 422,
-            'La recuperación requiere un año lectivo en curso.');
+        $reason = $this->blockReason($year, $period);
+        abort_if($reason !== null, 422, $reason ?? '');
         abort_unless($enrollment->estado === 'activa'
             && $assignment->ano_lectivo_id === $year->id
             && $assignment->grupo_id === $enrollment->grupo_id, 422,
             'La materia, el grupo y la matrícula deben pertenecer al mismo año.');
         if ($period) {
-            abort_unless($period->ano_lectivo_id === $year->id
-                && $period->estado === Periodo::ESTADO_CERRADO, 422,
-                'Solo puede nivelarse un período cerrado del mismo año.');
-        } else {
-            $periods = Periodo::where('ano_lectivo_id', $year->id)->get();
-            abort_unless($periods->count() === $year->num_periodos
-                && $periods->every(fn (Periodo $item) => $item->estado === Periodo::ESTADO_CERRADO), 422,
-                'La habilitación anual exige todos los períodos cerrados.');
+            abort_unless($period->ano_lectivo_id === $year->id, 422,
+                'El período debe pertenecer al mismo año de la matrícula.');
         }
+    }
+
+    public function blockReason(AnoLectivo $year, ?Periodo $period): ?string
+    {
+        if ($year->estado !== AnoLectivo::ESTADO_EN_CURSO) {
+            return 'La recuperación requiere un año lectivo en curso.';
+        }
+        if ($period) {
+            return $period->estado === Periodo::ESTADO_ABIERTO ? null
+                : 'La nivelación solo se puede crear, modificar o anular con el período abierto.';
+        }
+        $periods = $year->periodos;
+
+        return $periods->count() === $year->num_periodos
+            && $periods->every(fn (Periodo $item) => $item->estado === Periodo::ESTADO_CERRADO)
+            ? null : 'La habilitación anual exige todos los períodos cerrados.';
     }
 
     private function original(Matricula $enrollment, AsignacionDocente $assignment,
@@ -172,10 +212,14 @@ final class AcademicRecoveryService
             'La nota está fuera de la escala configurada.');
     }
 
-    private function authorizeRecorder(User $actor, AsignacionDocente $assignment): void
+    public function requiresAssignment(User $actor): bool
     {
-        abort_unless($actor->can('notas.gestionar_nivelaciones')
-            || ($assignment->docente_id === $actor->id
-                && $actor->can('notas.registrar_materia_asignada')), 403);
+        return in_array($actor->role, ['docente', 'director_grupo'], true);
+    }
+
+    public function canManage(User $actor, AsignacionDocente $assignment): bool
+    {
+        return $actor->can('notas.gestionar_nivelaciones')
+            && (! $this->requiresAssignment($actor) || $assignment->docente_id === $actor->id);
     }
 }
