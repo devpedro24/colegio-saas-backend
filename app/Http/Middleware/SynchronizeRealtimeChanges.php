@@ -20,7 +20,8 @@ final class SynchronizeRealtimeChanges
             // Covers pivot sync, query-builder bulk writes and future API actions too.
             if ($request->is('api/*') && ! $request->isMethodSafe()
                 && $response->getStatusCode() < 400 && $request->user()
-                && ! $request->is('api/broadcasting/auth', 'api/tenant-broadcasting/auth', 'api/login', 'api/logout', 'api/forgot-password')) {
+                && ! $request->is('api/broadcasting/auth', 'api/tenant-broadcasting/auth', 'api/login', 'api/logout', 'api/forgot-password',
+                    'api/evaluacion/planillas/*/*/vista-previa')) {
                 $changes->record(tenant()?->getKey(), RealtimeChanges::resourceForPath($request->path()));
             }
 

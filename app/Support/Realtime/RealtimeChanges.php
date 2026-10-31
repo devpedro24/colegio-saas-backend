@@ -64,6 +64,13 @@ final class RealtimeChanges
 
     public static function resourceForPath(string $path): string
     {
+        if (preg_match('#^/?(?:api/)?evaluacion/(planillas|componentes|actividades|recuperaciones|areas|anuales)(?:/|$|\?)#', $path)) {
+            return 'grades';
+        }
+        if (preg_match('#^/?(?:api/)?boletines/(emisiones|observaciones|plantillas)(?:/|$|\?)#', $path, $match)) {
+            return ['emisiones' => 'bulletin-issues', 'observaciones' => 'bulletin-observations',
+                'plantillas' => 'bulletin-templates'][$match[1]];
+        }
         if (preg_match('#^/?(?:api/)?(?:platform/correo-solicitudes|correo-institucional/solicitudes)(?:/|$|\?)#', $path)) {
             return 'school-mail-requests';
         }
@@ -93,8 +100,10 @@ final class RealtimeChanges
             'horarios', 'asignaciones' => 'schedule',
             'asistencias' => 'attendance',
             'evaluacion' => 'evaluation',
+            'indicadores' => 'indicators',
+            'boletines' => 'bulletins',
             'aula' => 'aula',
-            'ingreso', 'ingreso-publico' => 'enrollment-intake',
+            'ingreso', 'matriculas', 'ingreso-publico' => 'enrollment-intake',
             'correo-institucional' => 'school-mail',
             'siee', 'config' => 'academic-config',
             'eventos' => 'events',

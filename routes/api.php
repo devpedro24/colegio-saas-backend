@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\Platform\ImpersonationController;
 use App\Http\Controllers\Api\Platform\MfaController as PlatformMfaController;
 use App\Http\Controllers\Api\Platform\PlanController;
 use App\Http\Controllers\Api\Platform\RbacController;
+use App\Http\Controllers\Api\Platform\SchoolMailRequestsController;
 use App\Http\Controllers\Api\Platform\StorageController;
 use App\Http\Middleware\EnsureMfaReady;
 use App\Support\Account\AccountPresenter;
@@ -82,9 +83,10 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
 
             // Panel del superadministrador (solo plataforma).
             Route::middleware('platform')->group(function () {
-                Route::get('/platform/correo-solicitudes/resumen', [\App\Http\Controllers\Api\Platform\SchoolMailRequestsController::class, 'summary']);
-                Route::get('/platform/correo-solicitudes', [\App\Http\Controllers\Api\Platform\SchoolMailRequestsController::class, 'index']);
-                Route::post('/platform/correo-solicitudes/{token}/resolver', [\App\Http\Controllers\Api\Platform\SchoolMailRequestsController::class, 'resolve'])->where('token', '[A-Za-z0-9_-]{24}');
+                Route::prefix('platform')->group(base_path('routes/work_drafts.php'));
+                Route::get('/platform/correo-solicitudes/resumen', [SchoolMailRequestsController::class, 'summary']);
+                Route::get('/platform/correo-solicitudes', [SchoolMailRequestsController::class, 'index']);
+                Route::post('/platform/correo-solicitudes/{token}/resolver', [SchoolMailRequestsController::class, 'resolve'])->where('token', '[A-Za-z0-9_-]{24}');
                 Route::get('/platform/auditoria', [AuditController::class, 'index']);
                 Route::get('/platform/auditoria/colegios', [AuditController::class, 'colegios']);
                 Route::get('/colegios', [ColegioController::class, 'index']);

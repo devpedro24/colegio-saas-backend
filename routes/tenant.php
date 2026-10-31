@@ -130,6 +130,10 @@ Route::middleware([
             Route::middleware('can:usuarios.ajustar_permisos')->group(function () {
                 Route::get('/rbac/roles', [RoleController::class, 'index']);
                 Route::put('/rbac/roles/{role}/permissions/{permission}', [RoleController::class, 'togglePermission']);
+                Route::post('/rbac/roles', [RoleController::class, 'storeCustomRole']);
+                Route::put('/rbac/roles/{role}', [RoleController::class, 'updateCustomRole']);
+                Route::delete('/rbac/roles/{role}', [RoleController::class, 'destroyCustomRole']);
+                Route::put('/rbac/usuarios/{usuario}/roles-adicionales', [RoleController::class, 'assignCustomRoles']);
             });
 
             // Usuarios del colegio (permiso 'usuarios.gestionar'): el alta/edicion

@@ -3,21 +3,29 @@
 namespace Tests\Support;
 
 use App\Http\Middleware\EnsureOnboardingComplete;
+use App\Jobs\SendEventMailBatch;
+use App\Jobs\SendEventMailPreview;
 use App\Models\Academico\Aula;
-use App\Models\Academico\AulaSeccion;
 use App\Models\Academico\AulaRecurso;
+use App\Models\Academico\AulaSeccion;
 use App\Models\Academico\Evento;
 use App\Models\Academico\EventoCorreo;
 use App\Models\Academico\Grupo;
 use App\Models\Academico\Matricula;
+use App\Models\Academico\Periodo;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\EventMailOutbox;
 use App\Services\SchoolMail;
 use App\Services\TaskCalendar;
+use App\Services\TenantPlanAccess;
 use App\Support\OpaqueUrlToken;
+use Carbon\Carbon;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 
@@ -28,6 +36,7 @@ trait EventWorkflowTests
         $this->withoutMiddleware(EnsureOnboardingComplete::class);
         app('auth')->forgetGuards();
         $this->withHeader('X-Tenant', $this->school->id)->withToken($user->createToken('test-events')->plainTextToken);
+
         return 'http://localhost/api/eventos';
     }
 
@@ -45,6 +54,7 @@ trait EventWorkflowTests
         $student->assignRole('estudiante');
         Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => ($group ?? $this->group)->id,
             'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+
         return $student;
     }
 
@@ -138,7 +148,9 @@ trait EventWorkflowTests
         $inactive->update(['status' => 'suspended']);
         $withdrawn = $this->eventStudent('withdrawn@test.test');
         Matricula::where('estudiante_id', $withdrawn->id)->update(['estado' => 'retirada']);
-        $otherGroup = $this->group->replicate(); $otherGroup->nombre = 'B'; $otherGroup->save();
+        $otherGroup = $this->group->replicate();
+        $otherGroup->nombre = 'B';
+        $otherGroup->save();
         $outside = $this->eventStudent('outside@test.test', $otherGroup);
         // Even a mistaken enrollment does not turn a teacher into a student recipient.
         Matricula::create(['estudiante_id' => $this->teacher->id, 'grupo_id' => $this->group->id, 'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
@@ -171,7 +183,9 @@ trait EventWorkflowTests
     public function test_event_workflow_teacher_cannot_bypass_assignment_with_legacy_setting(): void
     {
         DB::table('configuracion_eventos')->insert(['id' => 1, 'docentes_cualquier_grupo' => true]);
-        $other = $this->group->replicate(); $other->nombre = 'B'; $other->save();
+        $other = $this->group->replicate();
+        $other->nombre = 'B';
+        $other->save();
         $api = $this->eventApi($this->teacher);
         $this->postJson($api.'?opaque=1', $this->eventInput(['grupo_tokens' => [OpaqueUrlToken::for('grupo', $other->id)]]))->assertForbidden();
     }
@@ -179,14 +193,18 @@ trait EventWorkflowTests
     public function test_event_workflow_batches_rate_limit_retry_failures_and_never_resend_successes(): void
     {
         $this->eventMailReady();
-        foreach (range(1, 12) as $i) $this->eventStudent("batch-$i@test.test");
+        foreach (range(1, 12) as $i) {
+            $this->eventStudent("batch-$i@test.test");
+        }
         $api = $this->eventApi($this->rector);
         $token = $this->postJson($api.'?opaque=1', $this->eventInput(['enviar_correo' => true]))->json('data.url_token');
         $this->postJson("$api/$token/publicar?opaque=1", ['version' => 1])->assertOk();
         $count = 0;
         $this->mock(SchoolMail::class, function ($mock) use (&$count) {
             $mock->shouldReceive('sendEvent')->andReturnUsing(function () use (&$count) {
-                if (++$count === 1) throw new \RuntimeException('synthetic SMTP outage');
+                if (++$count === 1) {
+                    throw new \RuntimeException('synthetic SMTP outage');
+                }
             });
         });
         Cache::flush();
@@ -201,20 +219,23 @@ trait EventWorkflowTests
         $outbox->deliverBatch();
         $this->assertSame(13, $count);
         $this->assertSame(12, EventoCorreo::where('estado', 'enviado')->count());
-        $this->travel(61)->seconds(); $outbox->deliverBatch();
+        $this->travel(61)->seconds();
+        $outbox->deliverBatch();
         $this->assertSame(13, $count);
         $this->travelBack();
     }
 
     public function test_event_workflow_exhausted_delivery_can_be_retried_and_deletion_cancels_pending(): void
     {
-        $this->eventMailReady(); $this->eventStudent('failure@test.test');
+        $this->eventMailReady();
+        $this->eventStudent('failure@test.test');
         $api = $this->eventApi($this->rector);
         $token = $this->postJson($api.'?opaque=1', $this->eventInput(['enviar_correo' => true]))->json('data.url_token');
         $this->postJson("$api/$token/publicar?opaque=1", ['version' => 1])->assertOk();
         $this->mock(SchoolMail::class, fn ($mock) => $mock->shouldReceive('sendEvent')->andThrow(new \RuntimeException('synthetic')));
         EventoCorreo::first()->update(['intentos' => 4]);
-        Cache::flush(); app(EventMailOutbox::class)->deliverBatch();
+        Cache::flush();
+        app(EventMailOutbox::class)->deliverBatch();
         $this->assertSame('fallido', EventoCorreo::first()->estado);
         $this->postJson("$api/$token/correos/reintentar?opaque=1")->assertOk();
         $this->assertSame(0, EventoCorreo::first()->intentos);
@@ -229,9 +250,10 @@ trait EventWorkflowTests
         $this->school->update(['plan' => 'estandar']);
         $this->teacher->givePermissionTo(Permission::findOrCreate('aula.ver_asignadas', 'web'));
         $aula = Aula::firstOrCreate(['ano_lectivo_id' => $this->year->id, 'grupo_id' => $this->group->id, 'materia_id' => $this->subject->id]);
-        $period = \App\Models\Academico\Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'P1', 'orden' => 1,
+        $period = Periodo::create(['ano_lectivo_id' => $this->year->id, 'nombre' => 'P1', 'orden' => 1,
             'fecha_inicio' => '2026-01-01', 'fecha_fin' => '2026-12-31', 'estado' => 'abierto']);
         $section = AulaSeccion::create(['aula_id' => $aula->id, 'periodo_id' => $period->id, 'titulo' => 'Actividades', 'visible_estudiantes' => true, 'autor_id' => $this->teacher->id]);
+
         return AulaRecurso::create(['seccion_id' => $section->id, 'tipo' => 'tarea', 'titulo' => 'Proyecto',
             'estado' => 'borrador', 'visible_estudiantes' => false, 'autor_id' => $this->teacher->id, 'zona_publicacion' => 'America/Bogota']);
     }
@@ -244,7 +266,7 @@ trait EventWorkflowTests
         $filters = ['desde' => '2026-10-01', 'hasta' => '2026-10-31'];
         $calendar = app(TaskCalendar::class);
         $this->assertSame(0, $calendar->list($this->teacher, $filters)->total());
-        $this->travelTo(\Carbon\Carbon::parse('2026-10-10 02:00:00', 'UTC'));
+        $this->travelTo(Carbon::parse('2026-10-10 02:00:00', 'UTC'));
         $task->update(['estado' => 'publicado', 'visible_estudiantes' => true]);
         $items = $calendar->list($this->teacher, $filters)->items();
         $this->assertSame('2026-10-09', $items[0]['fecha']);
@@ -266,7 +288,7 @@ trait EventWorkflowTests
 
     public function test_event_calendar_respects_drafts_scheduling_visibility_student_enrollment_and_plan(): void
     {
-        $this->travelTo(\Carbon\Carbon::parse('2026-10-10 12:00:00', 'UTC'));
+        $this->travelTo(Carbon::parse('2026-10-10 12:00:00', 'UTC'));
         $task = $this->calendarTask();
         $student = $this->eventStudent('calendar@test.test');
         $student->givePermissionTo(Permission::findOrCreate('aula.ver_propias', 'web'));
@@ -289,6 +311,7 @@ trait EventWorkflowTests
         $this->assertSame(0, $calendar->list($this->teacher, $filters)->total());
         $task->update(['estado' => 'publicado']);
         $this->school->update(['plan' => 'esencial']);
+        app(TenantPlanAccess::class)->forget();
         $this->assertSame(0, $calendar->list($this->teacher, $filters)->total());
         $this->travelBack();
     }
@@ -322,13 +345,13 @@ trait EventWorkflowTests
         $this->postJson("$api/$token/publicar?opaque=1", ['version' => 1])->assertOk();
         $this->assertSame(1000, EventoCorreo::where('estado', 'pendiente')->count());
         Cache::flush();
-        \Illuminate\Support\Facades\Queue::fake();
-        $this->assertSame(0, \Illuminate\Support\Facades\Artisan::call('eventos:enviar-correos'));
-        \Illuminate\Support\Facades\Queue::assertPushedOn('event-mail', \App\Jobs\SendEventMailBatch::class,
+        Queue::fake();
+        $this->assertSame(0, Artisan::call('eventos:enviar-correos'));
+        Queue::assertPushedOn('event-mail', SendEventMailBatch::class,
             fn ($job) => $job->school === $this->school->id && $job->connection === 'event_mail'
                 && ! str_contains(serialize($job), '@test.test'));
         $this->mock(SchoolMail::class, fn ($mock) => $mock->shouldReceive('sendEvent')->times(10));
-        (new \App\Jobs\SendEventMailBatch($this->school->id))->handle();
+        (new SendEventMailBatch($this->school->id))->handle();
         $this->assertSame(10, EventoCorreo::where('estado', 'enviado')->count());
         $this->assertSame(990, EventoCorreo::where('estado', 'pendiente')->count());
     }
@@ -359,7 +382,8 @@ trait EventWorkflowTests
         DB::table('evento_correos')->where('estudiante_id', $first->id)->update(['estado' => 'enviando', 'updated_at' => now()->subMinutes(6)]);
         Matricula::where('estudiante_id', $second->id)->update(['estado' => 'retirada']);
         $this->mock(SchoolMail::class, fn ($mock) => $mock->shouldReceive('sendEvent')->once()->with($first->email, \Mockery::type('array'), 'es'));
-        Cache::flush(); app(EventMailOutbox::class)->deliverBatch();
+        Cache::flush();
+        app(EventMailOutbox::class)->deliverBatch();
         $this->assertSame('enviado', EventoCorreo::where('estudiante_id', $first->id)->value('estado'));
         $this->assertSame('cancelado', EventoCorreo::where('estudiante_id', $second->id)->value('estado'));
     }
@@ -401,8 +425,8 @@ trait EventWorkflowTests
         $this->mock(SchoolMail::class, fn ($mock) => $mock->shouldReceive('sendEvent')->once()
             ->with($recipient, \Mockery::on(fn ($data) => str_starts_with($data['title'], '[PRUEBA]')
                 && str_ends_with($data['url'], '/comunicacion/eventos') && $data['school'] === $this->school->name), 'es'));
-        $job = new \App\Jobs\SendEventMailPreview($this->school->id, $recipient, $receipt);
-        $this->assertInstanceOf(\Illuminate\Contracts\Queue\ShouldBeEncrypted::class, $job);
+        $job = new SendEventMailPreview($this->school->id, $recipient, $receipt);
+        $this->assertInstanceOf(ShouldBeEncrypted::class, $job);
         $this->assertSame('event_mail', $job->connection);
         $this->assertSame('event-mail', $job->queue);
         $job->handle();
@@ -419,7 +443,7 @@ trait EventWorkflowTests
         $this->school->domains()->firstOrCreate(['domain' => 'academic-test.localhost']);
         $receipt = str_repeat('b', 24);
         $this->mock(SchoolMail::class, fn ($mock) => $mock->shouldReceive('sendEvent')->once()->andThrow(new \RuntimeException('synthetic')));
-        $job = new \App\Jobs\SendEventMailPreview($this->school->id, 'preview-only@example.test', $receipt);
+        $job = new SendEventMailPreview($this->school->id, 'preview-only@example.test', $receipt);
         try {
             $job->handle();
             $this->fail('Transport failure should be reported.');

@@ -37,6 +37,16 @@ La segunda revisión del 30 de septiembre añade caché académica compartida en
 
 El fallback HTTP de `/asignaciones` ahora publica exclusivamente `schedule`, no `all`; evita invalidar años y perfil por un cambio de asignación. La comprobación `RealtimeSyncTest` protege ese contrato. El detalle de solicitudes por pantalla y el comando `test:ui:cache` están en `colegio-saas-frontend/docs/ENTREGAS_2026-09.md`. El tiempo de `artisan serve` en Windows no basta para atribuir 500 ms al SQL o certificar capacidad: correlacionar con `http.performance` y medir HTTP en staging. No se ejecutaron migraciones ni se alteraron datos de colegios durante esta segunda revisión.
 
+## Ampliación de caché académica — 23 de octubre de 2026
+
+Planilla, asistencia e indicadores reutilizan sus respuestas en memoria durante la navegación. Se retiraron las caducidades de 10 segundos de la planilla de asistencia y de 30 segundos de indicadores; los datos se invalidan al guardar, recibir cambios remotos o recuperar la conexión. Las entradas inactivas se liberan a los 30 minutos. Se conservan los selectores públicos de año, grupo, asignatura y período en la URL y en la memoria de la sesión, también para las vistas de indicadores del rector. No se persisten respuestas privadas en `localStorage` ni `sessionStorage`; cerrar sesión o cambiar de contexto limpia el QueryClient.
+
+Las escrituras de notas/nivelaciones publican `grades` y las de indicadores `indicators`, tanto desde HTTP como desde los modelos. Ya no provocan una invalidación global del perfil, estructura y demás módulos. Matrículas, asignaciones, currículo, cierre de períodos y permisos siguen invalidando sus dependencias; el respaldo por desconexión permanece activo. El transporte de tiempo real se carga al autenticar, no en cada cambio de página.
+
+Prueba reproducible: `node scripts/browser-smoke.mjs --academic-cache` en el frontend, con API de fixtures, perfil de navegador desechable y canal Reverb aislado. El recorrido confirmó **cero GET nuevos** al volver a planilla, asistencia e indicadores, avanzando 35 segundos el reloj para superar las antiguas caducidades. Guardar asistencia refrescó su planilla una sola vez; guardar indicadores no consultó otros módulos. También se verificaron cambios remotos, bloqueo tras cerrar el período, actualización de permisos y F5 con una consulta de catálogo y una de planilla de asistencia. F5 mantiene la autenticación y las lecturas necesarias: no se promete cero tráfico al reconstruir la sesión. No se modificaron registros de colegios reales.
+
+Los recorridos `--indicator-scope` y `--indicator-sheet` comprueban además que el rector conserva grado/asignatura o grupo al volver a indicadores, sin nuevos GET. Las pruebas `RealtimeSyncTest`, `BulletinRealtimeScopeTest` y la suite frontend protegen los temas de invalidación, la separación por contexto y la unión de invalidaciones locales. Estos resultados son de desarrollo, no una medición de capacidad de producción.
+
 ## Objetivos de aceptación propuestos
 
 Antes de lanzar, aprobar estos objetivos con tráfico y datos representativos:

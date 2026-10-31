@@ -32,16 +32,22 @@ final class ModelChanges
         $tenantId = $connection->getName() === 'tenant' ? tenant()?->getKey() : null;
         if ($tenantId !== null && in_array($table, ['eventos', 'grupos', 'matriculas', 'asignaciones_docentes', 'users'], true)) {
             $invalidate = fn () => app(EventAgendaCache::class)->invalidate((string) $tenantId);
-            if ($connection->transactionLevel() > 0) $connection->afterCommit($invalidate);
-            else $invalidate();
+            if ($connection->transactionLevel() > 0) {
+                $connection->afterCommit($invalidate);
+            } else {
+                $invalidate();
+            }
         }
         $resource = match ($table) {
             'anos_lectivos', 'periodos', 'preinformes' => 'academic',
             'sedes', 'jornadas', 'niveles', 'grados', 'grupos', 'bloques_horarios', 'espacios_fisicos' => 'structure',
             'areas', 'materias' => 'curriculum',
             'asignaciones_docentes', 'sesiones_horario' => 'schedule',
-            'matriculas', 'componentes_evaluacion', 'actividades_evaluacion', 'calificaciones' => 'evaluation',
-            'boletin_emisiones' => 'bulletins',
+            'matriculas' => 'evaluation',
+            'componentes_evaluacion', 'actividades_evaluacion', 'calificaciones', 'recuperaciones_academicas' => 'grades',
+            'indicadores_base', 'indicadores_vinculos' => 'indicators',
+            'asistencia_solicitudes' => 'attendance',
+            'boletin_emisiones' => 'bulletin-issues',
             'escalas_valorativas', 'metodos_aprobacion', 'modelos_pedagogicos' => 'academic-config',
             'datos_institucionales' => 'institution',
             'correo_configuracion' => 'school-mail',

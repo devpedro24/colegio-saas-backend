@@ -63,7 +63,6 @@ trait AcademicYearJourneyTests
 
         $this->putJson('http://localhost/api/boletines/politica?opaque=1', [
             'version' => 1, 'requiere_observacion_final' => true,
-            'docente_edita_indicadores_grupo' => false,
         ])->assertOk();
         $promotion = app(AcademicPromotionService::class);
         $promotion->savePolicy($this->rector, $this->year, 0, [], null, 0);
@@ -73,8 +72,6 @@ trait AcademicYearJourneyTests
             'actividad_id' => $firstActivity->id, 'matricula_id' => $enrollment->id,
             'valor' => '2', 'version' => 0,
         ]]);
-        $periodController->cerrar($transition, (string) $first->id);
-        $first->refresh();
         $this->assertSame('pendiente', $promotion->proposal($this->year->fresh(), $enrollment)['estado']);
         $recovery = app(AcademicRecoveryService::class)->create($this->rector, $enrollment,
             $this->assignment, $first, 'Nivelación del primer período');
@@ -88,14 +85,15 @@ trait AcademicYearJourneyTests
             'version' => 0])->assertOk();
         $this->postJson('http://localhost/api/boletines/observaciones/'.$enrollmentToken.'/aprobar?opaque=1',
             [...$firstSelection, 'version' => 1])->assertOk();
+        $periodController->cerrar($transition, (string) $first->id);
+        $first->refresh();
         $firstIssue = $this->postJson($issueBase.$enrollmentToken.'/preparar?opaque=1', $firstSelection)
             ->assertOk()->json('data.token');
         $this->postJson($issueBase.'documentos/'.$firstIssue.'/aprobar?opaque=1')->assertOk();
         $this->postJson($issueBase.'documentos/'.$firstIssue.'/publicar?opaque=1')->assertOk();
         $firstSnapshot = DB::table('boletin_emisiones')->where('contexto', 'periodo:'.$first->id)
             ->firstOrFail()->snapshot;
-        $this->assertSame('4', json_decode($firstSnapshot, true, 512, JSON_THROW_ON_ERROR)
-            ['asignaturas'][0]['resultado']['exact_value']);
+        $this->assertSame('4', json_decode($firstSnapshot, true, 512, JSON_THROW_ON_ERROR)['asignaturas'][0]['resultado']['exact_value']);
 
         // The first published PDF remains frozen while the rest of the year proceeds.
         app(GradebookService::class)->saveGrades($this->teacher, $this->assignment, $second->id, [[
@@ -150,8 +148,7 @@ trait AcademicYearJourneyTests
         $this->assertSame('2', (string) DB::table('calificaciones')
             ->where('matricula_id', $enrollment->id)->orderBy('id')->value('valor'));
         $this->assertSame('4', json_decode(DB::table('boletin_emisiones')
-            ->where('contexto', 'periodo:'.$first->id)->value('snapshot'), true, 512, JSON_THROW_ON_ERROR)
-            ['asignaturas'][0]['resultado']['exact_value']);
+            ->where('contexto', 'periodo:'.$first->id)->value('snapshot'), true, 512, JSON_THROW_ON_ERROR)['asignaturas'][0]['resultado']['exact_value']);
 
         $next = app(DuplicarAnoLectivoService::class)->duplicar($this->year, [
             'nombre' => '2027', 'tipo_calendario' => 'A', 'fecha_inicio' => '2027-01-01',

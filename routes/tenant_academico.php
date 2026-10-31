@@ -2,6 +2,14 @@
 
 declare(strict_types=1);
 
+require __DIR__.'/work_drafts.php';
+Route::post('/work-draft-files/response/{resourceToken}/{token}', [WorkDraftFileController::class, 'storeResponse'])
+    ->where(['resourceToken' => '[A-Za-z0-9_-]{24}', 'token' => '[A-Za-z0-9_-]{24}'])->middleware('throttle:30,1');
+Route::post('/work-draft-files/{sectionToken}/{token}', [WorkDraftFileController::class, 'store'])
+    ->where(['sectionToken' => '[A-Za-z0-9_-]{24}', 'token' => '[A-Za-z0-9_-]{24}'])->middleware('throttle:30,1');
+Route::get('/work-draft-files/{token}', [WorkDraftFileController::class, 'show'])
+    ->where('token', '[A-Za-z0-9_-]{24}')->middleware('throttle:60,1');
+
 use App\Http\Controllers\Api\Academico\AcademicOptionsController;
 use App\Http\Controllers\Api\Academico\AnoLectivoController;
 use App\Http\Controllers\Api\Academico\AsistenciaController;
@@ -11,23 +19,25 @@ use App\Http\Controllers\Api\Academico\AulaController;
 use App\Http\Controllers\Api\Academico\AulaCuestionarioController;
 use App\Http\Controllers\Api\Academico\AulaMedioController;
 use App\Http\Controllers\Api\Academico\BloqueHorarioController;
-use App\Http\Controllers\Api\Academico\BoletinObservacionController;
 use App\Http\Controllers\Api\Academico\BoletinEmisionController;
+use App\Http\Controllers\Api\Academico\BoletinObservacionController;
 use App\Http\Controllers\Api\Academico\BoletinPlantillaController;
 use App\Http\Controllers\Api\Academico\DatosInstitucionalesController;
+use App\Http\Controllers\Api\Academico\DirectorGrupoController;
 use App\Http\Controllers\Api\Academico\EscalaOpcionController;
 use App\Http\Controllers\Api\Academico\EscalaValorativaController;
-use App\Http\Controllers\Api\Academico\DirectorGrupoController;
 use App\Http\Controllers\Api\Academico\EspacioFisicoController;
 use App\Http\Controllers\Api\Academico\EvaluacionController;
-use App\Http\Controllers\Api\Academico\ManualAreaResultController;
-use App\Http\Controllers\Api\Academico\ManualAnnualResultController;
 use App\Http\Controllers\Api\Academico\EventoController;
 use App\Http\Controllers\Api\Academico\GradoController;
 use App\Http\Controllers\Api\Academico\GrupoController;
 use App\Http\Controllers\Api\Academico\HorarioController;
 use App\Http\Controllers\Api\Academico\IndicadorController;
+use App\Http\Controllers\Api\Academico\IndicatorPolicyController;
+use App\Http\Controllers\Api\Academico\IndicatorSheetController;
 use App\Http\Controllers\Api\Academico\JornadaController;
+use App\Http\Controllers\Api\Academico\ManualAnnualResultController;
+use App\Http\Controllers\Api\Academico\ManualAreaResultController;
 use App\Http\Controllers\Api\Academico\MetodoAprobacionController;
 use App\Http\Controllers\Api\Academico\ModeloPedagogicoController;
 use App\Http\Controllers\Api\Academico\NivelController;
@@ -40,12 +50,14 @@ use App\Http\Controllers\Api\Academico\PromocionAcademicaController;
 use App\Http\Controllers\Api\Academico\RecuperacionAcademicaController;
 use App\Http\Controllers\Api\Academico\SedeController;
 use App\Http\Controllers\Api\Academico\SieeController;
+use App\Http\Controllers\Api\EnrollmentRosterController;
 use App\Http\Controllers\Api\EnrollmentSettingsController;
 use App\Http\Controllers\Api\IngresoController;
 use App\Http\Controllers\Api\InstitutionContextController;
 use App\Http\Controllers\Api\Platform\StorageController;
 use App\Http\Controllers\Api\SchoolMailController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\WorkDraftFileController;
 use App\Http\Middleware\RequireOpaqueAcademicContract;
 use App\Http\Middleware\ResolveAcademicInputIdentifiers;
 use App\Http\Middleware\ResolveAcademicRouteIdentifier;
@@ -77,16 +89,26 @@ use Illuminate\Support\Facades\Route;
 Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
     Route::get('/director-grupo/mis-grupos', [DirectorGrupoController::class, 'mine']);
     Route::get('/indicadores/bases', [IndicadorController::class, 'bases']);
+    Route::get('/indicadores/tabla', [IndicatorSheetController::class, 'index']);
+    Route::put('/indicadores/tabla/{subjectToken}', [IndicatorSheetController::class, 'save']);
+    Route::delete('/indicadores/tabla/{subjectToken}', [IndicatorSheetController::class, 'delete']);
+    Route::get('/indicadores/politica/{yearToken}', [IndicatorPolicyController::class, 'show']);
+    Route::put('/indicadores/politica/{yearToken}', [IndicatorPolicyController::class, 'update']);
+    Route::get('/indicadores/borradores', [IndicadorController::class, 'borradores']);
+    Route::get('/indicadores/opciones-asignadas', [IndicadorController::class, 'opcionesAsignadas']);
     Route::get('/indicadores/contexto/{yearToken}', [IndicadorController::class, 'contexto']);
     Route::get('/indicadores/vinculos', [IndicadorController::class, 'vinculos']);
     Route::get('/indicadores', [IndicadorController::class, 'index']);
     Route::post('/indicadores', [IndicadorController::class, 'crear']);
+    Route::post('/indicadores/grupo', [IndicadorController::class, 'crearGrupo']);
     Route::put('/indicadores/{indicatorToken}', [IndicadorController::class, 'revisar']);
     Route::post('/indicadores/{indicatorToken}/vinculos', [IndicadorController::class, 'vincular']);
     Route::put('/indicadores/vinculos/{bindingToken}', [IndicadorController::class, 'actualizarVinculo']);
+    Route::put('/indicadores/vinculos/{bindingToken}/texto', [IndicadorController::class, 'editarTextoGrado']);
     Route::put('/indicadores/vinculos/{bindingToken}/variante', [IndicadorController::class, 'variante']);
     Route::get('/boletines/politica', [BoletinObservacionController::class, 'politica']);
     Route::put('/boletines/politica', [BoletinObservacionController::class, 'guardarPolitica']);
+    Route::get('/boletines/observaciones/grupo', [BoletinObservacionController::class, 'group']);
     Route::get('/boletines/observaciones/{matriculaToken}', [BoletinObservacionController::class, 'index']);
     Route::put('/boletines/observaciones/{matriculaToken}', [BoletinObservacionController::class, 'guardar']);
     Route::post('/boletines/observaciones/{matriculaToken}/aprobar', [BoletinObservacionController::class, 'aprobar']);
@@ -98,6 +120,7 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
     Route::get('/boletines/emisiones/{matriculaToken}', [BoletinEmisionController::class, 'index']);
     Route::get('/boletines/emisiones/{matriculaToken}/preparacion', [BoletinEmisionController::class, 'preview']);
     Route::post('/boletines/emisiones/{matriculaToken}/preparar', [BoletinEmisionController::class, 'prepare']);
+    Route::post('/boletines/emisiones/{matriculaToken}/emitir', [BoletinEmisionController::class, 'emit']);
     Route::post('/boletines/emisiones/documentos/{issueToken}/aprobar', [BoletinEmisionController::class, 'approve']);
     Route::post('/boletines/emisiones/documentos/{issueToken}/publicar', [BoletinEmisionController::class, 'publish']);
     Route::get('/boletines/emisiones/documentos/{issueToken}/pdf', [BoletinEmisionController::class, 'pdf']);
@@ -330,7 +353,6 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
     Route::put('/asistencias/solicitudes/{token}/resolucion', [AsistenciaCorreccionController::class, 'resolve']);
     Route::middleware(ResolveAcademicInputIdentifiers::class)->prefix('evaluacion')->controller(EvaluacionController::class)->group(function () {
         Route::get('/catalogo', 'catalogo');
-        Route::post('/matriculas', 'matricular');
         Route::get('/planillas/{asignacion}/{periodo}', 'planilla')->middleware([
             ResolveAcademicRouteIdentifier::class.':asignacion,asignacion-docente',
             ResolveAcademicRouteIdentifier::class.':periodo,periodo',
@@ -338,6 +360,11 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
         Route::put('/planillas/{asignacion}/{periodo}', 'notas')->middleware([
             ResolveAcademicRouteIdentifier::class.':asignacion,asignacion-docente',
             ResolveAcademicRouteIdentifier::class.':periodo,periodo',
+        ]);
+        Route::post('/planillas/{asignacion}/{periodo}/vista-previa', 'preview')->middleware([
+            ResolveAcademicRouteIdentifier::class.':asignacion,asignacion-docente',
+            ResolveAcademicRouteIdentifier::class.':periodo,periodo',
+            'throttle:120,1',
         ]);
         Route::put('/planillas/{asignacion}/{periodo}/resultados-manuales/{matricula}', 'resultadoManual')->middleware([
             ResolveAcademicRouteIdentifier::class.':asignacion,asignacion-docente',
@@ -441,6 +468,14 @@ Route::get('/institution-context', InstitutionContextController::class);
 Route::prefix('ingreso/configuracion')->middleware(RequireOpaqueAcademicContract::class)->controller(EnrollmentSettingsController::class)->group(function () {
     Route::get('/', 'show');
     Route::put('/', 'save');
+});
+
+Route::prefix('matriculas')->middleware(RequireOpaqueAcademicContract::class)->controller(EnrollmentRosterController::class)->group(function () {
+    Route::get('/', 'index');
+    Route::post('/', 'store');
+    Route::get('/geografia', 'geography');
+    Route::get('/{token}', 'show');
+    Route::get('/{token}/documentos/{document}', 'download');
 });
 
 Route::prefix('ingreso')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoController::class)->group(function () {

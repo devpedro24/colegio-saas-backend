@@ -6,8 +6,8 @@ namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
-use App\Models\Academico\Area;
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\Area;
 use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\EspacioFisico;
@@ -19,10 +19,13 @@ use App\Models\Academico\Matricula;
 use App\Models\Academico\Nivel;
 use App\Models\Academico\Sede;
 use App\Models\User;
+use App\Services\GroupSubjectScope;
 use App\Support\OpaqueUrlToken;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -120,20 +123,26 @@ class AcademicOptionsController extends Controller
         ]);
         $type = $filters['tipo'];
         $user = $request->user();
+        $rosterReader = $user->can('notas.registrar_materia_asignada') || $user->can('boletines.grupo.ver');
+        $assignedReader = $rosterReader || $user->can('indicadores.grupo.ver');
         $globalUsers = match ($type) {
             'docentes' => $user->can('academico.plan_estudios.gestionar') || $user->can('notas.ver_consolidado_todos'),
             'estudiantes' => $user->can('academico.matriculas.gestionar') || $user->can('notas.ver_consolidado_todos'),
             default => false,
         };
         $permitted = match ($type) {
-            'docentes', 'estudiantes' => $globalUsers || $user->can('notas.registrar_materia_asignada')
+            'docentes', 'estudiantes' => $globalUsers || $rosterReader
                 || $user->can('notas.ver_propias'),
-            'grupos', 'bloques', 'espacios' => $user->can('academico.estructura.gestionar')
+            'grupos' => $user->can('academico.estructura.gestionar')
                 || $user->can('academico.plan_estudios.gestionar') || $user->can('academico.configurar')
                 || $user->can('academico.matriculas.gestionar') || $user->can('notas.ver_consolidado_todos')
-                || $user->can('notas.registrar_materia_asignada') || $user->can('notas.ver_propias'),
+                || $assignedReader || $user->can('notas.ver_propias'),
+            'bloques', 'espacios' => $user->can('academico.estructura.gestionar')
+                || $user->can('academico.plan_estudios.gestionar') || $user->can('academico.configurar')
+                || $user->can('academico.matriculas.gestionar') || $user->can('notas.ver_consolidado_todos')
+                || $rosterReader || $user->can('notas.ver_propias'),
             'materias', 'areas' => $user->can('academico.plan_estudios.gestionar') || $user->can('academico.configurar')
-                || $user->can('notas.ver_consolidado_todos') || $user->can('notas.registrar_materia_asignada'),
+                || $user->can('notas.ver_consolidado_todos') || $assignedReader,
             default => $user->can('academico.estructura.gestionar')
                 || $user->can('academico.plan_estudios.gestionar') || $user->can('academico.configurar'),
         };
@@ -173,7 +182,7 @@ class AcademicOptionsController extends Controller
         };
         if (in_array($type, ['docentes', 'estudiantes'], true)) {
             if (! $globalUsers) {
-                $this->scopeToUser($query, $type, $user, $user->can('notas.registrar_materia_asignada'));
+                $this->scopeToUser($query, $type, $user, $rosterReader);
             }
             if ($type === 'estudiantes' && ! empty($filters['disponibles']) && $year) {
                 $query->whereNotIn('id', Matricula::where('ano_lectivo_id', $year->id)
@@ -185,7 +194,7 @@ class AcademicOptionsController extends Controller
                 default => 'activo',
             });
             if ($scopeToOwnAcademic) {
-                $this->scopeToUser($query, $type, $user, $user->can('notas.registrar_materia_asignada'));
+                $this->scopeToUser($query, $type, $user, $assignedReader);
             }
         }
 
@@ -222,12 +231,12 @@ class AcademicOptionsController extends Controller
             abort_unless($type === 'materias', 422);
             $groupQuery = Grupo::with('grado')->where('ano_lectivo_id', $year->id)->where('estado', 'activo');
             if ($scopeToOwnAcademic) {
-                $this->scopeToUser($groupQuery, 'grupos', $user, $user->can('notas.registrar_materia_asignada'));
+                $this->scopeToUser($groupQuery, 'grupos', $user, $assignedReader);
             }
             $group = OpaqueUrlToken::find('grupo', $filters['compatible_grupo_token'],
                 $groupQuery);
             abort_unless($group, 404);
-            \App\Services\GroupSubjectScope::apply($query, $group);
+            GroupSubjectScope::apply($query, $group);
         }
 
         $selected = isset($filters['selected_token'])
@@ -247,7 +256,7 @@ class AcademicOptionsController extends Controller
         return $this->paginatedResponse($page);
     }
 
-    private function presentOpaque(\Illuminate\Database\Eloquent\Model $item, string $type): array
+    private function presentOpaque(Model $item, string $type): array
     {
         return match ($type) {
             'sedes' => [
@@ -286,8 +295,8 @@ class AcademicOptionsController extends Controller
                 'url_token' => OpaqueUrlToken::for('grupo', $item->id),
                 'nombre' => $item->nombre,
                 'grado_token' => OpaqueUrlToken::for('grado', $item->grado_id),
-                'jornada_token' => OpaqueUrlToken::for('jornada', $item->jornada_id),
-                'sede_token' => OpaqueUrlToken::for('sede', $item->sede_id),
+                'jornada_token' => $item->jornada_id ? OpaqueUrlToken::for('jornada', $item->jornada_id) : null,
+                'sede_token' => $item->sede_id ? OpaqueUrlToken::for('sede', $item->sede_id) : null,
                 'sede' => $item->sede ? [
                     'url_token' => OpaqueUrlToken::for('sede', $item->sede->id), 'nombre' => $item->sede->nombre,
                 ] : null,
@@ -319,8 +328,12 @@ class AcademicOptionsController extends Controller
             ? AsignacionDocente::where('docente_id', $user->id)
             : AsignacionDocente::whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)
                 ->where('estado', 'activa')->select('grupo_id'));
+        $reportGroups = Grupo::where(fn (Builder $groups) => $groups
+            ->whereIn('id', (clone $assignments)->select('grupo_id'))
+            ->when($teacher && $user->can('boletines.grupo.ver'), fn (Builder $groups) => $groups->orWhereIn('id',
+                DB::table('directores_grupo')->where('docente_id', $user->id)->select('grupo_id'))));
         match ($tipo) {
-            'grupos' => $query->whereIn('id', (clone $assignments)->select('grupo_id')),
+            'grupos' => $query->whereIn('id', (clone $reportGroups)->select('id')),
             'materias' => $query->whereIn('id', (clone $assignments)->select('materia_id')),
             'docentes' => $query->whereKey($teacher ? $user->id : -1),
             'grados' => $query->whereIn('id', Grupo::whereIn('id', (clone $assignments)->select('grupo_id'))->select('grado_id')),
@@ -328,14 +341,15 @@ class AcademicOptionsController extends Controller
             'bloques' => $query->whereIn('jornada_id', Grupo::whereIn('id', (clone $assignments)->select('grupo_id'))->select('jornada_id')),
             'espacios' => $query->whereIn('sede_id', Grupo::whereIn('id', (clone $assignments)->select('grupo_id'))->select('sede_id')),
             'estudiantes' => $teacher
-                ? $query->whereIn('id', Matricula::whereIn('grupo_id', (clone $assignments)->select('grupo_id'))->select('estudiante_id'))
+                ? $query->whereIn('id', Matricula::whereIn('grupo_id', (clone $reportGroups)->select('id'))->select('estudiante_id'))
                 : $query->whereKey($user->id),
         };
     }
 
-    private function present(\Illuminate\Database\Eloquent\Model $item, string $tipo): array
+    private function present(Model $item, string $tipo): array
     {
         $data = $item->toArray();
+
         return match ($tipo) {
             'grupos' => [...$data, 'url_token' => OpaqueUrlToken::for('grupo', $item->id)],
             'docentes' => ['id' => $item->id, 'name' => $item->name,

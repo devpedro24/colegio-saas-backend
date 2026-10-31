@@ -6,14 +6,19 @@ use App\Events\ApplicationChanged;
 use App\Events\TenantDataChanged;
 use App\Http\Middleware\SynchronizeRealtimeChanges;
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\AsistenciaSolicitud;
 use App\Models\Academico\AulaAdjunto;
+use App\Models\Academico\BoletinEmision;
+use App\Models\Academico\Calificacion;
+use App\Models\Academico\IndicadorBase;
+use App\Models\Academico\IndicadorVinculo;
 use App\Models\AuditLog;
 use App\Models\StoredFile;
 use App\Models\Tenant;
 use App\Models\User;
-use App\Support\Realtime\TenantChannelName;
-use App\Support\Realtime\RealtimeChanges;
 use App\Support\Realtime\ModelChanges;
+use App\Support\Realtime\RealtimeChanges;
+use App\Support\Realtime\TenantChannelName;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Broadcast;
@@ -30,6 +35,8 @@ class RealtimeSyncTest extends TestCase
         config(['tenancy.bootstrappers' => [], 'database.connections.tenant' => [
             'driver' => 'sqlite', 'database' => ':memory:', 'foreign_key_constraints' => true,
         ]]);
+        // Tenant permission migrations inherit the central RBAC catalog.
+        Artisan::call('migrate', ['--database' => 'sqlite', '--force' => true]);
         DB::setDefaultConnection('tenant');
         Artisan::call('migrate', ['--database' => 'tenant', '--path' => 'database/migrations/tenant', '--force' => true]);
         tenancy()->initialize(new Tenant(['id' => 'realtime-a', 'status' => 'active']));
@@ -71,8 +78,7 @@ class RealtimeSyncTest extends TestCase
         $year->update(['nombre' => '2028']);
         $year->delete();
         Event::assertDispatchedTimes(ApplicationChanged::class, 3);
-        Event::assertDispatched(ApplicationChanged::class, fn ($event) =>
-            $event->tenantId === 'realtime-a' && $event->resources === ['academic']);
+        Event::assertDispatched(ApplicationChanged::class, fn ($event) => $event->tenantId === 'realtime-a' && $event->resources === ['academic']);
     }
 
     public function test_committed_changes_are_batched_and_rolled_back_changes_are_silent(): void
@@ -87,7 +93,10 @@ class RealtimeSyncTest extends TestCase
         Event::assertNotDispatched(ApplicationChanged::class);
 
         $changes->begin();
-        DB::transaction(function () { $this->year(); TenantDataChanged::dispatch('ano_lectivo', 'created', 'Private name'); });
+        DB::transaction(function () {
+            $this->year();
+            TenantDataChanged::dispatch('ano_lectivo', 'created', 'Private name');
+        });
         Event::assertNotDispatched(ApplicationChanged::class);
         $changes->flush();
         Event::assertDispatchedTimes(ApplicationChanged::class, 1);
@@ -137,6 +146,39 @@ class RealtimeSyncTest extends TestCase
             fn ($event) => $event->resources === ['aula-progress']);
     }
 
+    public function test_bulletin_issue_model_and_http_write_share_one_narrow_invalidation(): void
+    {
+        $request = Request::create('/api/boletines/emisiones/public-token/emitir', 'POST');
+        $request->setUserResolver(fn () => new User(['role' => 'docente']));
+        app(SynchronizeRealtimeChanges::class)->handle($request, function () {
+            app(ModelChanges::class)('eloquent.created: '.BoletinEmision::class, [new BoletinEmision]);
+
+            return response()->json(['saved' => true], 201);
+        });
+        Event::assertDispatchedTimes(ApplicationChanged::class, 1);
+        Event::assertDispatched(ApplicationChanged::class, fn ($event) => $event->tenantId === 'realtime-a' && $event->resources === ['bulletin-issues']);
+    }
+
+    public function test_academic_writes_do_not_invalidate_unrelated_modules(): void
+    {
+        foreach ([['/api/evaluacion/planillas/assignment/period', Calificacion::class, 'grades'],
+            ['/api/indicadores', IndicadorBase::class, 'indicators'],
+            ['/api/indicadores/indicator/vinculos', IndicadorVinculo::class, 'indicators'],
+            ['/api/asistencias/solicitudes', AsistenciaSolicitud::class, 'attendance'],
+        ] as [$path, $model, $topic]) {
+            Event::fake([ApplicationChanged::class]);
+            $request = Request::create($path, 'PUT');
+            $request->setUserResolver(fn () => new User(['role' => 'docente']));
+            app(SynchronizeRealtimeChanges::class)->handle($request, function () use ($model) {
+                app(ModelChanges::class)('eloquent.updated: '.$model, [new $model]);
+
+                return response()->json(['saved' => true]);
+            });
+            Event::assertDispatchedTimes(ApplicationChanged::class, 1);
+            Event::assertDispatched(ApplicationChanged::class, fn ($event) => $event->tenantId === 'realtime-a' && $event->resources === [$topic]);
+        }
+    }
+
     public function test_aula_attachment_upload_refreshes_only_content_and_audit(): void
     {
         $request = Request::create('/api/aula/recursos/public-token/adjuntos', 'POST');
@@ -155,10 +197,8 @@ class RealtimeSyncTest extends TestCase
         });
 
         Event::assertDispatchedTimes(ApplicationChanged::class, 2);
-        Event::assertDispatched(ApplicationChanged::class, fn ($event) =>
-            $event->tenantId === 'realtime-a' && $event->resources === ['aula-content', 'audit']);
-        Event::assertDispatched(ApplicationChanged::class, fn ($event) =>
-            $event->tenantId === null && $event->resources === ['audit']);
+        Event::assertDispatched(ApplicationChanged::class, fn ($event) => $event->tenantId === 'realtime-a' && $event->resources === ['aula-content', 'audit']);
+        Event::assertDispatched(ApplicationChanged::class, fn ($event) => $event->tenantId === null && $event->resources === ['audit']);
     }
 
     public function test_reads_authentication_and_rejected_writes_do_not_trigger_refresh_loops(): void

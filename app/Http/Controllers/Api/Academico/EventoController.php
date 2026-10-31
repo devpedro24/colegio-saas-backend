@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\Evento;
+use App\Models\Academico\EventoCorreo;
 use App\Models\Academico\Grupo;
 use App\Models\Academico\Materia;
 use App\Models\StoredFile;
@@ -14,10 +15,9 @@ use App\Services\EventAccess;
 use App\Services\EventAgendaCache;
 use App\Services\EventMailOutbox;
 use App\Services\TaskCalendar;
-use App\Models\Academico\EventoCorreo;
-use App\Support\OpaqueUrlToken;
-use App\Support\EventOpaquePresenter;
 use App\Support\Audit\AuditLogger;
+use App\Support\EventOpaquePresenter;
+use App\Support\OpaqueUrlToken;
 use App\Support\Storage\StorageException;
 use App\Support\Storage\StorageService;
 use App\Support\Storage\StoredFilePublicToken;
@@ -39,7 +39,7 @@ class EventoController extends Controller
         $broad = $rector || ($teacher && $this->access->unrestricted());
         $groups = $this->access->groupIds($user);
         $assignments = AsignacionDocente::where('docente_id', $user->id)->get(['grupo_id', 'materia_id']);
-        $groupRows = Grupo::with('grado')->where('estado', 'activo')
+        $groupRows = Grupo::with(['grado', 'anoLectivo:id,fecha_inicio,fecha_fin'])->where('estado', 'activo')
             ->when(! $broad, fn ($q) => $q->whereIn('id', $groups))
             ->get(['id', 'nombre', 'grado_id', 'ano_lectivo_id']);
         $subjectRows = ($teacher || $rector)
@@ -58,6 +58,8 @@ class EventoController extends Controller
                     'nombre' => $group->nombre,
                     'grado_token' => OpaqueUrlToken::for('grado', $group->grado_id),
                     'ano_lectivo_token' => OpaqueUrlToken::for('ano-lectivo', $group->ano_lectivo_id),
+                    'ano_lectivo_inicio' => $group->anoLectivo?->fecha_inicio?->toDateString(),
+                    'ano_lectivo_fin' => $group->anoLectivo?->fecha_fin?->toDateString(),
                     'grado' => $group->grado ? [
                         'url_token' => OpaqueUrlToken::for('grado', $group->grado->id),
                         'nombre' => $group->grado->nombre,
@@ -125,28 +127,32 @@ class EventoController extends Controller
         ]);
         abort_if(Carbon::parse($filters['desde'])->diffInDays($filters['hasta']) > 93, 422);
         $days = app(EventAgendaCache::class)->remember($request->user(), 'summary', $filters, function () use ($request, $filters): array {
-        $rows = $this->access->visible($request->user())
-            ->whereBetween('fecha', [$filters['desde'], $filters['hasta']])
-            ->when(! empty($filters['categoria']), fn ($query) => $query->where('categoria', $filters['categoria']))
-            ->when(! empty($filters['grupo_id']), fn ($q) => $q->where(fn ($scope) => $scope
-                ->where('institucional', true)->orWhereHas('grupos', fn ($group) => $group->where('grupos.id', $filters['grupo_id']))))
-            ->selectRaw('fecha, categoria, estado, COUNT(*) AS total, MIN(titulo) AS titulo')
-            ->groupBy('fecha', 'categoria', 'estado')->orderBy('fecha')->get();
-        $days = [];
-        foreach ($rows as $row) {
-            $date = (string) $row->fecha;
-            $days[$date] ??= ['fecha' => $date, 'total' => 0, 'titulo_unico' => null, 'marcas' => []];
-            $count = (int) $row->total;
-            $days[$date]['total'] += $count;
-            $days[$date]['marcas'][] = ['categoria' => $row->categoria, 'estado' => $row->estado, 'total' => $count];
-            if ($count === 1) $days[$date]['titulo_unico'] = $row->titulo;
-        }
-        foreach ($days as &$value) {
-            if ($value['total'] !== 1) $value['titulo_unico'] = null;
-        }
-        unset($value);
+            $rows = $this->access->visible($request->user())
+                ->whereBetween('fecha', [$filters['desde'], $filters['hasta']])
+                ->when(! empty($filters['categoria']), fn ($query) => $query->where('categoria', $filters['categoria']))
+                ->when(! empty($filters['grupo_id']), fn ($q) => $q->where(fn ($scope) => $scope
+                    ->where('institucional', true)->orWhereHas('grupos', fn ($group) => $group->where('grupos.id', $filters['grupo_id']))))
+                ->selectRaw('fecha, categoria, estado, COUNT(*) AS total, MIN(titulo) AS titulo')
+                ->groupBy('fecha', 'categoria', 'estado')->orderBy('fecha')->get();
+            $days = [];
+            foreach ($rows as $row) {
+                $date = (string) $row->fecha;
+                $days[$date] ??= ['fecha' => $date, 'total' => 0, 'titulo_unico' => null, 'marcas' => []];
+                $count = (int) $row->total;
+                $days[$date]['total'] += $count;
+                $days[$date]['marcas'][] = ['categoria' => $row->categoria, 'estado' => $row->estado, 'total' => $count];
+                if ($count === 1) {
+                    $days[$date]['titulo_unico'] = $row->titulo;
+                }
+            }
+            foreach ($days as &$value) {
+                if ($value['total'] !== 1) {
+                    $value['titulo_unico'] = null;
+                }
+            }
+            unset($value);
 
-        return array_values($days);
+            return array_values($days);
         });
 
         return response()->json(['data' => $days]);
@@ -166,16 +172,16 @@ class EventoController extends Controller
         $limit = isset($filters['cursor']) ? 10 : 50;
         abort_if(isset($filters['limite']) && (int) $filters['limite'] !== $limit, 422);
         $result = app(EventAgendaCache::class)->remember($request->user(), 'feed', $filters, function () use ($request, $filters, $limit): array {
-        $page = $this->access->visible($request->user())->with('grupos.grado')
-            ->whereBetween('fecha', [$filters['desde'], $filters['hasta']])
-            ->when(! empty($filters['categoria']), fn ($query) => $query->where('categoria', $filters['categoria']))
-            ->when(! empty($filters['dia']), fn ($query) => $query->whereDate('fecha', $filters['dia']))
-            ->when(! empty($filters['grupo_id']), fn ($query) => $query->where(fn ($scope) => $scope
-                ->where('institucional', true)->orWhereHas('grupos', fn ($group) => $group->where('grupos.id', $filters['grupo_id']))))
-            ->orderByDesc('created_at')->orderByDesc('id')->cursorPaginate($limit);
+            $page = $this->access->visible($request->user())->with('grupos.grado')
+                ->whereBetween('fecha', [$filters['desde'], $filters['hasta']])
+                ->when(! empty($filters['categoria']), fn ($query) => $query->where('categoria', $filters['categoria']))
+                ->when(! empty($filters['dia']), fn ($query) => $query->whereDate('fecha', $filters['dia']))
+                ->when(! empty($filters['grupo_id']), fn ($query) => $query->where(fn ($scope) => $scope
+                    ->where('institucional', true)->orWhereHas('grupos', fn ($group) => $group->where('grupos.id', $filters['grupo_id']))))
+                ->orderByDesc('created_at')->orderByDesc('id')->cursorPaginate($limit);
 
-        return ['data' => $page->getCollection()->map(fn (Evento $event) => EventOpaquePresenter::present($event))->values()->all(),
-            'next_cursor' => $page->nextCursor()?->encode()];
+            return ['data' => $page->getCollection()->map(fn (Evento $event) => EventOpaquePresenter::present($event))->values()->all(),
+                'next_cursor' => $page->nextCursor()?->encode()];
         });
 
         return response()->json($result);
@@ -188,6 +194,7 @@ class EventoController extends Controller
             'grupo_id' => ['nullable', 'integer'], 'page' => ['nullable', 'integer', 'min:1'],
         ]);
         abort_if(Carbon::parse($filters['desde'])->diffInDays($filters['hasta']) > 93, 422);
+
         return response()->json($calendar->list($request->user(), $filters));
     }
 
@@ -288,7 +295,9 @@ class EventoController extends Controller
         $event = DB::transaction(function () use ($request, $id, $data, $mail) {
             $event = Evento::with('grupos')->lockForUpdate()->findOrFail($id);
             $this->access->authorizeWrite($request->user(), [...$event->toArray(), 'grupo_ids' => $event->grupos->pluck('id')->all()], $event);
-            if ($event->estado === 'publicado') return $event;
+            if ($event->estado === 'publicado') {
+                return $event;
+            }
             abort_if($event->version !== $data['version'], 409, __('El evento cambió. Recarga antes de publicar.'));
             $event->estado = 'publicado';
             $event->publicado_en = now('UTC');
@@ -296,8 +305,10 @@ class EventoController extends Controller
             $event->save();
             $mail->prepare($event);
             AuditLogger::tenant($request->user(), 'PUBLISH', 'evento', (string) $id, null, ['enviar_correo' => $event->enviar_correo]);
+
             return $event;
         });
+
         return response()->json(['data' => EventOpaquePresenter::present($event)]);
     }
 
@@ -309,6 +320,7 @@ class EventoController extends Controller
             $mail->retry($event);
             AuditLogger::tenant($request->user(), 'RETRY_MAIL', 'evento', (string) $id);
         });
+
         return response()->json(['data' => null]);
     }
 
