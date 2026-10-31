@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Notifications\SchoolMailChannel;
 use App\Services\Ingreso\EnrollmentIntake;
 use App\Services\SchoolMailFactory;
+use App\Services\TenantPlanAccess;
 use App\Support\AcademicTokenIndex;
 use App\Support\RequestPerformance;
 use App\Support\Storage\ClamAvScanner;
@@ -36,6 +37,7 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->scoped(AcademicTokenIndex::class);
         $this->app->scoped(RequestPerformance::class);
+        $this->app->scoped(TenantPlanAccess::class);
         // En producción nunca se permite subir archivos sin escaneo real.
         $this->app->bind(FileScanner::class, function () {
             return match (config('storage.scanner')) {

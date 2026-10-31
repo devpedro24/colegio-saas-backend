@@ -15,7 +15,6 @@ use App\Models\Academico\Calificacion;
 use App\Models\Academico\ComponenteEvaluacion;
 use App\Models\Academico\EscalaOpcion;
 use App\Models\Academico\Grupo;
-use App\Models\Academico\Materia;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\Preinforme;
 use App\Models\StoredFile;
@@ -23,18 +22,20 @@ use App\Services\AcademicPlanAccess;
 use App\Services\AulaAccess;
 use App\Services\AulaContentPolicy;
 use App\Services\AulaGradebookService;
+use App\Services\AulaHtmlSanitizer;
 use App\Services\AulaProgressService;
 use App\Services\EscalaVisualService;
+use App\Services\GradebookService;
 use App\Services\SieeConfiguration;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken as Token;
+use Brick\Math\BigDecimal;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
-use Brick\Math\BigDecimal;
 
 final class AulaController extends Controller
 {
@@ -65,12 +66,16 @@ final class AulaController extends Controller
                     ->whereColumn('mc.grado_id', 'g.grado_id')->whereColumn('mc.ano_lectivo_id', 'g.ano_lectivo_id'));
             if (! $all) {
                 $groupQuery->where(function ($scope) use ($user, $assigned, $own) {
-                    if ($assigned) $scope->orWhereExists(fn ($q) => $q->selectRaw('1')->from('asignaciones_docentes as ad')
-                        ->whereColumn('ad.grupo_id', 'g.id')->whereColumn('ad.ano_lectivo_id', 'g.ano_lectivo_id')
-                        ->where('ad.docente_id', $user->id)->whereNull('ad.deleted_at'));
-                    if ($own) $scope->orWhereExists(fn ($q) => $q->selectRaw('1')->from('matriculas as ma')
-                        ->whereColumn('ma.grupo_id', 'g.id')->whereColumn('ma.ano_lectivo_id', 'g.ano_lectivo_id')
-                        ->where('ma.estudiante_id', $user->id)->where('ma.estado', 'activa'));
+                    if ($assigned) {
+                        $scope->orWhereExists(fn ($q) => $q->selectRaw('1')->from('asignaciones_docentes as ad')
+                            ->whereColumn('ad.grupo_id', 'g.id')->whereColumn('ad.ano_lectivo_id', 'g.ano_lectivo_id')
+                            ->where('ad.docente_id', $user->id)->whereNull('ad.deleted_at'));
+                    }
+                    if ($own) {
+                        $scope->orWhereExists(fn ($q) => $q->selectRaw('1')->from('matriculas as ma')
+                            ->whereColumn('ma.grupo_id', 'g.id')->whereColumn('ma.ano_lectivo_id', 'g.ano_lectivo_id')
+                            ->where('ma.estudiante_id', $user->id)->where('ma.estado', 'activa'));
+                    }
                 });
             }
             $groupRows = $groupQuery->orderBy('gr.nombre')->orderBy('g.nombre')
@@ -99,10 +104,14 @@ final class AulaController extends Controller
                 ->whereNull('g.deleted_at')->whereNull('m.deleted_at');
             if (! $all) {
                 $query->where(function ($scope) use ($user, $assigned, $own) {
-                    if ($assigned) $scope->orWhere('ad.docente_id', $user->id);
-                    if ($own) $scope->orWhereExists(fn ($q) => $q->selectRaw('1')->from('matriculas as ma')
-                        ->whereColumn('ma.grupo_id', 'g.id')->whereColumn('ma.ano_lectivo_id', 'g.ano_lectivo_id')
-                        ->where('ma.estudiante_id', $user->id)->where('ma.estado', 'activa'));
+                    if ($assigned) {
+                        $scope->orWhere('ad.docente_id', $user->id);
+                    }
+                    if ($own) {
+                        $scope->orWhereExists(fn ($q) => $q->selectRaw('1')->from('matriculas as ma')
+                            ->whereColumn('ma.grupo_id', 'g.id')->whereColumn('ma.ano_lectivo_id', 'g.ano_lectivo_id')
+                            ->where('ma.estudiante_id', $user->id)->where('ma.estado', 'activa'));
+                    }
                 });
             }
             $rows = $query->select('g.id as grupo_id', 'g.nombre as grupo', 'm.id as materia_id', 'm.nombre as materia',
@@ -203,8 +212,7 @@ final class AulaController extends Controller
         $student = $this->access->isStudent($request->user(), $aula);
         $sectionRows = AulaSeccion::with(['periodo', 'preinforme', 'recursos' => fn ($query) => $student ? $query : $query->withTrashed()])
             ->when(! $student, fn ($query) => $query->withTrashed())
-            ->where('aula_id', $aula->id)->get()->sort(fn ($a, $b) =>
-                [$a->periodo->orden, $a->preinforme?->orden ?? -1, $a->orden, $a->id]
+            ->where('aula_id', $aula->id)->get()->sort(fn ($a, $b) => [$a->periodo->orden, $a->preinforme?->orden ?? -1, $a->orden, $a->id]
                 <=> [$b->periodo->orden, $b->preinforme?->orden ?? -1, $b->orden, $b->id])->values();
         $resourceIds = $sectionRows->flatMap(fn ($section) => $section->recursos->pluck('id'))->all();
         $attachments = AulaAdjunto::whereIn('recurso_id', $resourceIds)->get()->groupBy('recurso_id');
@@ -273,7 +281,9 @@ final class AulaController extends Controller
         $this->access->content($request->user(), $aula, 'crear');
         $data = $request->validate(['periodo_token' => ['required', 'string'], 'preinforme_token' => ['nullable', 'string'],
             'titulo' => ['required', 'string', 'max:160'], 'visible_estudiantes' => ['sometimes', 'boolean']]);
-        if ($data['visible_estudiantes'] ?? false) $this->access->content($request->user(), $aula, 'publicar');
+        if ($data['visible_estudiantes'] ?? false) {
+            $this->access->content($request->user(), $aula, 'publicar');
+        }
         abort_if(trim($data['titulo']) === '', 422, 'El nombre de la sección es obligatorio.');
         $period = Token::find('periodo', $data['periodo_token'], Periodo::where('ano_lectivo_id', $aula->ano_lectivo_id));
         abort_unless($period, 404);
@@ -298,7 +308,7 @@ final class AulaController extends Controller
         $this->access->manages($request->user(), $aula, 'aula.planilla.vincular');
         $assignment = $this->access->assignment($aula);
         abort_unless($assignment, 422, 'Asigna un docente antes de vincular la planilla.');
-        app(\App\Services\GradebookService::class)->authorizeAssignment($request->user(), $assignment, write: true);
+        app(GradebookService::class)->authorizeAssignment($request->user(), $assignment, write: true);
         $period = $section->periodo;
         $usesReports = (bool) ($period->configuracion_notas['usar_preinformes'] ?? false);
         $query = ComponenteEvaluacion::where('asignacion_id', $assignment->id)->where('periodo_id', $period->id);
@@ -398,6 +408,7 @@ final class AulaController extends Controller
             AuditLogger::tenant($request->user(), 'DELETE', 'aula_seccion', (string) $section->id,
                 $before, $section->toArray());
         });
+
         return response()->json(['data' => ['token' => $token]]);
     }
 
@@ -420,6 +431,7 @@ final class AulaController extends Controller
                     $old, $resource->toArray(), 'Restaurado con sección');
             }
         });
+
         return response()->json(['data' => ['token' => $token]]);
     }
 
@@ -433,6 +445,7 @@ final class AulaController extends Controller
         $resource->delete();
         AuditLogger::tenant($request->user(), 'DELETE', 'aula_recurso', (string) $resource->id,
             $before, $resource->toArray());
+
         return response()->json(['data' => ['token' => $token]]);
     }
 
@@ -448,6 +461,7 @@ final class AulaController extends Controller
         $resource->restore();
         AuditLogger::tenant($request->user(), 'RESTORE', 'aula_recurso', (string) $resource->id,
             $before, $resource->toArray());
+
         return response()->json(['data' => ['token' => $token]]);
     }
 
@@ -458,8 +472,12 @@ final class AulaController extends Controller
         $this->access->content($request->user(), $section->aula, 'crear', $request->input('tipo') === 'cuestionario');
         app(AulaContentPolicy::class)->assertEditable($section->periodo);
         $data = $this->resourceInput($request);
-        if ($data['visible_estudiantes']) $this->access->content($request->user(), $section->aula, 'publicar');
-        if ($data['llevar_planilla']) $this->access->manages($request->user(), $section->aula, 'aula.planilla.vincular');
+        if ($data['visible_estudiantes']) {
+            $this->access->content($request->user(), $section->aula, 'publicar');
+        }
+        if ($data['llevar_planilla']) {
+            $this->access->manages($request->user(), $section->aula, 'aula.planilla.vincular');
+        }
         abort_if($data['llevar_planilla'] && $section->periodo->estaCerrado(), 422,
             'No se puede vincular una tarea o evaluación a la planilla de un período cerrado.');
         abort_if($data['tipo'] === 'cuestionario' && $data['visible_estudiantes'], 422,
@@ -468,8 +486,11 @@ final class AulaController extends Controller
             $resource = AulaRecurso::create([...$this->resourceFields($data), 'seccion_id' => $section->id,
                 'orden' => (int) AulaRecurso::where('seccion_id', $section->id)->max('orden') + 1,
                 'autor_id' => $request->user()->id, 'version' => 1]);
-            if ($resource->llevar_planilla) app(AulaGradebookService::class)->link($resource, $request->user());
+            if ($resource->llevar_planilla) {
+                app(AulaGradebookService::class)->link($resource, $request->user());
+            }
             AuditLogger::tenant($request->user(), 'CREATE', 'aula_recurso', (string) $resource->id, null, $resource->toArray());
+
             return $resource;
         });
 
@@ -524,7 +545,9 @@ final class AulaController extends Controller
                 'orden' => $targetSection->id === $resource->seccion_id ? $resource->orden
                     : (int) AulaRecurso::where('seccion_id', $targetSection->id)->max('orden') + 1,
                 'version' => $resource->version + 1]);
-            if ($resource->llevar_planilla && ! $resource->actividad_id) app(AulaGradebookService::class)->link($resource, $request->user());
+            if ($resource->llevar_planilla && ! $resource->actividad_id) {
+                app(AulaGradebookService::class)->link($resource, $request->user());
+            }
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_recurso', (string) $resource->id, $before, $resource->toArray());
         });
 
@@ -585,8 +608,10 @@ final class AulaController extends Controller
         }
         $this->access->readResource($request->user(), $resource);
         $data = $this->resourceData($resource, $student);
-        if ($student) $data['progreso'] = app(AulaProgressService::class)->forResources(collect([$resource]),
-            $this->access->enrollment($request->user(), $resource->seccion->aula)->id)[$resource->id] ?? 'sin_iniciar';
+        if ($student) {
+            $data['progreso'] = app(AulaProgressService::class)->forResources(collect([$resource]),
+                $this->access->enrollment($request->user(), $resource->seccion->aula)->id)[$resource->id] ?? 'sin_iniciar';
+        }
         $data['estudiante'] = $student;
         $data['aula_token'] = Token::for('aula', $resource->seccion->aula_id);
         $data['seccion_token'] = Token::for('aula-seccion', $resource->seccion_id);
@@ -624,7 +649,7 @@ final class AulaController extends Controller
         if (! $student) {
             $assignment = $this->access->assignment($resource->seccion->aula);
             $data['requiere_motivo'] = $assignment
-                ? app(\App\Services\GradebookService::class)->requiresReason($request->user(), $assignment) : true;
+                ? app(GradebookService::class)->requiresReason($request->user(), $assignment) : true;
         }
         if ($resource->calificable) {
             $visual = app(EscalaVisualService::class);
@@ -649,6 +674,7 @@ final class AulaController extends Controller
                 ->where('matricula_id', $enrollment->id)->first() : null;
             $choiceId = $official?->escala_opcion_id ?? $submission?->escala_opcion_id;
             $data['entrega'] = $submission ? ['token' => Token::for('aula-entrega', $submission->id),
+                'version' => (int) $submission->version,
                 'texto' => $submission->texto, 'estado' => $submission->estado, 'entregada_at' => $submission->entregada_at,
                 'nota' => $choiceId ? null : ($official?->valor ?? $submission->nota),
                 'valoracion' => $choiceId ? EscalaOpcionController::present(EscalaOpcion::findOrFail($choiceId)) : null,
@@ -671,8 +697,10 @@ final class AulaController extends Controller
         $created = DB::table('aula_vistas_recursos')->insertOrIgnore([
             'recurso_id' => $resource->id, 'matricula_id' => $enrollment->id, 'abierto_at' => now('UTC'),
         ]);
-        if ($created) AuditLogger::tenant($request->user(), 'CREATE', 'aula_vista_recurso',
-            $resource->id.':'.$enrollment->id, null, ['recurso_id' => $resource->id, 'matricula_id' => $enrollment->id]);
+        if ($created) {
+            AuditLogger::tenant($request->user(), 'CREATE', 'aula_vista_recurso',
+                $resource->id.':'.$enrollment->id, null, ['recurso_id' => $resource->id, 'matricula_id' => $enrollment->id]);
+        }
 
         $progress = app(AulaProgressService::class);
         $aula = $resource->seccion->aula;
@@ -696,21 +724,26 @@ final class AulaController extends Controller
             'El plazo de interacción de este recurso terminó.');
         $enrollment = $this->access->enrollment($request->user(), $resource->seccion->aula);
         abort_unless($enrollment, 403);
-        $data = $request->validate(['texto' => ['nullable', 'string', 'max:20000']]);
-        $submission = AulaEntrega::firstOrNew(['recurso_id' => $resource->id, 'matricula_id' => $enrollment->id]);
-        abort_if($submission->exists && $submission->nota !== null, 422, 'La entrega ya fue calificada.');
-        abort_if($submission->exists && $submission->estado !== 'borrador'
-            && ! ($resource->configuracion['reenvios'] ?? false), 422, 'Ya entregaste esta tarea.');
-        abort_if($submission->estado === 'revisada', 422, 'El docente ya revisó esta entrega.');
-        abort_if(trim((string) ($data['texto'] ?? '')) === ''
-            && (! $submission->exists || ! AulaAdjunto::where('entrega_id', $submission->id)->exists()), 422,
-            'Escribe una respuesta o adjunta al menos un archivo antes de entregar.');
-        $before = $submission->exists ? $submission->toArray() : null;
-        $submission->fill(['texto' => $data['texto'] ?? null, 'estado' => 'entregada', 'entregada_at' => now('UTC'),
-            'version' => ($submission->version ?? 0) + 1])->save();
-        AuditLogger::tenant($request->user(), $before ? 'UPDATE' : 'CREATE', 'aula_entrega', (string) $submission->id, $before, $submission->toArray());
+        $data = $request->validate(['texto' => ['nullable', 'string', 'max:20000'], 'version' => ['sometimes', 'integer', 'min:0']]);
 
-        return response()->json(['data' => ['token' => Token::for('aula-entrega', $submission->id)]], 201);
+        return DB::transaction(function () use ($request, $resource, $enrollment, $data) {
+            $submission = AulaEntrega::query()->lockForUpdate()->firstOrNew(['recurso_id' => $resource->id, 'matricula_id' => $enrollment->id]);
+            abort_if(isset($data['version']) && $data['version'] !== (int) ($submission->version ?? 0), 409,
+                'La entrega cambió. Revisa la versión actual antes de guardar.');
+            abort_if($submission->exists && $submission->nota !== null, 422, 'La entrega ya fue calificada.');
+            abort_if($submission->exists && $submission->estado !== 'borrador'
+                && ! ($resource->configuracion['reenvios'] ?? false), 422, 'Ya entregaste esta tarea.');
+            abort_if($submission->estado === 'revisada', 422, 'El docente ya revisó esta entrega.');
+            abort_if(trim((string) ($data['texto'] ?? '')) === ''
+                && (! $submission->exists || ! AulaAdjunto::where('entrega_id', $submission->id)->exists()), 422,
+                'Escribe una respuesta o adjunta al menos un archivo antes de entregar.');
+            $before = $submission->exists ? $submission->toArray() : null;
+            $submission->fill(['texto' => $data['texto'] ?? null, 'estado' => 'entregada', 'entregada_at' => now('UTC'),
+                'version' => ($submission->version ?? 0) + 1])->save();
+            AuditLogger::tenant($request->user(), $before ? 'UPDATE' : 'CREATE', 'aula_entrega', (string) $submission->id, $before, $submission->toArray());
+
+            return response()->json(['data' => ['token' => Token::for('aula-entrega', $submission->id), 'version' => (int) $submission->version]], 201);
+        }, 3);
     }
 
     /** Reserve a private draft so files can be uploaded before the final submission. */
@@ -733,7 +766,7 @@ final class AulaController extends Controller
                 $submission->toArray(), 'Borrador para adjuntar evidencia antes de entregar.');
         }
 
-        return response()->json(['data' => ['token' => Token::for('aula-entrega', $submission->id)]], 201);
+        return response()->json(['data' => ['token' => Token::for('aula-entrega', $submission->id), 'version' => (int) $submission->version]], 201);
     }
 
     public function entregas(Request $request, string $resourceToken): JsonResponse
@@ -743,16 +776,17 @@ final class AulaController extends Controller
         $this->access->manages($request->user(), $resource->seccion->aula, 'aula.entregas.calificar');
         $official = $resource->actividad_id ? Calificacion::where('actividad_id', $resource->actividad_id)
             ->get()->keyBy('matricula_id') : collect();
+
         return response()->json(['data' => AulaEntrega::with('matricula.estudiante', 'escalaOpcion')->where('recurso_id', $resource->id)
             ->where('estado', '!=', 'borrador')->get()->map(fn ($item) => [
-            'token' => Token::for('aula-entrega', $item->id), 'estudiante' => $item->matricula->estudiante->name,
-            'texto' => $item->texto, 'estado' => $item->estado,
-            'nota' => $official->get($item->matricula_id)?->valor ?? $item->nota,
-            'escala_opcion_token' => ($official->get($item->matricula_id)?->escala_opcion_id ?? $item->escala_opcion_id)
-                ? Token::for('escala-opcion', $official->get($item->matricula_id)?->escala_opcion_id ?? $item->escala_opcion_id) : null,
-            'retroalimentacion' => $item->retroalimentacion, 'entregada_at' => $item->entregada_at,
-            'version' => $item->version, 'adjuntos' => AulaAdjunto::where('entrega_id', $item->id)->get()->map(AulaArchivoController::present(...)),
-        ])]);
+                'token' => Token::for('aula-entrega', $item->id), 'estudiante' => $item->matricula->estudiante->name,
+                'texto' => $item->texto, 'estado' => $item->estado,
+                'nota' => $official->get($item->matricula_id)?->valor ?? $item->nota,
+                'escala_opcion_token' => ($official->get($item->matricula_id)?->escala_opcion_id ?? $item->escala_opcion_id)
+                    ? Token::for('escala-opcion', $official->get($item->matricula_id)?->escala_opcion_id ?? $item->escala_opcion_id) : null,
+                'retroalimentacion' => $item->retroalimentacion, 'entregada_at' => $item->entregada_at,
+                'version' => $item->version, 'adjuntos' => AulaAdjunto::where('entrega_id', $item->id)->get()->map(AulaArchivoController::present(...)),
+            ])]);
     }
 
     public function calificar(Request $request, string $token): JsonResponse
@@ -769,7 +803,7 @@ final class AulaController extends Controller
             'nota' => ['nullable', 'numeric'], 'escala_opcion_token' => ['nullable', 'string'],
             'retroalimentacion' => ['nullable', 'string', 'max:10000'], 'motivo' => ['nullable', 'string', 'max:1000']]);
         $assignment = $this->access->assignment($resource->seccion->aula);
-        abort_if($assignment && app(\App\Services\GradebookService::class)->requiresReason($request->user(), $assignment)
+        abort_if($assignment && app(GradebookService::class)->requiresReason($request->user(), $assignment)
             && mb_strlen(trim((string) ($data['motivo'] ?? ''))) < 8, 422,
             'La edición delegada requiere un motivo de al menos 8 caracteres.');
         abort_unless($submission->version === $data['version'], 409, 'La entrega cambió. Recarga antes de calificar.');
@@ -785,8 +819,10 @@ final class AulaController extends Controller
         abort_if(BigDecimal::of($value)->isLessThan((string) $config['valor_min'])
             || BigDecimal::of($value)->isGreaterThan((string) $config['valor_max']), 422, 'La nota está fuera de la escala SIEE.');
         DB::transaction(function () use ($request, $submission, $data, $resource, $value, $choice): void {
-            if ($resource->llevar_planilla) app(AulaGradebookService::class)->transfer($resource, $request->user(),
-                $submission->matricula_id, $value, $data['escala_opcion_token'] ?? null, $data['motivo'] ?? null);
+            if ($resource->llevar_planilla) {
+                app(AulaGradebookService::class)->transfer($resource, $request->user(),
+                    $submission->matricula_id, $value, $data['escala_opcion_token'] ?? null, $data['motivo'] ?? null);
+            }
             $before = $submission->toArray();
             $submission->update(['nota' => $value, 'escala_opcion_id' => $choice?->id,
                 'retroalimentacion' => $data['retroalimentacion'] ?? null,
@@ -886,7 +922,7 @@ final class AulaController extends Controller
         return ['tipo' => $data['tipo'], 'titulo' => trim($data['titulo']),
             'contenido' => ['bloques' => $data['contenido']['bloques'] ?? [],
                 'html' => isset($data['contenido']['html'])
-                    ? app(\App\Services\AulaHtmlSanitizer::class)->sanitize($data['contenido']['html']) : null],
+                    ? app(AulaHtmlSanitizer::class)->sanitize($data['contenido']['html']) : null],
             'configuracion' => $data['configuracion'] ?? [],
             'estado' => $data['visible_estudiantes'] ? 'publicado'
                 : ($existing?->estado === 'archivado' ? 'archivado' : 'borrador'),

@@ -11,3 +11,4 @@ Artisan::command('inspire', function () {
 Schedule::command('academico:sincronizar-periodos')->hourly()->withoutOverlapping();
 Schedule::command('aula:expirar-intentos')->everyMinute()->withoutOverlapping();
 Schedule::command('eventos:enviar-correos')->everyMinute()->withoutOverlapping();
+Schedule::command('drafts:prune')->hourly()->withoutOverlapping();
