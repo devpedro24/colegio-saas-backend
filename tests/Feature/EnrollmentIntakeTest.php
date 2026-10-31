@@ -434,7 +434,7 @@ class EnrollmentIntakeTest extends TestCase
     public function test_campaign_dates_remain_validated_with_optional_closure(): void
     {
         $payload = $this->configuration();
-        foreach (['2026-02-30', 'not-a-date', today()->subDays(2)->toDateString()] as $date) {
+        foreach (['2026-02-30', 'not-a-date', today($this->school->timezone ?: 'America/Bogota')->subDays(2)->toDateString()] as $date) {
             $payload['hasta'] = $date;
             $this->postJson($this->base.'/ingreso/campanas', $payload)->assertUnprocessable()->assertJsonValidationErrors('hasta');
         }
@@ -444,9 +444,9 @@ class EnrollmentIntakeTest extends TestCase
         $start = fn () => $this->postJson($this->base.'/ingreso-publico/'.$this->campaignToken.'/iniciar', [
             'email' => 'dates@example.test', 'grado_token' => OpaqueUrlToken::for('grado', $this->grade->id)]);
         $campaign = Campana::firstOrFail();
-        $campaign->update(['desde' => today()->addDay()->toDateString(), 'hasta' => null]);
+        $campaign->update(['desde' => today($this->school->timezone ?: 'America/Bogota')->addDay()->toDateString(), 'hasta' => null]);
         $start()->assertUnprocessable();
-        $campaign->update(['desde' => today()->subDays(2)->toDateString(), 'hasta' => today()->subDay()->toDateString()]);
+        $campaign->update(['desde' => today($this->school->timezone ?: 'America/Bogota')->subDays(2)->toDateString(), 'hasta' => today($this->school->timezone ?: 'America/Bogota')->subDay()->toDateString()]);
         $start()->assertUnprocessable();
         $campaign->update(['hasta' => now('America/Bogota')->toDateString()]);
         $start()->assertAccepted();
