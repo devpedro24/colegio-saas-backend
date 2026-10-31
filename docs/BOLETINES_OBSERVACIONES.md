@@ -1,6 +1,20 @@
 # Primer incremento del cierre: reglas y observaciones de boletín
 
+## Actualización del 23 de octubre de 2026
+
+Guardar una observación la deja disponible para generar el boletín: **ya no requiere aprobación**. Se mantienen la versión optimista, el autor y el historial. La observación de período solo se modifica con el período abierto y el año en curso; la observación final, con el año en curso. El catálogo informa `puede_editar` por período y `motivo_bloqueo`, y la API comprueba el estado bajo bloqueo. Los estados y el endpoint de aprobación anteriores se conservan para compatibilidad histórica, pero no condicionan la emisión nueva. Las referencias a aprobación en el resto de este documento describen el flujo anterior.
+
+El docente asignado y el director de grupo pueden escribir para sus estudiantes cuando tienen `boletines.observaciones.gestionar`. La misma comprobación de grupo se aplica al acceso individual y al trabajo desde `/academico/boletines/gestion`. Esta pantalla presenta los estudiantes a la izquierda y sus observaciones a la derecha; el año en curso y el grupo único se seleccionan automáticamente. No pide asignatura, porque la observación corresponde al estudiante y período.
+
 La ruta `GET /api/evaluacion/boletines/{matricula}` es una vista preliminar; la emisión oficial individual, el PDF privado y la publicación siguen el flujo separado descrito en `BOLETIN_EMISION.md`.
+
+### Lectura por grupo y caché
+
+La pantalla de trabajo utiliza `GET /api/boletines/observaciones/grupo` con `grupo_token` y `periodo_token`: una lectura para el grupo, no una por estudiante. Año y período aparecen en la cabecera; el período incluye su estado. Año y grupo se conservan mediante selectores públicos en la URL y memoria de la pestaña, sin almacenar información privada en `localStorage` ni `sessionStorage`.
+
+El servidor almacena únicamente el contenido de las observaciones durante cinco minutos, separado por colegio, grupo, período, matrículas y revisión. Guardar o aprobar invalida la revisión del grupo. En cada lectura se vuelven a comprobar permisos, asignación docente, pertenencia de las matrículas y bloqueos del año/período; esos controles no se cachean.
+
+Evaluación y boletines reutilizan la caché de React Query durante la navegación, con invalidación por cambios y la recuperación de tiempo real existente. Los eventos `bulletin-issues`, `bulletin-observations` y `bulletin-templates` actualizan únicamente sus familias de consultas: emitir un PDF no invalida el catálogo ni las observaciones. Las lecturas HTTP privadas siguen siendo `no-store`. F5 crea una conexión nueva y conserva su autenticación necesaria; no se reutilizan firmas de otro socket. Las pruebas usan datos sintéticos e incluyen un grupo de 25 estudiantes, retorno entre pantallas, F5, cierre de período y revocación de asignación/permisos.
 
 ## Regla institucional
 
@@ -19,7 +33,7 @@ Quien tiene `indicadores.grupo.editar` puede consultar la regla para saber si su
 `GET/PUT /api/boletines/observaciones/{matriculaToken}` devuelve/guarda una observación por período real o para el final anual. `POST .../aprobar` requiere permiso separado. Las escrituras llevan `contexto=periodo` con `periodo_token` del mismo año, o `contexto=final` sin período; también `version` optimista. El primer borrador usa versión 0. Editar una aprobada la devuelve a borrador y obliga a revisar otra vez. El historial guarda cada revisión con texto, estado, autor y fecha; la auditoría general registra la acción sin duplicar contenido personal.
 
 Los selectores de matrícula/período son opacos y se resuelven dentro del tenant. No se devuelve ID interno. El permiso de lectura/edición/aprobación es distinto; ni un docente solo por ser docente ni un estudiante puede abrir este formulario administrativo. La asignación de director de grupo se documenta en `DIRECTOR_GRUPO.md`.
-Un período cerrado puede recibir la observación de cierre, pero un año ya cerrado bloquea nuevas escrituras ordinarias; su eventual corrección histórica requiere un flujo autorizado aún pendiente.
+Un período cerrado no admite cambios de observación; la eventual corrección histórica requiere un proceso autorizado. El año cerrado también bloquea la observación final.
 
 Una observación aprobada puede incluirse en el snapshot de una emisión individual. Su estado `aprobada` se refiere al texto de la observación, **no** a la aprobación o publicación del boletín.
 

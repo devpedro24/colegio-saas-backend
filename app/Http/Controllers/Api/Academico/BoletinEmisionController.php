@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\Academico;
 
 use App\Http\Controllers\Controller;
+use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\BoletinEmision;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Services\BulletinIssueService;
+use App\Services\GradebookService;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use App\Support\Storage\StorageService;
@@ -16,8 +18,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Throwable;
 
 /** Emisión individual; la publicación, no la preparación ni aprobación, habilita descarga al estudiante. */
@@ -26,8 +28,10 @@ final class BoletinEmisionController extends Controller
     public function index(Request $request, string $matriculaToken): JsonResponse
     {
         $enrollment = $this->enrollment($matriculaToken);
+        $this->assertScope($request, $enrollment);
         $staff = $request->user()->can('boletines.emisiones.ver');
-        abort_unless($staff || $enrollment->estudiante_id === $request->user()->id, 403);
+        $teacher = app(GradebookService::class)->canReadAssignedReport($request->user(), $enrollment);
+        abort_unless($staff || $teacher || $enrollment->estudiante_id === $request->user()->id, 403);
         $rows = BoletinEmision::where('matricula_id', $enrollment->id)
             ->when(! $staff, fn ($query) => $query->where('estado', 'publicado'))
             ->orderByDesc('id')->paginate(20);
@@ -41,6 +45,7 @@ final class BoletinEmisionController extends Controller
         $this->permit($request, 'preparar');
         $data = $this->selection($request);
         $enrollment = $this->enrollment($matriculaToken);
+        $this->assertScope($request, $enrollment);
         [$context, $period] = $service->context($enrollment, $data['contexto'], $data['periodo_token'] ?? null);
         $template = $service->template($data['contexto'], $data['plantilla_token'] ?? null);
         $document = $service->build($enrollment, $data['contexto'], $period, $template);
@@ -57,8 +62,12 @@ final class BoletinEmisionController extends Controller
         $this->permit($request, 'preparar');
         $data = $this->selection($request);
         $enrollment = $this->enrollment($matriculaToken);
+        $this->assertScope($request, $enrollment);
         $issue = DB::transaction(function () use ($request, $service, $enrollment, $data): BoletinEmision {
-            Matricula::whereKey($enrollment->id)->lockForUpdate()->firstOrFail();
+            // Use the same first lock as grade, observation and recovery writers.
+            AnoLectivo::whereKey($enrollment->ano_lectivo_id)->lockForUpdate()->firstOrFail();
+            $enrollment = Matricula::whereKey($enrollment->id)->lockForUpdate()->firstOrFail();
+            $this->assertScope($request, $enrollment);
             [$context, $period] = $service->context($enrollment, $data['contexto'], $data['periodo_token'] ?? null);
             $template = $service->template($data['contexto'], $data['plantilla_token'] ?? null);
             $document = $service->build($enrollment->fresh(), $data['contexto'], $period, $template);
@@ -89,12 +98,17 @@ final class BoletinEmisionController extends Controller
 
     public function approve(Request $request, BulletinIssueService $service, string $issueToken): JsonResponse
     {
-        $this->permit($request, 'aprobar');
+        abort_unless($request->user()->can('boletines.emisiones.preparar')
+            || $request->user()->can('boletines.emisiones.aprobar'), 403);
         $issue = $this->issue($issueToken);
+        $this->assertScope($request, Matricula::findOrFail($issue->matricula_id));
         $path = null;
         try {
             $issue = DB::transaction(function () use ($request, $service, $issue, &$path): BoletinEmision {
-                Matricula::whereKey($issue->matricula_id)->lockForUpdate()->firstOrFail();
+                $enrollment = Matricula::findOrFail($issue->matricula_id);
+                AnoLectivo::whereKey($enrollment->ano_lectivo_id)->lockForUpdate()->firstOrFail();
+                $enrollment = Matricula::whereKey($issue->matricula_id)->lockForUpdate()->firstOrFail();
+                $this->assertScope($request, $enrollment);
                 $locked = BoletinEmision::whereKey($issue->id)->lockForUpdate()->firstOrFail();
                 abort_unless($locked->estado === 'preparado', 409, 'Solo una preparación pendiente puede aprobarse.');
                 $this->assertLatest($locked);
@@ -125,8 +139,12 @@ final class BoletinEmisionController extends Controller
     {
         $this->permit($request, 'publicar');
         $issue = $this->issue($issueToken);
+        $this->assertScope($request, Matricula::findOrFail($issue->matricula_id));
         $issue = DB::transaction(function () use ($request, $service, $issue): BoletinEmision {
-            Matricula::whereKey($issue->matricula_id)->lockForUpdate()->firstOrFail();
+            $enrollment = Matricula::findOrFail($issue->matricula_id);
+            AnoLectivo::whereKey($enrollment->ano_lectivo_id)->lockForUpdate()->firstOrFail();
+            $enrollment = Matricula::whereKey($issue->matricula_id)->lockForUpdate()->firstOrFail();
+            $this->assertScope($request, $enrollment);
             $locked = BoletinEmision::whereKey($issue->id)->lockForUpdate()->firstOrFail();
             if ($locked->estado === 'publicado') {
                 return $locked;
@@ -154,8 +172,11 @@ final class BoletinEmisionController extends Controller
     {
         $issue = $this->issue($issueToken);
         $staff = $request->user()->can('boletines.emisiones.ver');
-        $owner = Matricula::whereKey($issue->matricula_id)->where('estudiante_id', $request->user()->id)->exists();
-        abort_unless($staff || ($owner && $issue->estado === 'publicado'), 403);
+        $enrollment = Matricula::findOrFail($issue->matricula_id);
+        $this->assertScope($request, $enrollment);
+        $owner = $enrollment->estudiante_id === $request->user()->id;
+        $teacher = app(GradebookService::class)->canReadAssignedReport($request->user(), $enrollment);
+        abort_unless($staff || (($owner || $teacher) && $issue->estado === 'publicado'), 403);
         abort_unless(in_array($issue->estado, ['aprobado', 'publicado', 'sustituido'], true), 404);
         $content = $this->verifiedPdf($issue);
         AuditLogger::tenant($request->user(), 'READ', 'boletin_emision', (string) $issue->id,
@@ -171,6 +192,25 @@ final class BoletinEmisionController extends Controller
         return $request->validate(['contexto' => ['required', Rule::in(['periodo', 'final'])],
             'periodo_token' => ['required_if:contexto,periodo', 'prohibited_if:contexto,final', 'string'],
             'plantilla_token' => ['nullable', 'string']]);
+    }
+
+    /** Generate an archived PDF directly; publishing remains a separate visibility choice. */
+    public function emit(Request $request, BulletinIssueService $service, string $matriculaToken): JsonResponse
+    {
+        $this->permit($request, 'preparar');
+        $prepared = $this->prepare($request, $service, $matriculaToken)->getData(true)['data'];
+        if ($prepared['estado'] === 'preparado') {
+            return $this->approve($request, $service, $prepared['token']);
+        }
+
+        return response()->json(['data' => $prepared]);
+    }
+
+    private function assertScope(Request $request, Matricula $enrollment): void
+    {
+        if (in_array($request->user()->role, ['docente', 'director_grupo'], true)) {
+            abort_unless(app(GradebookService::class)->canReadAssignedReport($request->user(), $enrollment), 403);
+        }
     }
 
     private function rebuild(BulletinIssueService $service, BoletinEmision $issue): array

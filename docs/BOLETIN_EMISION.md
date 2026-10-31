@@ -1,5 +1,16 @@
 # Emisión individual de boletines — incremento local (14-10-2026)
 
+## Flujo vigente desde el 23 de octubre de 2026
+
+- `POST /boletines/emisiones/{matriculaToken}/emitir` recibe la misma selección de período/final y plantilla, requiere `boletines.emisiones.preparar`, prepara el snapshot y genera directamente el PDF privado. No requiere aprobar previamente la observación ni una aprobación humana del PDF. Los estados internos históricos se conservan: `aprobado` significa PDF generado en la interfaz nueva.
+- Publicar sigue siendo una acción de visibilidad independiente con `boletines.emisiones.publicar`; generar no expone automáticamente el documento al estudiante.
+- Docente y director de grupo tienen celdas configurables, activadas por defecto, para consultar plantillas, consultar documentos, generar y publicar. Toda lectura y escritura de emisiones verifica su grupo asignado/dirigido, incluso al descargar por token.
+- `/academico/boletines/gestion` tiene pestañas de observaciones y boletines. Permite seleccionar algunos o todos los estudiantes del grupo y una plantilla publicada o base. Ejecuta peticiones individuales secuenciales, muestra el resultado/error de cada estudiante y no repite revisiones idénticas. No es un trabajo en segundo plano: se debe mantener la página abierta.
+- Se puede emitir con el **período abierto o cerrado**, siempre con resultados completos, observación guardada y los permisos correspondientes. Un período planificado no admite emisión. Cerrar bloquea cambios ordinarios, no la generación del documento con los datos ya guardados. El boletín final anual mantiene sus requisitos de cierre y promoción vigente.
+- Las escrituras de emisiones toman primero el bloqueo del año, igual que notas y recuperaciones, para congelar insumos consistentes. Si las notas cambian durante el período abierto, la siguiente emisión crea una revisión nueva; nunca sobrescribe el PDF anterior. Las descripciones de aprobación humana a continuación son históricas.
+
+Migraciones locales aplicadas: central `2026_10_23_000002_allow_scoped_teacher_bulletin_issuance` y tenant `2026_10_23_000002_grant_scoped_teacher_bulletin_issuance`, en los cinco tenants. Solo cambian permisos; no emiten documentos ni alteran notas.
+
 La vista de notas sigue siendo **preliminar**. La emisión oficial es otra operación: selecciona un estudiante y un período cerrado (o el final de año cerrado), valida resultados completos y observación aprobada, prepara una instantánea, aprueba un PDF privado y solo después lo publica al estudiante. No se hicieron emisiones en colegios reales durante la implementación; las pruebas usan bases efímeras y estudiantes sintéticos.
 
 ## Contrato

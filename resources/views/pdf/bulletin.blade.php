@@ -21,6 +21,8 @@
         .grid th { background: {{ $document['plantilla']['configuracion']['accent'] }}; color: #fff; text-align: left; }
         .grid th, .grid td { padding: 6px 8px; border: 1px solid #dce4ec; }
         .grid tr:nth-child(even) td { background: #f6f8fb; }
+        .grid td ul, .grid td ol { margin: 4px 0 5px; padding-left: 18px; }
+        .grid td li { margin: 2px 0; }
         .box { background: #f3f6fa; border-left: 3px solid {{ $document['plantilla']['configuracion']['accent'] }}; padding: 10px 12px; }
         .foot { position: fixed; bottom: -23px; right: 0; color: #64748b; font-size: 8px; }
     </style>
@@ -58,9 +60,13 @@
                 @break
             @case('indicators')
                 @if(count($document['indicadores']))
-                    <h2>Indicadores de aprendizaje</h2><table class="grid"><thead><tr><th>Período</th><th>Asignatura</th><th>Aprendizaje esperado</th></tr></thead><tbody>
-                    @foreach($document['indicadores'] as $row)<tr><td>{{ $row['periodo'] }}</td><td>{{ $row['materia'] }}</td><td>{{ $row['texto'] }}</td></tr>@endforeach
-                    </tbody></table>
+                    <h2>Indicadores de aprendizaje</h2>
+                    @foreach(collect($document['indicadores'])->groupBy('periodo') as $periodo => $rows)
+                        <h3>{{ $periodo }}</h3>
+                        <table class="grid"><thead><tr><th>Asignatura</th><th>Descripción</th></tr></thead><tbody>
+                        @foreach($rows as $row)<tr><td>{{ $row['materia'] }}</td><td>{!! isset($row['texto_html']) ? app(\App\Services\IndicatorHtml::class)->sanitize($row['texto_html']) : nl2br(e($row['texto'])) !!}</td></tr>@endforeach
+                        </tbody></table>
+                    @endforeach
                 @endif
                 @break
             @case('observations')

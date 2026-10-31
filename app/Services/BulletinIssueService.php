@@ -16,7 +16,7 @@ use Dompdf\Options;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
-/** Resolves an individual, complete, closed academic context into a frozen document. */
+/** Resolves a complete academic context into an immutable document snapshot. */
 final class BulletinIssueService
 {
     public function __construct(private GradebookService $book, private AcademicPromotionService $promotions,
@@ -61,7 +61,9 @@ final class BulletinIssueService
         abort_unless($enrollment->estado === 'activa', 422, 'Solo se emite para una matrícula activa.');
         $year = AnoLectivo::findOrFail($enrollment->ano_lectivo_id);
         if ($scope === 'periodo') {
-            abort_unless($period?->estaCerrado(), 422, 'El período debe estar cerrado antes de preparar el boletín.');
+            abort_unless($period && $period->ano_lectivo_id === $year->id
+                && in_array($period->estado, [Periodo::ESTADO_ABIERTO, Periodo::ESTADO_CERRADO], true),
+                422, 'Solo se emiten boletines de períodos abiertos o cerrados del año de la matrícula.');
         } else {
             abort_unless($year->estaCerrado(), 422, 'El año debe estar cerrado antes de preparar el boletín final.');
             abort_unless(Periodo::where('ano_lectivo_id', $year->id)->count() === $year->num_periodos
@@ -73,10 +75,8 @@ final class BulletinIssueService
         $requiredObservation = $scope === 'periodo' || (bool) ($policy?->requiere_observacion_final ?? false);
         $observation = DB::table('observaciones_boletin')->where('matricula_id', $enrollment->id)
             ->where('contexto', $context)->first();
-        abort_if($requiredObservation && (! $observation || $observation->estado !== 'aprobada'), 422,
-            'La observación requerida debe estar aprobada antes de preparar el boletín.');
-        abort_if($observation && $observation->estado !== 'aprobada', 422,
-            'La observación existente debe estar aprobada antes de preparar el boletín.');
+        abort_if($requiredObservation && (! $observation || trim($observation->contenido) === ''), 422,
+            'Guarda la observación requerida antes de generar el boletín.');
 
         $report = $this->book->report($enrollment);
         abort_if($report['advertencias'] !== [], 422, 'El informe tiene asignaturas pendientes en el currículo.');
@@ -92,11 +92,9 @@ final class BulletinIssueService
         $areaRows = collect($report['areas'])->map(fn (array $row): array => [
             'nombre' => $row['nombre'], 'resultado' => $selectResult($row),
         ])->sortBy('nombre')->values()->all();
-        abort_if(collect([...$subjectRows, ...$areaRows])->contains(fn (array $row) =>
-            ($row['resultado']['estado'] ?? null) !== 'calculado'), 422,
+        abort_if(collect([...$subjectRows, ...$areaRows])->contains(fn (array $row) => ($row['resultado']['estado'] ?? null) !== 'calculado'), 422,
             'Hay resultados académicos pendientes. No se emite un boletín incompleto.');
-        $indicators = collect($report['indicadores'] ?? [])->filter(fn (array $row) =>
-            $scope === 'final' || $row['periodo_id'] === $period?->id)->values()->all();
+        $indicators = collect($report['indicadores'] ?? [])->filter(fn (array $row) => $scope === 'final' || $row['periodo_id'] === $period?->id)->values()->all();
 
         $promotion = null;
         if ($scope === 'final') {
@@ -137,7 +135,7 @@ final class BulletinIssueService
 
     public function render(array $snapshot, ?string $logo): string
     {
-        $options = new Options();
+        $options = new Options;
         $options->set('isRemoteEnabled', false);
         $options->set('isPhpEnabled', false);
         $options->set('defaultFont', 'DejaVu Sans');

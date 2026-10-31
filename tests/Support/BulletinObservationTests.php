@@ -6,6 +6,7 @@ namespace Tests\Support;
 
 use App\Http\Middleware\EnsureOnboardingComplete;
 use App\Models\Academico\AnoLectivo;
+use App\Models\Academico\Grupo;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\User;
@@ -39,18 +40,17 @@ trait BulletinObservationTests
         $api = $this->bulletinApi($this->teacher);
         $this->getJson($api.'/politica')->assertForbidden();
         $this->putJson($api.'/politica', ['version' => 1,
-            'requiere_observacion_final' => true, 'docente_edita_indicadores_grupo' => true])->assertForbidden();
+            'requiere_observacion_final' => true])->assertForbidden();
 
         $this->bulletinApi($this->rector);
         $this->getJson($api.'/politica')->assertOk()
-            ->assertJsonPath('data.requiere_observacion_final', false)
-            ->assertJsonPath('data.docente_edita_indicadores_grupo', false);
+            ->assertJsonPath('data.requiere_observacion_final', false);
         $this->putJson($api.'/politica', ['version' => 1,
-            'requiere_observacion_final' => true, 'docente_edita_indicadores_grupo' => true])
+            'requiere_observacion_final' => true])
             ->assertOk()->assertJsonPath('data.version', 2)
             ->assertJsonPath('data.requiere_observacion_final', true);
         $this->putJson($api.'/politica', ['version' => 1,
-            'requiere_observacion_final' => false, 'docente_edita_indicadores_grupo' => false])->assertConflict();
+            'requiere_observacion_final' => false])->assertConflict();
         $this->assertDatabaseHas('audit_logs', ['recurso' => 'configuracion_boletines', 'accion' => 'UPDATE']);
     }
 
@@ -100,5 +100,48 @@ trait BulletinObservationTests
         $this->postJson($api.'/aprobar', ['contexto' => 'periodo', 'periodo_token' => $periodToken, 'version' => 3])
             ->assertForbidden();
         $this->assertDatabaseHas('audit_logs', ['recurso' => 'observacion_boletin', 'accion' => 'APPROVE']);
+    }
+
+    public function test_teacher_and_group_director_edit_observations_only_for_their_students(): void
+    {
+        $permission = Permission::findOrCreate('boletines.observaciones.gestionar', 'web');
+        $this->teacher->givePermissionTo($permission);
+        $this->teacher->givePermissionTo(Permission::findOrCreate('boletines.grupo.ver', 'web'));
+        $director = User::create(['name' => 'Director', 'email' => 'director-observaciones@test.test',
+            'password' => 'TestingPassword123!', 'role' => 'docente', 'status' => 'active']);
+        $director->assignRole(Role::findOrCreate('director_grupo', 'web'));
+        $director->givePermissionTo($permission);
+        $director->givePermissionTo(Permission::findOrCreate('boletines.grupo.ver', 'web'));
+        DB::table('directores_grupo')->insert(['grupo_id' => $this->group->id, 'docente_id' => $director->id,
+            'actualizado_por' => $this->rector->id, 'version' => 1, 'asignado_en' => now(),
+            'created_at' => now(), 'updated_at' => now()]);
+        $otherGroup = Grupo::create(['grado_id' => $this->group->grado_id,
+            'ano_lectivo_id' => $this->year->id, 'nombre' => 'B', 'jornada_id' => $this->group->jornada_id,
+            'sede_id' => $this->group->sede_id, 'estado' => 'activo']);
+        $student = User::create(['name' => 'Estudiante propio', 'email' => 'propio-observaciones@test.test',
+            'password' => 'TestingPassword123!', 'role' => 'estudiante', 'status' => 'active']);
+        $otherStudent = User::create(['name' => 'Estudiante ajeno', 'email' => 'ajeno-observaciones@test.test',
+            'password' => 'TestingPassword123!', 'role' => 'estudiante', 'status' => 'active']);
+        $own = Matricula::create(['estudiante_id' => $student->id, 'grupo_id' => $this->group->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $other = Matricula::create(['estudiante_id' => $otherStudent->id, 'grupo_id' => $otherGroup->id,
+            'ano_lectivo_id' => $this->year->id, 'estado' => 'activa']);
+        $ownToken = OpaqueUrlToken::for('matricula', $own->id);
+        $otherToken = OpaqueUrlToken::for('matricula', $other->id);
+        $payload = ['contexto' => 'final', 'contenido' => 'Observación del grupo autorizado.', 'version' => 0];
+
+        foreach ([$this->teacher, $director] as $actor) {
+            $api = $this->bulletinApi($actor).'/observaciones/';
+            $this->getJson($api.$ownToken)->assertOk()->assertJsonPath('data.puede_editar', true)
+                ->assertJsonPath('data.puede_aprobar', false);
+            $this->getJson($api.$otherToken)->assertForbidden();
+            $this->putJson($api.$otherToken, $payload)->assertForbidden();
+            $this->postJson($api.$ownToken.'/aprobar', ['contexto' => 'final', 'version' => 1])
+                ->assertForbidden();
+        }
+        $this->bulletinApi($this->teacher);
+        $this->putJson('http://localhost/api/boletines/observaciones/'.$ownToken, $payload)
+            ->assertOk()->assertJsonPath('data.estado', 'borrador');
+        $this->assertDatabaseMissing('observaciones_boletin', ['matricula_id' => $other->id]);
     }
 }
