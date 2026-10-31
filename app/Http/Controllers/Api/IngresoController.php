@@ -86,7 +86,7 @@ final class IngresoController extends Controller
             'configuracion.campos' => 'present|array|max:20', 'configuracion.campos.*' => 'array:key,nombre,obligatorio,tipo',
             'configuracion.campos.*.key' => 'required|string|regex:/^[a-z][a-z0-9_]{0,49}$/|distinct',
             'configuracion.campos.*.nombre' => 'required|string|max:120', 'configuracion.campos.*.obligatorio' => 'required|boolean',
-            'configuracion.campos.*.tipo' => ['required', Rule::in(['texto', 'fecha'])]]);
+            'configuracion.campos.*.tipo' => ['required', Rule::in(['texto', 'fecha', 'numero'])]]);
         if ($d['configuracion']['pin_expira_en'] !== null) {
             $pinDeadline = CarbonImmutable::createFromFormat('!Y-m-d\TH:i', $d['configuracion']['pin_expira_en'], tenant()->zonaHorariaInstitucional());
             abort_unless($pinDeadline && $pinDeadline->isFuture(), 422, __('La fecha de vencimiento del PIN debe estar en el futuro.'));

@@ -9,7 +9,7 @@ class SetIntakeLocale
 {
     public function handle(Request $request, Closure $next)
     {
-        if (! $request->is('api/ingreso/*', 'api/ingreso-publico/*', 'api/correo-institucional', 'api/correo-institucional/*', 'api/platform/correo-solicitudes', 'api/platform/correo-solicitudes/*')) {
+        if (! $request->is('api/matriculas', 'api/matriculas/*', 'api/ingreso/*', 'api/ingreso-publico/*', 'api/correo-institucional', 'api/correo-institucional/*', 'api/platform/correo-solicitudes', 'api/platform/correo-solicitudes/*')) {
             return $next($request);
         }
         $previous = app()->getLocale();

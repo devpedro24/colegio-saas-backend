@@ -23,6 +23,8 @@ use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Ingreso\EnrollmentIntake;
 use App\Services\Ingreso\EnrollmentMail;
+use App\Services\Ingreso\EnrollmentRenewal;
+use App\Services\Ingreso\EnrollmentSubmission;
 use App\Services\Ingreso\IdentityDocumentReader;
 use App\Services\SchoolMail;
 use App\Services\TenantOnboarding;
@@ -46,6 +48,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Tests\TestCase;
@@ -90,7 +93,7 @@ class EnrollmentIntakeTest extends TestCase
         $this->school = Tenant::withoutEvents(fn () => Tenant::create(['id' => 'intake-test', 'name' => 'Colegio pruebas',
             'slug' => 'intake', 'plan' => 'esencial', 'status' => 'active']));
         $this->school->domains()->create(['domain' => 'intake']);
-        Plan::create(['key' => 'esencial', 'name' => 'Esencial', 'features' => ['academico'], 'max_estudiantes' => 300]);
+        Plan::create(['key' => 'esencial', 'name' => 'Esencial', 'features' => ['nucleo', 'academico'], 'max_estudiantes' => 300]);
         DB::setDefaultConnection('intake_test');
         Artisan::call('migrate', ['--database' => 'intake_test', '--path' => 'database/migrations/tenant', '--force' => true]);
         tenancy()->initialize($this->school);
@@ -357,9 +360,9 @@ class EnrollmentIntakeTest extends TestCase
         $this->putJson($this->base.'/ingreso/campanas/'.$this->campaignToken, $this->configuration())->assertOk();
         $this->assertArrayNotHasKey('max_mb', $campaign->fresh()->configuracion['documentos'][0]);
         $this->assertSame(1000000000, config('enrollment.max_file_bytes'));
-        $this->assertLessThanOrEqual(1000000000, \App\Services\Ingreso\EnrollmentSubmission::limits()['max_file_bytes']);
+        $this->assertLessThanOrEqual(1000000000, EnrollmentSubmission::limits()['max_file_bytes']);
         $this->assertSame(1000000000, config('enrollment.max_submission_bytes'));
-        $this->assertLessThanOrEqual(1000000000, \App\Services\Ingreso\EnrollmentSubmission::limits()['max_submission_bytes']);
+        $this->assertLessThanOrEqual(1000000000, EnrollmentSubmission::limits()['max_submission_bytes']);
     }
 
     public function test_open_ended_campaign_persists_and_can_be_paused_without_losing_follow_up(): void
@@ -625,6 +628,42 @@ class EnrollmentIntakeTest extends TestCase
             'direccion' => 'Calle 1 # 2-3', 'pais' => 'CO', 'departamento' => '41', 'municipio' => '41001', 'adicionales' => []];
     }
 
+    public function test_manual_enrollment_reuses_validations_creates_account_and_exposes_a_separate_roster(): void
+    {
+        $this->rector->givePermissionTo(Permission::findOrCreate('academico.matriculas.gestionar', 'web'));
+        $this->staff();
+        $payload = ['campana_token' => $this->campaignToken, 'grupo_token' => OpaqueUrlToken::for('grupo', $this->group->id),
+            'email' => 'manual@test.test', 'envio_token' => (string) Str::uuid(), 'datos' => json_encode($this->data()),
+            'enviar' => '1', 'consentimiento' => '1',
+            'privacidad_version' => app(EnrollmentIntake::class)->campaign(Campana::firstOrFail())['privacidad_version'],
+            'documentos' => ['identidad' => UploadedFile::fake()->image('identidad.png')]];
+        $this->post($this->base.'/matriculas', [...$payload, 'documentos' => []], ['Accept' => 'application/json'])->assertUnprocessable();
+        $this->assertDatabaseCount('matriculas', 0);
+        $response = $this->post($this->base.'/matriculas', $payload, ['Accept' => 'application/json'])
+            ->assertCreated()->assertJsonPath('data.origen', 'manual');
+        $token = $response->json('data.token');
+        $this->assertSame(24, strlen($token));
+        $this->assertArrayNotHasKey('id', $response->json('data'));
+        $student = User::where('email', 'manual@test.test')->firstOrFail();
+        $this->assertTrue($student->must_change_password);
+        $this->assertNotNull($student->temporary_password_expires_at);
+        $application = Solicitud::where('email', 'manual@test.test')->firstOrFail();
+        $this->assertNull($application->email_verificado, 'Staff registration must not invent email verification.');
+        $this->assertTrue(Notificacion::where('clave', $application->id.':credenciales')->exists());
+        $this->post($this->base.'/matriculas', $payload, ['Accept' => 'application/json'])->assertCreated()->assertJsonPath('data.token', $token);
+        $this->assertDatabaseCount('matriculas', 1);
+        $this->getJson($this->base.'/matriculas?origen=manual')->assertOk()->assertJsonPath('total', 1);
+        $this->getJson($this->base.'/matriculas?origen=enlace')->assertOk()->assertJsonPath('total', 0);
+        $this->getJson($this->base.'/matriculas?campana_token='.$this->campaignToken)->assertOk()->assertJsonPath('total', 1);
+        $this->getJson($this->base.'/matriculas/'.$token)->assertOk()->assertJsonPath('data.datos.primer_nombre', 'Ana')->assertJsonCount(1, 'data.documentos');
+        $this->getJson($this->base.'/matriculas/1')->assertNotFound();
+        $this->getJson($this->base.'/matriculas?ano_token='.str_repeat('z', 24))->assertNotFound();
+        $this->staff($student);
+        $this->getJson($this->base.'/matriculas')->assertForbidden();
+        $this->getJson($this->base.'/matriculas/'.$token)->assertForbidden();
+        $this->post($this->base.'/matriculas', $payload, ['Accept' => 'application/json'])->assertForbidden();
+    }
+
     private function upload(): string
     {
         $this->submissionKey = (string) Str::uuid();
@@ -670,6 +709,24 @@ class EnrollmentIntakeTest extends TestCase
         $this->send($data)->assertUnprocessable();
         $data['telefono'] = '+573186037751';
         $this->send($data)->assertOk();
+    }
+
+    public function test_numeric_additional_field_keeps_leading_zeroes_and_rejects_letters(): void
+    {
+        $payload = $this->configuration();
+        $payload['configuracion']['campos'] = [[
+            'key' => 'telefono_emergencia', 'nombre' => 'Teléfono de contacto de emergencia',
+            'obligatorio' => true, 'tipo' => 'numero',
+        ]];
+        $this->putJson($this->base.'/ingreso/campanas/'.$this->campaignToken, $payload)
+            ->assertOk()->assertJsonPath('data.configuracion.campos.0.tipo', 'numero');
+        $this->start();
+        $this->upload();
+        $data = $this->data();
+        $data['adicionales']['telefono_emergencia'] = '300ABC1234';
+        $this->send($data)->assertUnprocessable()->assertJsonValidationErrors('datos.adicionales.telefono_emergencia');
+        $data['adicionales']['telefono_emergencia'] = '0123456789';
+        $this->send($data)->assertOk()->assertJsonPath('data.datos.adicionales.telefono_emergencia', '0123456789');
     }
 
     public function test_final_submission_rejects_whitespace_mismatched_identity_and_invalid_municipality_without_persisting(): void
@@ -1169,9 +1226,9 @@ class EnrollmentIntakeTest extends TestCase
             ->where('ano_lectivo_id', $this->year->id)->firstOrFail()->grupo->grado_id);
 
         try {
-            app(\App\Services\Ingreso\EnrollmentRenewal::class)->find(Solicitud::where('estudiante_id', $student->id)->firstOrFail(), 'TI', '123456789');
+            app(EnrollmentRenewal::class)->find(Solicitud::where('estudiante_id', $student->id)->firstOrFail(), 'TI', '123456789');
             $this->fail('A second enrollment in the same academic year must be rejected.');
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             $this->assertArrayHasKey('datos.numero_documento', $e->errors());
         }
         $this->assertSame(1, User::where('email', $student->email)->count());

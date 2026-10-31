@@ -30,6 +30,7 @@ final class EnrollmentSubmission
         $bytes = static function (string $limit): int {
             $limit = trim($limit);
             $unit = strtolower(substr($limit, -1));
+
             return (int) ((float) $limit * match ($unit) {
                 'g' => 1073741824, 'm' => 1048576, 'k' => 1024, default => 1,
             });
@@ -74,7 +75,7 @@ final class EnrollmentSubmission
         foreach ($s->campana->configuracion['campos'] as $field) {
             $phone = preg_match('/telefono|celular|movil/', Str::lower(Str::ascii($field['key'].' '.$field['nombre'])));
             $rules['datos.adicionales.'.$field['key']] = [$field['obligatorio'] ? 'required' : 'nullable',
-                ...($field['tipo'] === 'fecha' ? ['date_format:Y-m-d'] : ($phone ? ['string', 'regex:/^\+[0-9]{7,15}$/'] : ['string', 'max:1000']))];
+                ...($field['tipo'] === 'fecha' ? ['date_format:Y-m-d'] : ($field['tipo'] === 'numero' ? ['string', 'max:1000', 'regex:/^[0-9]+$/D'] : ($phone ? ['string', 'regex:/^\+[0-9]{7,15}$/'] : ['string', 'max:1000'])))];
         }
         $requirements = collect($this->intake->requirements($s))->keyBy('key');
         foreach ($requirements as $key => $requirement) {

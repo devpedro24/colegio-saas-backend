@@ -189,9 +189,11 @@ final class EnrollmentIntake
     }
 
     /** Lock order shared with academic enrollment: year, campaign, request, group. */
-    public function decide(Solicitud $request, User $actor, array $data): Solicitud
+    public function decide(Solicitud $request, User $actor, array $data, bool $manual = false): Solicitud
     {
-        return DB::transaction(function () use ($request, $actor, $data) {
+        abort_if($manual && ! $actor->can('academico.matriculas.gestionar'), 403);
+
+        return DB::transaction(function () use ($request, $actor, $data, $manual) {
             $year = AnoLectivo::lockForUpdate()->findOrFail($request->campana->ano_lectivo_id);
             $campaign = Campana::lockForUpdate()->findOrFail($request->campana_id);
             $s = Solicitud::lockForUpdate()->findOrFail($request->id);
@@ -201,7 +203,7 @@ final class EnrollmentIntake
             abort_unless(in_array($year->estado, ['planificado', 'en_curso'], true), 422, __('El año lectivo está cerrado.'));
             abort_unless(in_array($s->estado, self::REVIEWABLE, true), 422, __('La solicitud no admite esta decisión.'));
             if ($data['estado'] === 'aprobada') {
-                abort_if($s->estado === 'correcciones' || ! $s->email_verificado || ! $s->consentimiento_en || ! $s->enviada_en,
+                abort_if($s->estado === 'correcciones' || (! $manual && ! $s->email_verificado) || ! $s->consentimiento_en || ! $s->enviada_en,
                     422, __('El aspirante debe completar y enviar la solicitud antes de aprobarla.'));
                 $grade = $this->resolve('grado', $data['grado_token'], Grado::where('ano_lectivo_id', $year->id)->where('estado', 'activo'));
                 if ($grade->id !== $s->grado_id) {
