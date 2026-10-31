@@ -60,5 +60,19 @@
   "Prueba de conexión del colegio": "Prueba de conexión del colegio",
   "Google no aceptó la prueba. Verifica el correo, la contraseña de aplicación, la verificación en dos pasos y que el servidor permita SMTP seguro.": "Google no aceptó la prueba. Verifica el correo, la contraseña de aplicación, la verificación en dos pasos y que el servidor permita SMTP seguro.",
   "La conexión está bloqueada. Solicita autorización al superadministrador para este cambio.": "La conexión está bloqueada. Solicita autorización al superadministrador para este cambio.",
-  "Ya existe una solicitud pendiente o autorización vigente para esta conexión.": "Ya existe una solicitud pendiente o autorización vigente para esta conexión."
+  "Ya existe una solicitud pendiente o autorización vigente para esta conexión.": "Ya existe una solicitud pendiente o autorización vigente para esta conexión.",
+  "Los rangos deben cubrir la escala completa, sin huecos ni superposiciones, con un decimal.": "Los rangos deben cubrir la escala completa, sin huecos ni superposiciones, con un decimal.",
+  "El diseño contiene un elemento o valor no admitido.": "El diseño contiene un elemento o valor no admitido.",
+  "Configura los rangos de desempeño de la escala en el SIEE antes de emitir con esta columna.": "Configura los rangos de desempeño de la escala en el SIEE antes de emitir con esta columna.",
+  "Esta plantilla usa resultados por área. Activa su cálculo en el SIEE o cambia la tabla a asignaturas.": "Esta plantilla usa resultados por área. Activa su cálculo en el SIEE o cambia la tabla a asignaturas.",
+  "Una imagen de la plantilla ya no está disponible.": "Una imagen de la plantilla ya no está disponible.",
+  "El boletín supera el tamaño permitido.": "El boletín supera el tamaño permitido.",
+  "No se pudo distribuir el boletín. Revisa el tamaño de los bloques y las columnas de la plantilla.": "No se pudo distribuir el boletín. Revisa el tamaño de los bloques y las columnas de la plantilla.",
+  "El boletín supera el límite de páginas.": "El boletín supera el límite de páginas.",
+  "cursó y aprobó": "cursó y aprobó",
+  "cursó": "cursó",
+  "Final": "Final",
+  "La plantilla cambió. Recarga antes de eliminar.": "La plantilla cambió. Recarga antes de eliminar.",
+  "El boletín no contiene páginas visibles.": "El boletín no contiene páginas visibles.",
+  "La paginación del PDF no coincide con el boletín.": "La paginación del PDF no coincide con el boletín."
 }

@@ -2,14 +2,6 @@
 
 declare(strict_types=1);
 
-require __DIR__.'/work_drafts.php';
-Route::post('/work-draft-files/response/{resourceToken}/{token}', [WorkDraftFileController::class, 'storeResponse'])
-    ->where(['resourceToken' => '[A-Za-z0-9_-]{24}', 'token' => '[A-Za-z0-9_-]{24}'])->middleware('throttle:30,1');
-Route::post('/work-draft-files/{sectionToken}/{token}', [WorkDraftFileController::class, 'store'])
-    ->where(['sectionToken' => '[A-Za-z0-9_-]{24}', 'token' => '[A-Za-z0-9_-]{24}'])->middleware('throttle:30,1');
-Route::get('/work-draft-files/{token}', [WorkDraftFileController::class, 'show'])
-    ->where('token', '[A-Za-z0-9_-]{24}')->middleware('throttle:60,1');
-
 use App\Http\Controllers\Api\Academico\AcademicOptionsController;
 use App\Http\Controllers\Api\Academico\AnoLectivoController;
 use App\Http\Controllers\Api\Academico\AsistenciaController;
@@ -65,6 +57,14 @@ use App\Http\Middleware\ResolveOpaqueSieeYear;
 use App\Services\ConfigurationGate;
 use Illuminate\Support\Facades\Route;
 
+require __DIR__.'/work_drafts.php';
+Route::post('/work-draft-files/response/{resourceToken}/{token}', [WorkDraftFileController::class, 'storeResponse'])
+    ->where(['resourceToken' => '[A-Za-z0-9_-]{24}', 'token' => '[A-Za-z0-9_-]{24}'])->middleware('throttle:30,1');
+Route::post('/work-draft-files/{sectionToken}/{token}', [WorkDraftFileController::class, 'store'])
+    ->where(['sectionToken' => '[A-Za-z0-9_-]{24}', 'token' => '[A-Za-z0-9_-]{24}'])->middleware('throttle:30,1');
+Route::get('/work-draft-files/{token}', [WorkDraftFileController::class, 'show'])
+    ->where('token', '[A-Za-z0-9_-]{24}')->middleware('throttle:60,1');
+
 /*
 |--------------------------------------------------------------------------
 | Rutas ACADEMICAS del colegio (Bloque A / Fase 1) — COMPARTIDAS
@@ -114,8 +114,12 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
     Route::post('/boletines/observaciones/{matriculaToken}/aprobar', [BoletinObservacionController::class, 'aprobar']);
     Route::get('/boletines/plantillas', [BoletinPlantillaController::class, 'index']);
     Route::post('/boletines/plantillas', [BoletinPlantillaController::class, 'create']);
+    Route::post('/boletines/plantillas/archivos', [BoletinPlantillaController::class, 'uploadAsset']);
+    Route::get('/boletines/plantillas/archivos/{token}', [BoletinPlantillaController::class, 'asset']);
+    Route::get('/boletines/plantillas/{token}/revisiones', [BoletinPlantillaController::class, 'revisions']);
     Route::get('/boletines/plantillas/{token}', [BoletinPlantillaController::class, 'show']);
     Route::put('/boletines/plantillas/{token}', [BoletinPlantillaController::class, 'save']);
+    Route::delete('/boletines/plantillas/{token}', [BoletinPlantillaController::class, 'destroy']);
     Route::post('/boletines/plantillas/{token}/publicar', [BoletinPlantillaController::class, 'publish']);
     Route::get('/boletines/emisiones/{matriculaToken}', [BoletinEmisionController::class, 'index']);
     Route::get('/boletines/emisiones/{matriculaToken}/preparacion', [BoletinEmisionController::class, 'preview']);
