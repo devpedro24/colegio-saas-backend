@@ -11,6 +11,7 @@ use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\PromocionAcademica;
 use App\Support\OpaqueUrlToken;
+use App\Support\StudentRosterName;
 use Dompdf\Dompdf;
 use Dompdf\Options;
 use Illuminate\Support\Facades\DB;
@@ -116,8 +117,10 @@ final class BulletinIssueService
         $snapshot = [
             'colegio' => ['nombre' => $institution?->nombre ?: tenant('name'), 'nit' => $institution?->nit,
                 'direccion' => $institution?->direccion, 'resolucion' => $institution?->resolucion_men,
+                'telefono' => $institution?->telefono, 'correo' => $institution?->correo,
                 'logo_sha256' => $logo ? hash('sha256', $logo) : null],
             'estudiante' => ['nombre' => $enrollment->estudiante->name,
+                'nombre_lista' => $this->rosterName($enrollment),
                 'grado' => $enrollment->grupo->grado->nombre, 'grupo' => $enrollment->grupo->nombre],
             'ano' => $year->nombre, 'contexto' => $context, 'tipo' => $scope,
             'periodo' => $period ? ['nombre' => $period->nombre, 'peso' => $period->peso] : null,
@@ -129,12 +132,31 @@ final class BulletinIssueService
                 'justificadas' => (int) ($attendance?->justificadas ?? 0)],
         ];
 
+        if (isset($template['configuracion']['canvas'])) {
+            $snapshot['canvas_runtime'] = app(BulletinCanvasRuntime::class)->build($enrollment, $period, $report, $snapshot, $logo);
+        }
+
         return ['snapshot' => $snapshot,
             'huella' => hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)), 'logo' => $logo];
     }
 
+    private function rosterName(Matricula $enrollment): string
+    {
+        $data = DB::table('ingreso_perfiles')->where('estudiante_id', $enrollment->estudiante_id)->value('datos');
+        $data = $data ? json_decode($data, true, flags: JSON_THROW_ON_ERROR) : [];
+        if (! empty($data['primer_apellido']) && ! empty($data['primer_nombre'])) {
+            return implode(' ', array_filter(array_map(fn ($key) => trim((string) ($data[$key] ?? '')),
+                ['primer_apellido', 'segundo_apellido', 'primer_nombre', 'segundo_nombre'])));
+        }
+
+        return StudentRosterName::display($enrollment->estudiante->name);
+    }
+
     public function render(array $snapshot, ?string $logo): string
     {
+        if (isset($snapshot['plantilla']['configuracion']['canvas'])) {
+            return app(BulletinCanvasRenderer::class)->render($snapshot);
+        }
         $options = new Options;
         $options->set('isRemoteEnabled', false);
         $options->set('isPhpEnabled', false);

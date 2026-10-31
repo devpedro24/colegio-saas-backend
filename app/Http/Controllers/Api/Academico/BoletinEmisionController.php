@@ -7,19 +7,22 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\BoletinEmision;
+use App\Models\Academico\BoletinPlantilla;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
+use App\Services\BulletinArchive;
 use App\Services\BulletinIssueService;
 use App\Services\GradebookService;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
-use App\Support\Storage\StorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\HeaderUtils;
+use Symfony\Component\HttpFoundation\ResponseHeaderBag;
 use Throwable;
 
 /** Emisión individual; la publicación, no la preparación ni aprobación, habilita descarga al estudiante. */
@@ -109,6 +112,10 @@ final class BoletinEmisionController extends Controller
                 AnoLectivo::whereKey($enrollment->ano_lectivo_id)->lockForUpdate()->firstOrFail();
                 $enrollment = Matricula::whereKey($issue->matricula_id)->lockForUpdate()->firstOrFail();
                 $this->assertScope($request, $enrollment);
+                // The same lock order as template renaming keeps the archive name synchronized.
+                if ($issue->plantilla_id) {
+                    BoletinPlantilla::withTrashed()->whereKey($issue->plantilla_id)->lockForUpdate()->firstOrFail();
+                }
                 $locked = BoletinEmision::whereKey($issue->id)->lockForUpdate()->firstOrFail();
                 abort_unless($locked->estado === 'preparado', 409, 'Solo una preparación pendiente puede aprobarse.');
                 $this->assertLatest($locked);
@@ -116,8 +123,7 @@ final class BoletinEmisionController extends Controller
                 abort_unless(hash_equals($locked->huella_insumos, $current['huella']), 409,
                     'Los insumos cambiaron. Prepara una nueva revisión antes de aprobar.');
                 $pdf = $service->render($locked->snapshot, $current['logo']);
-                $path = StorageService::tenantFolder(tenant()).'/boletines/'.Str::uuid().'.pdf';
-                abort_unless(Storage::disk('tenant')->put($path, $pdf), 500, 'No se pudo guardar el PDF privado.');
+                $path = BulletinArchive::write($locked, $pdf);
                 $locked->update(['estado' => 'aprobado', 'pdf_path' => $path, 'pdf_sha256' => hash('sha256', $pdf),
                     'approved_by' => $request->user()->id, 'issued_at' => now()]);
                 AuditLogger::tenant($request->user(), 'APPROVE', 'boletin_emision', (string) $locked->id,
@@ -183,7 +189,8 @@ final class BoletinEmisionController extends Controller
             null, ['tipo' => 'pdf']);
 
         return response($content, 200, ['Content-Type' => 'application/pdf',
-            'Content-Disposition' => 'attachment; filename="boletin-academico.pdf"',
+            'Content-Disposition' => HeaderUtils::makeDisposition(ResponseHeaderBag::DISPOSITION_ATTACHMENT,
+                BulletinArchive::filename($issue->snapshot), Str::ascii(BulletinArchive::filename($issue->snapshot))),
             'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
     }
 
@@ -227,9 +234,18 @@ final class BoletinEmisionController extends Controller
 
     private function verifiedPdf(BoletinEmision $issue): string
     {
-        abort_unless($issue->pdf_path && $issue->pdf_sha256
-            && Storage::disk('tenant')->exists($issue->pdf_path), 409, 'El PDF archivado no está disponible.');
-        $bytes = Storage::disk('tenant')->get($issue->pdf_path);
+        $bytes = null;
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            if ($issue->pdf_path && $issue->pdf_sha256) {
+                $bytes = Storage::disk('tenant')->get($issue->pdf_path);
+                if ($bytes !== null) {
+                    break;
+                }
+            }
+            // A rename may have committed after this request read the old location.
+            $issue->refresh();
+        }
+        abort_unless($bytes !== null && $issue->pdf_sha256, 409, 'El PDF archivado no está disponible.');
         abort_unless(hash_equals($issue->pdf_sha256, hash('sha256', $bytes)), 409,
             'La integridad del PDF archivado no coincide.');
 
@@ -266,6 +282,7 @@ final class BoletinEmisionController extends Controller
             'periodo_token' => $issue->periodo_id ? OpaqueUrlToken::for('periodo', $issue->periodo_id) : null,
             'revision' => (int) $issue->revision, 'estado' => $issue->estado,
             'plantilla' => $issue->snapshot['plantilla']['nombre'] ?? null,
+            'archivo' => BulletinArchive::filename($issue->snapshot),
             'preparado_en' => $issue->created_at?->toIso8601String(),
             'aprobado_en' => $issue->issued_at?->toIso8601String(),
             'publicado_en' => $issue->published_at?->toIso8601String(),

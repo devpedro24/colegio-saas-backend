@@ -6,13 +6,16 @@ namespace Tests\Support;
 
 use App\Http\Middleware\EnsureOnboardingComplete;
 use App\Models\Academico\AsignacionDocente;
+use App\Models\Academico\BoletinEmision;
 use App\Models\Academico\Grado;
 use App\Models\Academico\Grupo;
 use App\Models\Academico\Matricula;
 use App\Models\User;
 use App\Services\AcademicPromotionService;
+use App\Services\BulletinArchive;
 use App\Services\GradebookService;
 use App\Support\OpaqueUrlToken;
+use App\Support\Storage\StorageService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Spatie\Permission\Models\Permission;
@@ -167,6 +170,23 @@ trait BulletinIssueTests
         $revised = $this->postJson($base.$token.'/emitir?opaque=1', $selection)->assertOk()
             ->assertJsonPath('data.revision', 2)->json('data.token');
         $this->assertNotSame($issue, $revised);
+        $this->assertSame($originalPdf, $this->getJson($base.'documentos/'.$issue.'/pdf?opaque=1')->getContent());
+        $files = BoletinEmision::orderBy('revision')->get();
+        $this->assertNotSame($files[0]->pdf_path, $files[1]->pdf_path);
+        $this->assertStringContainsString('/boletines/', $files[0]->pdf_path);
+        $this->assertStringEndsWith(BulletinArchive::filename($files[0]->snapshot), $files[0]->pdf_path);
+        $this->getJson($base.$token.'?opaque=1')->assertOk()->assertJsonPath('total', 2)
+            ->assertJsonPath('data.0.archivo', BulletinArchive::filename($files[1]->snapshot));
+        Storage::fake('local');
+        $legacy = StorageService::tenantFolder(tenant()).'/boletines/legacy.pdf';
+        Storage::disk('tenant')->move($files[0]->pdf_path, $legacy);
+        $files[0]->update(['pdf_path' => $legacy]);
+        $this->artisan('storage:organize-bulletins', ['--tenant' => $this->school->slug])->assertExitCode(0);
+        $this->assertSame($legacy, $files[0]->fresh()->pdf_path);
+        $this->artisan('storage:organize-bulletins', ['--tenant' => $this->school->slug, '--apply' => true])->assertExitCode(0);
+        Storage::disk('tenant')->assertMissing($legacy);
+        $this->assertSame($originalPdf, Storage::disk('tenant')->get($files[0]->fresh()->pdf_path));
+        $this->assertSame($originalPdf, Storage::disk('local')->get('bulletin-migration-backups/'.$legacy));
         $this->assertSame($originalPdf, $this->getJson($base.'documentos/'.$issue.'/pdf?opaque=1')->getContent());
         $period->update(['estado' => 'planificado']);
         $this->postJson($base.$token.'/emitir?opaque=1', $selection)->assertUnprocessable();
