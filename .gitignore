@@ -26,3 +26,5 @@ yarn-error.log
 /.zed
 /tests/load/*.local.json
 /tests/load/results/
+
+/storage/fonts/

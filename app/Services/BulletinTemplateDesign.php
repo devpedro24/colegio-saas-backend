@@ -30,7 +30,8 @@ final class BulletinTemplateDesign
         $data = Validator::make($input, [
             'nombre' => ['required', 'string', 'min:3', 'max:120', 'not_regex:/[<>]/'],
             'ambito' => ['required', Rule::in(['periodo', 'final'])],
-            'configuracion' => ['required', 'array:accent,font,density,heading,subheading,sections'],
+            'configuracion' => ['required', 'array:accent,font,density,heading,subheading,sections,canvas'],
+            'configuracion.canvas' => ['sometimes', 'array'],
             'configuracion.accent' => ['required', 'string', 'regex:/\A#[0-9A-Fa-f]{6}\z/'],
             'configuracion.font' => ['required', Rule::in(['sans', 'serif', 'rounded'])],
             'configuracion.density' => ['required', Rule::in(['comfortable', 'compact'])],
@@ -54,6 +55,9 @@ final class BulletinTemplateDesign
         $data['nombre'] = trim($data['nombre']);
         $data['configuracion']['heading'] = trim($data['configuracion']['heading']);
         $data['configuracion']['subheading'] = trim($data['configuracion']['subheading'] ?? '');
+        if (isset($data['configuracion']['canvas'])) {
+            $data['configuracion']['canvas'] = BulletinCanvasDesign::validate($data['configuracion']['canvas'], $data['ambito']);
+        }
         if ($data['nombre'] === '' || $data['configuracion']['heading'] === '') {
             throw ValidationException::withMessages(['nombre' => 'El nombre y el título no pueden estar vacíos.']);
         }
