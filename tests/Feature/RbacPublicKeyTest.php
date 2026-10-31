@@ -42,7 +42,7 @@ class RbacPublicKeyTest extends TestCase
             ->assertOk()->assertJsonPath('role.key', $role->key)
             ->assertJsonPath('role.label', 'Renombrado');
         $this->putJson('/api/rbac/permissions/'.$permission->key, [
-            'module' => 'Prueba', 'action' => 'Ver',
+            'module' => 'Prueba', 'action' => 'Ver', 'feature_key' => 'nucleo',
         ])->assertOk()->assertJsonPath('permission.key', $permission->key)
             ->assertJsonPath('permission.action', 'Ver');
     }

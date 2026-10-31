@@ -8,11 +8,14 @@ use App\Events\PlatformDataChanged;
 use App\Events\TenantChanged;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
+use App\Models\Plan;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\SchoolPlanSedeGuard;
+use App\Services\SchoolRoleSynchronizer;
 use App\Services\TenantProvisioner;
-use App\Support\PasswordPolicy;
 use App\Support\Audit\AuditLogger;
+use App\Support\PasswordPolicy;
 use App\Tenancy\TenantDatabaseName;
 use Database\Seeders\RbacSeeder;
 use Illuminate\Http\JsonResponse;
@@ -107,7 +110,9 @@ class ColegioController extends Controller
             'plan' => ['required', 'string', 'exists:plans,key'],
         ]);
 
-        $slugChanged = !empty($data['slug']) && $data['slug'] !== $tenant->slug;
+        SchoolPlanSedeGuard::ensureSchoolFits($tenant, Plan::where('key', $data['plan'])->firstOrFail());
+
+        $slugChanged = ! empty($data['slug']) && $data['slug'] !== $tenant->slug;
         $nameChanged = $data['name'] !== $tenant->name;
 
         // Guardamos el nombre de BD ACTUAL antes de cualquier cambio.
@@ -122,13 +127,17 @@ class ColegioController extends Controller
             $tenant->domains()->update(['domain' => $data['slug']]);
 
             foreach ($tenant->sedes as $sede) {
-                $sede->domains()->update(['domain' => $sede->slug . '.' . $data['slug']]);
+                $sede->domains()->update(['domain' => $sede->slug.'.'.$data['slug']]);
             }
         }
 
         $updateData = ['name' => $data['name'], 'plan' => $data['plan']];
-        if (isset($data['legal_name'])) $updateData['legal_name'] = $data['legal_name'];
-        if (isset($data['nit'])) $updateData['nit'] = $data['nit'];
+        if (isset($data['legal_name'])) {
+            $updateData['legal_name'] = $data['legal_name'];
+        }
+        if (isset($data['nit'])) {
+            $updateData['nit'] = $data['nit'];
+        }
 
         $planChanged = $tenant->plan !== $data['plan'];
         $tenant->update($updateData);
@@ -152,7 +161,10 @@ class ColegioController extends Controller
 
         // Si cambio el plan, re-sincroniza el RBAC del colegio.
         if ($planChanged) {
-            $tenant->run(fn () => (new RbacSeeder())->run());
+            $tenant->run(function (): void {
+                (new RbacSeeder)->run();
+                app(SchoolRoleSynchronizer::class)->synchronize();
+            });
             TenantChanged::dispatch($tenant->id, 'plan');
         }
 
@@ -243,11 +255,16 @@ class ColegioController extends Controller
             'plan' => ['required', 'string', 'exists:plans,key'],
         ]);
 
+        SchoolPlanSedeGuard::ensureSchoolFits($tenant, Plan::where('key', $data['plan'])->firstOrFail());
+
         $prevPlan = $tenant->plan;
         $tenant->update(['plan' => $data['plan']]);
 
         // Re-siembra spatie del colegio con el nuevo plan (preserva configurables del rector).
-        $tenant->run(fn () => (new RbacSeeder())->run());
+        $tenant->run(function (): void {
+            (new RbacSeeder)->run();
+            app(SchoolRoleSynchronizer::class)->synchronize();
+        });
 
         TenantChanged::dispatch($tenant->id, 'plan');
         PlatformDataChanged::dispatch('colegios', 'updated');

@@ -8,6 +8,7 @@ use App\Models\Rbac\RbacMatrixCell;
 use App\Models\Rbac\RbacPermission;
 use App\Models\Rbac\RbacRole;
 use App\Rbac\PermissionMatrix;
+use App\Rbac\PermissionPlanFeature;
 use Illuminate\Database\Seeder;
 
 /**
@@ -22,12 +23,6 @@ use Illuminate\Database\Seeder;
  */
 class RbacCatalogSeeder extends Seeder
 {
-    /** Mapeo modulo base -> feature de plan (null = nucleo, en todos los planes). */
-    private const MODULE_FEATURE = [
-        'Asistencia' => 'asistencia',
-        'Comunicaciones y Portal' => 'comunicacion_basica',
-    ];
-
     public function run(): void
     {
         // 1. Roles (del catalogo base).
@@ -46,7 +41,7 @@ class RbacCatalogSeeder extends Seeder
                 'key' => $perm['key'],
                 'module' => $perm['module'],
                 'action' => $perm['action'],
-                'feature' => $perm['feature'] ?? self::MODULE_FEATURE[$perm['module']] ?? null,
+                'feature' => $perm['feature'] ?? PermissionPlanFeature::forKey($perm['key']),
                 'cells' => $perm['cells'],
             ];
         }
@@ -114,6 +109,16 @@ class RbacCatalogSeeder extends Seeder
                 'module' => 'Reportes',
                 'action' => 'Ver reportes financieros',
                 'feature' => 'reportes_financieros', // Estandar+
+                'cells' => [
+                    'rector' => 'ver',
+                    'secretaria' => PermissionMatrix::CONFIGURABLE,
+                ],
+            ],
+            [
+                'key' => 'pagos.ver',
+                'module' => 'Pagos',
+                'action' => 'Consultar el módulo de pagos',
+                'feature' => 'pagos_pension',
                 'cells' => [
                     'rector' => 'ver',
                     'secretaria' => PermissionMatrix::CONFIGURABLE,

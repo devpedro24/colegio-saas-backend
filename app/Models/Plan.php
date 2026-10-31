@@ -20,6 +20,7 @@ use Illuminate\Database\Eloquent\Model;
  * @property ?int $storage_gb
  * @property ?int $max_sedes
  * @property ?int $max_pasarelas
+ * @property ?int $max_roles_personalizados
  * @property array<int,string> $features
  * @property int $sort_order
  */
@@ -36,6 +37,7 @@ class Plan extends Model
         'storage_gb',
         'max_sedes',
         'max_pasarelas',
+        'max_roles_personalizados',
         'features',
         'sort_order',
     ];
@@ -48,6 +50,7 @@ class Plan extends Model
         'storage_gb' => 'integer',
         'max_sedes' => 'integer',
         'max_pasarelas' => 'integer',
+        'max_roles_personalizados' => 'integer',
         'features' => 'array',
         'sort_order' => 'integer',
     ];

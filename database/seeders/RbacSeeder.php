@@ -8,6 +8,8 @@ use App\Models\Plan;
 use App\Models\Rbac\RbacMatrixCell;
 use App\Models\Rbac\RbacPermission;
 use App\Models\Rbac\RbacRole;
+use App\Models\Tenant;
+use App\Support\Realtime\RealtimeChanges;
 use Illuminate\Database\Seeder;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
@@ -19,8 +21,9 @@ use Spatie\Permission\PermissionRegistrar;
  *
  * Reglas:
  *  - Crea las filas de spatie (roles/permisos) que falten.
- *  - Otorga los estructurales que el plan permite; revoca los bloqueados por plan
- *    o denegados (gating).
+ *  - Otorga los estructurales que el plan permite; revoca las celdas denegadas.
+ *    Las celdas bloqueadas solo por plan conservan su valor guardado, mientras
+ *    TenantPlanAccess las vuelve inefectivas hasta recuperar la característica.
  *  - Configurables: en la primera siembra (o cuando el permiso es nuevo para el
  *    tenant) aplica el default; en re-sync PRESERVA la eleccion del rector.
  *
@@ -35,7 +38,10 @@ class RbacSeeder extends Seeder
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
         // Features del plan del colegio (para el gating).
-        $planKey = tenant()?->plan;
+        $school = tenant();
+        $planKey = $school?->parent_id
+            ? Tenant::on(config('tenancy.database.central_connection'))->find($school->parent_id)?->plan
+            : $school?->plan;
         $planFeatures = $planKey ? (Plan::where('key', $planKey)->value('features') ?? []) : [];
         $planFeatures = is_array($planFeatures) ? $planFeatures : [];
 
@@ -69,11 +75,17 @@ class RbacSeeder extends Seeder
                 $cell = $roleCells[$key] ?? null; // null = denegado
                 $isNew = $this->firstSeed || isset($isNewPermission[$key]);
 
-                // Bloqueado por plan o denegado -> revocar.
-                if (! $planAllowed || $cell === null) {
+                // Una celda denegada se revoca. Si solo cambió el plan, el grant
+                // queda guardado pero inefectivo: al recuperar la feature vuelve
+                // la elección previa del colegio sin reconfigurar la matriz.
+                if ($cell === null) {
                     if ($has) {
                         $role->revokePermissionTo($key);
                     }
+
+                    continue;
+                }
+                if (! $planAllowed) {
                     continue;
                 }
 
@@ -81,6 +93,7 @@ class RbacSeeder extends Seeder
                     if (! $has) {
                         $role->givePermissionTo($key);
                     }
+
                     continue;
                 }
 
@@ -97,7 +110,7 @@ class RbacSeeder extends Seeder
 
         app(PermissionRegistrar::class)->forgetCachedPermissions();
         if (tenant()) {
-            app(\App\Support\Realtime\RealtimeChanges::class)->record((string) tenant()->getKey(), 'rbac');
+            app(RealtimeChanges::class)->record((string) tenant()->getKey(), 'rbac');
         }
     }
 }

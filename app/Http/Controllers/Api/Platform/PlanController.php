@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Plan;
 use App\Plans\PlanCatalog;
+use App\Services\SchoolPlanSedeGuard;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -68,6 +69,8 @@ class PlanController extends Controller
         $plan = Plan::where('key', $key)->firstOrFail();
 
         $data = $this->validatePlan($request, $plan->id);
+        SchoolPlanSedeGuard::ensureSubscribersFit($plan->key, $data['features'],
+            array_key_exists('max_sedes', $data) ? $data['max_sedes'] : $plan->max_sedes);
         $plan->update($data);
 
         PlatformDataChanged::dispatch('plans', 'updated');
@@ -96,6 +99,7 @@ class PlanController extends Controller
             'storage_gb' => ['nullable', 'integer', 'min:1'],
             'max_sedes' => ['nullable', 'integer', 'min:1'],
             'max_pasarelas' => ['nullable', 'integer', 'min:1'],
+            'max_roles_personalizados' => ['nullable', 'integer', 'min:0'],
             'features' => ['array'],
             // Cada feature debe existir en el catalogo cerrado.
             'features.*' => ['string', Rule::in(PlanCatalog::featureKeys())],
@@ -103,8 +107,17 @@ class PlanController extends Controller
         ]);
 
         // Normaliza: features unicas; is_active default true al crear.
-        $validated['features'] = array_values(array_unique($validated['features'] ?? []));
+        $validated['features'] = array_values(array_unique([
+            ...PlanCatalog::requiredFeatureKeys(), ...($validated['features'] ?? []),
+        ]));
         $validated['is_active'] = $validated['is_active'] ?? true;
+        if (! $request->exists('max_roles_personalizados')) {
+            if ($ignoreId === null) {
+                $validated['max_roles_personalizados'] = 0;
+            } else {
+                unset($validated['max_roles_personalizados']);
+            }
+        }
 
         return $validated;
     }
@@ -144,6 +157,7 @@ class PlanController extends Controller
             'storage_gb' => $plan->storage_gb,
             'max_sedes' => $plan->max_sedes,
             'max_pasarelas' => $plan->max_pasarelas,
+            'max_roles_personalizados' => $plan->max_roles_personalizados,
             'features' => $plan->features ?? [],
             'sort_order' => $plan->sort_order,
         ];

@@ -8,9 +8,10 @@ namespace App\Rbac;
  * Matriz de permisos (RBAC de 3 capas), fiel a la documentacion
  * (Arquitectura/_Globales/06 - Matriz de Permisos.md).
  *
- * Catalogo CERRADO: los roles y los permisos NO se crean desde el frontend;
- * el colegio solo puede activar/desactivar los permisos marcados como
- * "configurables" para cada rol. Las tres capas por celda:
+ * Catálogo CERRADO de roles base y permisos: el colegio no crea acciones nuevas.
+ * Puede crear roles ADICIONALES limitados por el plan, que complementan el rol
+ * principal y usan únicamente estos permisos existentes. En los roles base
+ * solo activa/desactiva celdas marcadas como configurables.
  *
  *   - estructural (structural): otorgado y BLOQUEADO (no se puede quitar).
  *     El valor de la celda es el nivel de acceso (crud/editar/ver/reportar/
@@ -74,20 +75,20 @@ class PermissionMatrix
             ['key' => 'config.metodo_aprobacion', 'module' => 'Configuracion del Colegio', 'action' => 'Configurar metodo de aprobacion y nota minima', 'cells' => ['rector' => 'editar']],
 
             // ---- Academico (Fase 1 Bloque A): años lectivos, periodos y configuracion ----
-            ['key' => 'academico.anos.gestionar', 'module' => 'academico', 'action' => 'anos.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
-            ['key' => 'academico.anos.transicionar', 'module' => 'academico', 'action' => 'anos.iniciar_cerrar', 'cells' => ['rector' => 'editar']],
-            ['key' => 'academico.periodos.transicionar', 'module' => 'academico', 'action' => 'periodos.abrir_cerrar_reabrir', 'cells' => ['rector' => 'editar']],
-            ['key' => 'academico.configurar', 'module' => 'academico', 'action' => 'configurar', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar']],
+            ['key' => 'academico.anos.gestionar', 'module' => 'Académico', 'action' => 'Gestionar años lectivos', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
+            ['key' => 'academico.anos.transicionar', 'module' => 'Académico', 'action' => 'Iniciar o cerrar años lectivos', 'cells' => ['rector' => 'editar']],
+            ['key' => 'academico.periodos.transicionar', 'module' => 'Académico', 'action' => 'Abrir, cerrar o reabrir períodos académicos', 'cells' => ['rector' => 'editar']],
+            ['key' => 'academico.configurar', 'module' => 'Académico', 'action' => 'Configurar parámetros académicos', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar']],
 
             // ---- Academico (Fase 1 Bloque B): jerarquía organizacional ----
             // Sede→Jornada→Nivel→Grado→Grupo + bloques horarios + espacios físicos.
-            ['key' => 'academico.estructura.gestionar', 'module' => 'academico', 'action' => 'estructura.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
-            ['key' => 'academico.plan_estudios.gestionar', 'module' => 'academico', 'action' => 'plan_estudios.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
-            ['key' => 'academico.matriculas.gestionar', 'module' => 'academico', 'action' => 'matriculas.gestionar', 'cells' => ['rector' => 'crud', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
-            ['key' => 'eventos.gestionar', 'module' => 'academico', 'action' => 'eventos.gestionar_todos', 'cells' => ['rector' => 'crud', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
-            ['key' => 'eventos.configurar', 'module' => 'academico', 'action' => 'eventos.configurar', 'cells' => ['rector' => 'editar']],
-            ['key' => 'eventos.publicar_institucional', 'module' => 'academico', 'action' => 'eventos.publicar_institucional', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
-            ['key' => 'eventos.publicar_asignados', 'module' => 'academico', 'action' => 'eventos.publicar_asignados', 'cells' => ['rector' => 'editar', 'docente' => 'editar']],
+            ['key' => 'academico.estructura.gestionar', 'module' => 'Académico', 'action' => 'Gestionar la estructura organizacional', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
+            ['key' => 'academico.plan_estudios.gestionar', 'module' => 'Académico', 'action' => 'Gestionar el plan de estudios', 'cells' => ['rector' => 'crud', 'coord_academico' => 'crud', 'coord_combinado' => 'crud']],
+            ['key' => 'academico.matriculas.gestionar', 'module' => 'Académico', 'action' => 'Gestionar matrículas', 'cells' => ['rector' => 'crud', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'eventos.gestionar', 'module' => 'Académico', 'action' => 'Gestionar todos los eventos del colegio', 'cells' => ['rector' => 'crud', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'eventos.configurar', 'module' => 'Académico', 'action' => 'Configurar eventos', 'cells' => ['rector' => 'editar']],
+            ['key' => 'eventos.publicar_institucional', 'module' => 'Académico', 'action' => 'Publicar eventos institucionales', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'eventos.publicar_asignados', 'module' => 'Académico', 'action' => 'Publicar eventos para grupos asignados', 'cells' => ['rector' => 'editar', 'docente' => 'editar']],
             // La carga genérica crea un archivo descargable sin asociarlo a un módulo.
             // Se reserva al rector hasta que exista una política de propiedad por recurso.
             ['key' => 'archivos.subir', 'module' => 'Archivos', 'action' => 'Subir archivos institucionales', 'cells' => ['rector' => 'editar']],
@@ -101,7 +102,7 @@ class PermissionMatrix
             // ---- Notas y Consolidados ----
             ['key' => 'notas.resultados_area.gestionar', 'module' => 'Notas y Consolidados', 'action' => 'Registrar, corregir y anular resultados manuales de área por grupo y período', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
             ['key' => 'notas.resultados_anuales.gestionar', 'module' => 'Notas y Consolidados', 'action' => 'Registrar, corregir y anular resultados manuales anuales de materia y área', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
-            ['key' => 'academico.preinformes.ver', 'module' => 'Notas y Consolidados', 'action' => 'Consultar configuración de preinformes', 'cells' => ['rector' => 'ver', 'coord_academico' => self::CONFIGURABLE_ON, 'coord_combinado' => self::CONFIGURABLE_ON]],
+            ['key' => 'academico.preinformes.ver', 'module' => 'Notas y Consolidados', 'action' => 'Consultar configuración de preinformes', 'feature' => 'preinformes', 'cells' => ['rector' => 'ver', 'coord_academico' => self::CONFIGURABLE_ON, 'coord_combinado' => self::CONFIGURABLE_ON]],
             ['key' => 'academico.preinformes.gestionar', 'module' => 'Notas y Consolidados', 'action' => 'Crear, editar y eliminar preinformes del período', 'feature' => 'preinformes', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
             ['key' => 'notas.planilla.configurar', 'module' => 'Notas y Consolidados', 'action' => 'Configurar porcentajes de actividades en planillas autorizadas', 'cells' => ['rector' => 'editar', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
             ['key' => 'notas.actividades.crear', 'module' => 'Notas y Consolidados', 'action' => 'Crear actividades en planillas autorizadas', 'cells' => ['rector' => 'c', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
@@ -114,18 +115,21 @@ class PermissionMatrix
             ['key' => 'notas.ver_consolidado_todos', 'module' => 'Notas y Consolidados', 'action' => 'Ver consolidado de todos los grupos', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_combinado' => 'ver']],
             ['key' => 'notas.ver_propias', 'module' => 'Notas y Consolidados', 'action' => 'Ver notas propias / del estudiante asociado', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_combinado' => 'ver', 'secretaria' => self::CONFIGURABLE, 'estudiante' => 'ver']],
             ['key' => 'boletines.politica.gestionar', 'module' => 'Boletines', 'action' => 'Configurar observación final y edición docente de indicadores', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
-            ['key' => 'boletines.observaciones.gestionar', 'module' => 'Boletines', 'action' => 'Registrar observaciones de boletín por estudiante y período', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'boletines.observaciones.gestionar', 'module' => 'Boletines', 'action' => 'Registrar observaciones de boletín por estudiante y período', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE, 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON]],
             ['key' => 'boletines.observaciones.aprobar', 'module' => 'Boletines', 'action' => 'Aprobar observaciones antes de emitir boletines', 'cells' => ['rector' => 'aprobar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
-            ['key' => 'boletines.plantillas.ver', 'module' => 'Boletines', 'action' => 'Consultar plantilla base y vista previa de diseños de boletín', 'cells' => ['rector' => 'ver']],
+            ['key' => 'boletines.plantillas.ver', 'module' => 'Boletines', 'action' => 'Consultar plantilla base y vista previa de diseños de boletín', 'cells' => ['rector' => 'ver', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON]],
             ['key' => 'boletines.plantillas.gestionar', 'module' => 'Boletines', 'action' => 'Diseñar y publicar plantillas personalizadas de boletín', 'feature' => 'boletines_personalizables', 'cells' => ['rector' => 'editar']],
-            ['key' => 'boletines.emisiones.ver', 'module' => 'Boletines', 'action' => 'Consultar expedientes y PDF de boletines', 'cells' => ['rector' => 'ver']],
-            ['key' => 'boletines.emisiones.preparar', 'module' => 'Boletines', 'action' => 'Preparar un boletín individual para revisión', 'cells' => ['rector' => 'editar']],
+            ['key' => 'boletines.emisiones.ver', 'module' => 'Boletines', 'action' => 'Consultar expedientes y PDF de boletines', 'cells' => ['rector' => 'ver', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON]],
+            ['key' => 'boletines.grupo.ver', 'module' => 'Boletines', 'action' => 'Consultar boletín completo de estudiantes de grupos asignados, sin emitirlo', 'cells' => ['docente' => 'ver', 'director_grupo' => 'ver']],
+            ['key' => 'boletines.emisiones.preparar', 'module' => 'Boletines', 'action' => 'Generar boletines y archivar sus PDF', 'cells' => ['rector' => 'editar', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON]],
             ['key' => 'boletines.emisiones.aprobar', 'module' => 'Boletines', 'action' => 'Aprobar y generar el PDF de un boletín individual', 'cells' => ['rector' => 'aprobar']],
-            ['key' => 'boletines.emisiones.publicar', 'module' => 'Boletines', 'action' => 'Publicar un PDF aprobado al estudiante', 'cells' => ['rector' => 'aprobar']],
-            ['key' => 'indicadores.base.gestionar', 'module' => 'Indicadores', 'action' => 'Gestionar indicadores institucionales compartidos', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
-            ['key' => 'indicadores.grupo.editar', 'module' => 'Indicadores', 'action' => 'Editar variantes solo en materia y grupo asignados', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'docente' => self::CONFIGURABLE, 'director_grupo' => self::CONFIGURABLE]],
+            ['key' => 'boletines.emisiones.publicar', 'module' => 'Boletines', 'action' => 'Publicar un boletín generado al estudiante', 'cells' => ['rector' => 'aprobar', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON]],
+            ['key' => 'indicadores.configurar', 'module' => 'Indicadores', 'action' => 'Configurar el alcance por grado o grupo y la edición docente', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'indicadores.base.gestionar', 'module' => 'Indicadores', 'action' => 'Gestionar indicadores por grado o grupo', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
+            ['key' => 'indicadores.grupo.ver', 'module' => 'Indicadores', 'action' => 'Consultar indicadores de materias y grupos asignados', 'cells' => ['docente' => 'ver', 'director_grupo' => 'ver']],
+            ['key' => 'indicadores.grupo.editar', 'module' => 'Indicadores', 'action' => 'Crear y editar indicadores de materias y grupos asignados', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'docente' => self::CONFIGURABLE, 'director_grupo' => self::CONFIGURABLE]],
             ['key' => 'notas.coordinar_cierre_periodo', 'module' => 'Notas y Consolidados', 'action' => 'Coordinar cierre de periodo', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar']],
-            ['key' => 'notas.gestionar_nivelaciones', 'module' => 'Notas y Consolidados', 'action' => 'Gestionar nivelaciones / habilitaciones', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar']],
+            ['key' => 'notas.gestionar_nivelaciones', 'module' => 'Notas y Consolidados', 'action' => 'Gestionar nivelaciones / habilitaciones', 'cells' => ['rector' => 'editar', 'coord_academico' => 'editar', 'coord_combinado' => 'editar', 'docente' => self::CONFIGURABLE_ON, 'director_grupo' => self::CONFIGURABLE_ON]],
 
             // ---- Aula (plan Estándar/Premium, revocable por matriz) ----
             ['key' => 'aula.ver_todas', 'module' => 'Aula', 'action' => 'Consultar aulas de todos los grupos', 'feature' => 'aula', 'cells' => ['rector' => 'ver', 'coord_academico' => self::CONFIGURABLE_ON, 'coord_combinado' => self::CONFIGURABLE_ON]],
@@ -151,25 +155,23 @@ class PermissionMatrix
             ['key' => 'aula.duplicar', 'module' => 'Aula', 'action' => 'Copiar aulas y materiales a otro año lectivo', 'feature' => 'aula', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
 
             // ---- Asistencia ----
-            ['key' => 'asistencia.registrar_clases', 'module' => 'Asistencia', 'action' => 'Registrar asistencia en sus clases', 'cells' => ['rector' => 'editar', 'docente' => 'editar', 'director_grupo' => 'editar']],
-            ['key' => 'asistencia.consultar_grupo', 'module' => 'Asistencia', 'action' => 'Consultar asistencia del grupo dirigido', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_combinado' => 'ver', 'director_grupo' => 'ver']],
-            ['key' => 'asistencia.consultar_propia', 'module' => 'Asistencia', 'action' => 'Consultar asistencia propia / del estudiante', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_convivencia' => 'ver', 'coord_combinado' => 'ver', 'secretaria' => 'ver', 'estudiante' => 'ver']],
-            ['key' => 'asistencia.configurar_politica', 'module' => 'Asistencia', 'action' => 'Configurar umbrales de inasistencia', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
-            ['key' => 'asistencia.justificar_propia', 'module' => 'Asistencia', 'action' => 'Presentar justificación de inasistencias propias', 'cells' => ['estudiante' => 'c']],
-            ['key' => 'asistencia.correccion.solicitar', 'module' => 'Asistencia', 'action' => 'Solicitar corrección de inasistencias de sus clases', 'cells' => ['rector' => 'c', 'docente' => 'c', 'director_grupo' => 'c', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
-            ['key' => 'asistencia.correccion.aprobar', 'module' => 'Asistencia', 'action' => 'Aprobar o rechazar correcciones de inasistencia', 'cells' => ['rector' => 'aprobar', 'secretaria' => self::CONFIGURABLE, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'asistencia.registrar_clases', 'module' => 'Asistencia', 'action' => 'Registrar asistencia en sus clases', 'feature' => 'asistencia', 'cells' => ['rector' => 'editar', 'docente' => 'editar', 'director_grupo' => 'editar']],
+            ['key' => 'asistencia.consultar_grupo', 'module' => 'Asistencia', 'action' => 'Consultar asistencia del grupo dirigido', 'feature' => 'asistencia', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_combinado' => 'ver', 'director_grupo' => 'ver']],
+            ['key' => 'asistencia.consultar_propia', 'module' => 'Asistencia', 'action' => 'Consultar asistencia propia / del estudiante', 'feature' => 'asistencia', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_convivencia' => 'ver', 'coord_combinado' => 'ver', 'secretaria' => 'ver', 'estudiante' => 'ver']],
+            ['key' => 'asistencia.configurar_politica', 'module' => 'Asistencia', 'action' => 'Configurar umbrales de inasistencia', 'feature' => 'asistencia', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'asistencia.justificar_propia', 'module' => 'Asistencia', 'action' => 'Presentar justificación de inasistencias propias', 'feature' => 'asistencia', 'cells' => ['estudiante' => 'c']],
+            ['key' => 'asistencia.correccion.solicitar', 'module' => 'Asistencia', 'action' => 'Solicitar corrección de inasistencias de sus clases', 'feature' => 'asistencia', 'cells' => ['rector' => 'c', 'docente' => 'c', 'director_grupo' => 'c', 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'asistencia.correccion.aprobar', 'module' => 'Asistencia', 'action' => 'Aprobar o rechazar correcciones de inasistencia', 'feature' => 'asistencia', 'cells' => ['rector' => 'aprobar', 'secretaria' => self::CONFIGURABLE, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
 
             // ---- Convivencia y Observador ----
             ['key' => 'observador.registrar_academico', 'module' => 'Convivencia y Observador', 'action' => 'Registrar observacion academica en su materia', 'cells' => ['rector' => 'editar', 'docente' => 'editar', 'director_grupo' => 'editar']],
             ['key' => 'observador.anotacion_grupo', 'module' => 'Convivencia y Observador', 'action' => 'Anotacion disciplinaria en grupo dirigido', 'cells' => ['rector' => 'editar', 'coord_convivencia' => 'editar', 'coord_combinado' => 'editar', 'director_grupo' => 'editar']],
             ['key' => 'observador.anotacion_cualquiera', 'module' => 'Convivencia y Observador', 'action' => 'Anotacion en cualquier estudiante', 'cells' => ['rector' => 'editar', 'coord_convivencia' => 'editar', 'coord_combinado' => 'editar']],
-            ['key' => 'convivencia.citar_acudientes', 'module' => 'Convivencia y Observador', 'action' => 'Citar formalmente a acudientes', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_convivencia' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'director_grupo' => self::CONFIGURABLE]],
             ['key' => 'convivencia.definir_sanciones', 'module' => 'Convivencia y Observador', 'action' => 'Definir sanciones formales', 'cells' => ['rector' => 'editar', 'coord_convivencia' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
             ['key' => 'convivencia.reportes', 'module' => 'Convivencia y Observador', 'action' => 'Generar reportes de convivencia', 'cells' => ['rector' => 'ver', 'coord_convivencia' => 'reportar', 'coord_combinado' => 'reportar']],
 
             // ---- Comunicaciones y Portal ----
             ['key' => 'comunicados.enviar_colegio', 'module' => 'Comunicaciones y Portal', 'action' => 'Enviar comunicado al colegio entero', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_convivencia' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE]],
-            ['key' => 'mensajes.acudientes', 'module' => 'Comunicaciones y Portal', 'action' => 'Comunicarse con acudientes via portal', 'cells' => ['rector' => 'editar', 'coord_academico' => self::CONFIGURABLE, 'coord_convivencia' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE, 'docente' => self::CONFIGURABLE, 'director_grupo' => self::CONFIGURABLE, 'personal_apoyo' => self::CONFIGURABLE]],
             ['key' => 'portal.acceder', 'module' => 'Comunicaciones y Portal', 'action' => 'Acceder al portal', 'cells' => ['rector' => 'ver', 'coord_academico' => 'ver', 'coord_convivencia' => 'ver', 'coord_combinado' => 'ver', 'secretaria' => 'ver', 'docente' => 'ver', 'director_grupo' => 'ver', 'estudiante' => self::CONFIGURABLE, 'personal_apoyo' => 'ver']],
 
             // ---- Auditoria ----

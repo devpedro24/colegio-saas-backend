@@ -11,6 +11,7 @@ use App\Models\Rbac\RbacPermission;
 use App\Models\Rbac\RbacRole;
 use App\Plans\PlanCatalog;
 use App\Rbac\PermissionMatrix;
+use App\Rbac\PermissionPlanFeature;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -54,10 +55,10 @@ class RbacController extends Controller
     public function storePermission(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'key' => ['required', 'string', 'max:120', 'regex:/^[a-z0-9._-]+$/', 'unique:pgsql.rbac_permissions,key'],
+            'key' => ['required', 'string', 'max:120', 'regex:/^[a-z0-9._-]+$/', Rule::notIn(PermissionPlanFeature::RETIRED_GUARDIAN_PERMISSIONS), Rule::unique(config('tenancy.database.central_connection').'.rbac_permissions', 'key')],
             'module' => ['required', 'string', 'max:120'],
             'action' => ['required', 'string', 'max:255'],
-            'feature_key' => ['nullable', 'string', Rule::in(PlanCatalog::featureKeys())],
+            'feature_key' => ['required', 'string', Rule::in(PlanCatalog::featureKeys())],
             'description' => ['nullable', 'string', 'max:1000'],
         ]);
 
@@ -79,7 +80,7 @@ class RbacController extends Controller
         $data = $request->validate([
             'module' => ['required', 'string', 'max:120'],
             'action' => ['required', 'string', 'max:255'],
-            'feature_key' => ['nullable', 'string', Rule::in(PlanCatalog::featureKeys())],
+            'feature_key' => ['required', 'string', Rule::in(PlanCatalog::featureKeys())],
             'description' => ['nullable', 'string', 'max:1000'],
         ]);
 
@@ -111,7 +112,7 @@ class RbacController extends Controller
     public function storeRole(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'key' => ['required', 'string', 'max:60', 'regex:/^[a-z0-9_]+$/', 'unique:pgsql.rbac_roles,key'],
+            'key' => ['required', 'string', 'max:60', 'regex:/^[a-z0-9_]+$/', Rule::unique(config('tenancy.database.central_connection').'.rbac_roles', 'key')],
             'label' => ['required', 'string', 'max:120'],
         ]);
 
@@ -175,6 +176,7 @@ class RbacController extends Controller
                 ->delete();
 
             PlatformDataChanged::dispatch('rbac', 'updated');
+
             return response()->json(['role_key' => $data['role_key'], 'permission_key' => $data['permission_key'], 'type' => 'denied']);
         }
 

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Services\TenantPlanAccess;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -47,7 +48,23 @@ use Spatie\Permission\Traits\HasRoles;
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
+    use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes {
+        HasRoles::hasPermissionTo as private spatieHasPermissionTo;
+    }
+
+    /** Spatie también consulta permisos antes de Gate: el plan debe limitar ese camino. */
+    public function hasPermissionTo($permission, $guardName = null): bool
+    {
+        $key = is_string($permission) ? $permission : ($permission->name ?? null);
+        if (is_string($key)) {
+            $effective = app(TenantPlanAccess::class)->catalogPermission($this, $key);
+            if ($effective !== null) {
+                return $effective;
+            }
+        }
+
+        return $this->spatieHasPermissionTo($permission, $guardName);
+    }
 
     /** Estados del ciclo de vida del usuario (D-USER-FSM). */
     public const STATUS_PENDING = 'pending';

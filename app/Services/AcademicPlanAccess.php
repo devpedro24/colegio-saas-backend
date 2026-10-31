@@ -4,15 +4,11 @@ declare(strict_types=1);
 
 namespace App\Services;
 
-use App\Models\Plan;
-
 final class AcademicPlanAccess
 {
     public function preinformes(): bool
     {
-        $planKey = tenant()?->fresh()?->plan;
-
-        return $planKey && in_array('preinformes', Plan::where('key', $planKey)->value('features') ?? [], true);
+        return app(TenantPlanAccess::class)->has('preinformes');
     }
 
     public function requirePreinformes(): void
@@ -22,9 +18,7 @@ final class AcademicPlanAccess
 
     public function aula(): bool
     {
-        $planKey = tenant()?->fresh()?->plan;
-
-        return $planKey && in_array('aula', Plan::where('key', $planKey)->value('features') ?? [], true);
+        return app(TenantPlanAccess::class)->has('aula');
     }
 
     public function requireAula(): void
@@ -34,9 +28,7 @@ final class AcademicPlanAccess
 
     public function customBulletins(): bool
     {
-        $planKey = tenant()?->fresh()?->plan;
-
-        return $planKey && in_array('boletines_personalizables', Plan::where('key', $planKey)->value('features') ?? [], true);
+        return app(TenantPlanAccess::class)->has('boletines_personalizables');
     }
 
     public function requireCustomBulletins(): void
@@ -46,9 +38,8 @@ final class AcademicPlanAccess
 
     public function aulaColors(): bool
     {
-        $planKey = tenant()?->fresh()?->plan;
-        $features = $planKey ? Plan::where('key', $planKey)->value('features') ?? [] : [];
+        $access = app(TenantPlanAccess::class);
 
-        return in_array('aula', $features, true) && in_array('aula_colores', $features, true);
+        return $access->has('aula') && $access->has('aula_colores');
     }
 }

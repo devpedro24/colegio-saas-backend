@@ -252,7 +252,8 @@ class UserController extends Controller
 
         if (array_key_exists('role', $data)) {
             $usuario->update(['role' => $data['role']]);
-            $usuario->syncRoles([$data['role']]);
+            $extras = $usuario->getRoleNames()->filter(fn (string $name) => str_starts_with($name, 'custom_'))->all();
+            $usuario->syncRoles(array_values(array_unique([$data['role'], ...$extras])));
         }
 
         $this->syncCoordinadorEmail($sede?->id, $data['role'] ?? $usuario->role, $usuario->email, $usuario->name);
@@ -633,7 +634,8 @@ class UserController extends Controller
 
             if (array_key_exists('role', $data)) {
                 $usuario->update(['role' => $data['role']]);
-                $usuario->syncRoles([$data['role']]);
+                $extras = $usuario->getRoleNames()->filter(fn (string $name) => str_starts_with($name, 'custom_'))->all();
+                $usuario->syncRoles(array_values(array_unique([$data['role'], ...$extras])));
             }
 
             return ['internal_id' => (string) $usuario->id, 'prev' => $prev,

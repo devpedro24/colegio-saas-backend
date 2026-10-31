@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Support\Account;
 
 use App\Models\Plan;
+use App\Models\Tenant;
 use App\Models\User;
+use App\Services\TenantPlanAccess;
 use App\Support\PublicIdentityToken;
 use App\Support\Realtime\TenantChannelName;
 
@@ -26,10 +28,13 @@ final class AccountPresenter
         if (! $school) {
             return null;
         }
-        $owner = $school->parent_id ? $school->parent : $school;
+        $owner = $school->parent_id
+            ? Tenant::on(config('tenancy.database.central_connection'))->find($school->parent_id)
+            : $school;
         $plan = $owner ? Plan::where('key', $owner->plan)->first() : null;
 
-        return ['name' => $school->name, 'plan' => $plan ? ['key' => $plan->key, 'name' => $plan->name] : null];
+        return ['name' => $school->name, 'plan' => $plan ? ['key' => $plan->key, 'name' => $plan->name,
+            'features' => $plan->features ?? []] : null];
     }
 
     public static function user(User $user): array
@@ -45,7 +50,7 @@ final class AccountPresenter
             'mfa_enabled' => $user->hasTwoFactorEnabled(),
             'mfa_required' => false,
             'roles' => $tenant ? $user->getRoleNames()->values() : [$user->role],
-            'permissions' => $tenant ? $user->getAllPermissions()->pluck('name')->values() : [],
+            'permissions' => $tenant ? app(TenantPlanAccess::class)->effectivePermissions($user) : [],
             'is_platform' => ! $tenant, 'is_superadmin' => $user->esSuperadminPlataforma(),
             'profile_capabilities' => self::capabilities($user),
             'institution' => self::institution(),

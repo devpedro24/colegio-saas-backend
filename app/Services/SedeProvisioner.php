@@ -40,8 +40,8 @@ class SedeProvisioner
     /**
      * @param  array{slug:string, name:string, coordinador_email:string, coordinador_name?:?string, heredar:bool}  $data
      * @param  array<string, mixed>|null  $snapshotPreCapturado  configuracion del colegio
-     *                                    capturada fuera (evita run() anidado de Stancl
-     *                                    cuando se llama desde dentro del tenant).
+     *                                                           capturada fuera (evita run() anidado de Stancl
+     *                                                           cuando se llama desde dentro del tenant).
      * @return array{tenant: Tenant, password: string}
      */
     public function provision(Tenant $colegio, array $data, ?array $snapshotPreCapturado = null): array
@@ -50,7 +50,7 @@ class SedeProvisioner
 
         $colegioDomain = $colegio->domains()->first()?->domain;
         if ($colegioDomain === null) {
-            $colegioDomain = $colegio->slug . '.localhost';
+            $colegioDomain = $colegio->slug.'.localhost';
         }
 
         $domain = $slug.'.'.$colegioDomain;
@@ -129,6 +129,10 @@ class SedeProvisioner
         // Provisioning sincrono y exitoso: la sede queda operativa (patron
         // ConfigurationGate del colegio principal).
         $sede->update(['status' => Tenant::STATUS_ACTIVE]);
+
+        // La configuración de roles pertenece al colegio, no a una sede:
+        // una sede nueva recibe también los roles adicionales ya definidos.
+        $colegio->run(fn () => app(SchoolRoleSynchronizer::class)->synchronize());
 
         return [
             'tenant' => $sede,

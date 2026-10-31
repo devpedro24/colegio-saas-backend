@@ -23,6 +23,7 @@ class PlanCatalog
 {
     /** Categorias para agrupar las features en la UI (clave => etiqueta i18n). */
     public const CATEGORIES = [
+        'general' => 'plan.cat.general',
         'academico' => 'plan.cat.academico',
         'pagos' => 'plan.cat.pagos',
         'comunicacion' => 'plan.cat.comunicacion',
@@ -40,6 +41,7 @@ class PlanCatalog
     public static function features(): array
     {
         return [
+            ['key' => 'nucleo', 'category' => 'general', 'label' => 'plan.f.nucleo', 'description' => 'plan.f.nucleo.desc', 'required' => true],
             // ---- Academico y operacion (nucleo) ----
             ['key' => 'academico', 'category' => 'academico', 'label' => 'plan.f.academico', 'description' => 'plan.f.academico.desc'],
             ['key' => 'asistencia', 'category' => 'academico', 'label' => 'plan.f.asistencia', 'description' => 'plan.f.asistencia.desc'],
@@ -52,7 +54,6 @@ class PlanCatalog
 
             // ---- Comunicacion ----
             ['key' => 'comunicacion_basica', 'category' => 'comunicacion', 'label' => 'plan.f.comunicacionBasica', 'description' => 'plan.f.comunicacionBasica.desc'],
-            ['key' => 'app_acudientes', 'category' => 'comunicacion', 'label' => 'plan.f.appAcudientes', 'description' => 'plan.f.appAcudientes.desc'],
             ['key' => 'whatsapp', 'category' => 'comunicacion', 'label' => 'plan.f.whatsapp', 'description' => 'plan.f.whatsapp.desc'],
 
             // ---- Academico avanzado ----
@@ -88,6 +89,7 @@ class PlanCatalog
             ['key' => 'storage_gb', 'label' => 'plan.limit.storageGb', 'unit' => 'plan.unit.gb'],
             ['key' => 'max_sedes', 'label' => 'plan.limit.maxSedes', 'unit' => null],
             ['key' => 'max_pasarelas', 'label' => 'plan.limit.maxPasarelas', 'unit' => null],
+            ['key' => 'max_roles_personalizados', 'label' => 'plan.limit.maxCustomRoles', 'unit' => null],
         ];
     }
 
@@ -95,6 +97,15 @@ class PlanCatalog
     public static function featureKeys(): array
     {
         return array_map(static fn (array $f): string => $f['key'], self::features());
+    }
+
+    /** Capacidades de operación que ningún plan puede desactivar. */
+    public static function requiredFeatureKeys(): array
+    {
+        return array_values(array_map(
+            static fn (array $feature): string => $feature['key'],
+            array_filter(self::features(), static fn (array $feature): bool => $feature['required'] ?? false),
+        ));
     }
 
     /** Claves de limite validas. */
@@ -111,10 +122,10 @@ class PlanCatalog
      */
     public static function defaultPlans(): array
     {
-        $esencial = ['academico', 'asistencia', 'comunicacion_basica', 'pagos_pension'];
+        $esencial = ['nucleo', 'academico', 'asistencia', 'comunicacion_basica', 'pagos_pension'];
 
         $estandar = array_merge($esencial, [
-            'multi_pasarela', 'pagos_sin_friccion', 'app_acudientes',
+            'multi_pasarela', 'pagos_sin_friccion',
             'boletines_personalizables', 'multi_sede', 'firma_electronica', 'preinformes', 'aula', 'aula_colores',
             'carne_qr', 'reportes_financieros',
         ]);
@@ -133,6 +144,7 @@ class PlanCatalog
                 'storage_gb' => 50,
                 'max_sedes' => 1,
                 'max_pasarelas' => 1,
+                'max_roles_personalizados' => 0,
                 'features' => $esencial,
                 'sort_order' => 1,
             ],
@@ -144,6 +156,7 @@ class PlanCatalog
                 'storage_gb' => 200,
                 'max_sedes' => 5,
                 'max_pasarelas' => 3,
+                'max_roles_personalizados' => 2,
                 'features' => $estandar,
                 'sort_order' => 2,
             ],
@@ -155,6 +168,7 @@ class PlanCatalog
                 'storage_gb' => 1024,
                 'max_sedes' => null,
                 'max_pasarelas' => null,
+                'max_roles_personalizados' => null,
                 'features' => $premium,
                 'sort_order' => 3,
             ],

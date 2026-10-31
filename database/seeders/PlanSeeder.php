@@ -30,6 +30,7 @@ class PlanSeeder extends Seeder
                     'storage_gb' => $plan['storage_gb'],
                     'max_sedes' => $plan['max_sedes'],
                     'max_pasarelas' => $plan['max_pasarelas'],
+                    'max_roles_personalizados' => $plan['max_roles_personalizados'],
                     'features' => $plan['features'],
                     'sort_order' => $plan['sort_order'],
                 ],

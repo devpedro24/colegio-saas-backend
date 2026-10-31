@@ -7,6 +7,7 @@ namespace App\Support\Sedes;
 use App\Models\Academico\Sede;
 use App\Models\Plan;
 use App\Models\Tenant;
+use App\Services\TenantPlanAccess;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -33,6 +34,12 @@ class SedeLimits
         $plan = Plan::where('key', $tenant->fresh()->plan)->first();
         if ($plan === null) {
             throw ValidationException::withMessages(['plan' => 'El colegio no tiene un plan válido asignado.']);
+        }
+
+        // Una sede principal siempre existe; las sedes adicionales requieren
+        // expresamente la capacidad multi_sede, aunque el límite numérico sea mayor.
+        if (! app(TenantPlanAccess::class)->has('multi_sede')) {
+            return 1;
         }
 
         return $plan->max_sedes;
