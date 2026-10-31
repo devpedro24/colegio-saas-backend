@@ -12,10 +12,10 @@ use App\Models\Academico\Periodo;
 use App\Models\Academico\SesionHorario;
 use App\Models\Plan;
 use App\Models\User;
+use App\Services\AttendanceSheetService;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use App\Support\StudentRosterName;
-use App\Services\AttendanceSheetService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -154,15 +154,15 @@ final class AsistenciaController extends Controller
                 ])->values()->all(),
                 'ano_lectivo_token' => $year ? OpaqueUrlToken::for('ano-lectivo', $year->id) : null,
                 'asignaciones' => $assignments->map(fn (AsignacionDocente $row) => [
-                'token' => OpaqueUrlToken::for('asignacion-docente', $row->id),
-                'nombre' => $row->grupo->grado->nombre.' / ('.$row->grupo->nombre.') · '.$row->materia->nombre,
-                'ano_lectivo_token' => OpaqueUrlToken::for('ano-lectivo', $row->ano_lectivo_id),
-                'ano_lectivo_nombre' => $row->anoLectivo?->nombre,
-                'grupo_token' => OpaqueUrlToken::for('grupo', $row->grupo_id),
-                'grupo_nombre' => $row->grupo->grado->nombre.' / ('.$row->grupo->nombre.')',
-                'materia_token' => OpaqueUrlToken::for('materia', $row->materia_id),
-                'materia_nombre' => $row->materia->nombre,
-            ])->values()->all()]]);
+                    'token' => OpaqueUrlToken::for('asignacion-docente', $row->id),
+                    'nombre' => $row->grupo->grado->nombre.' / ('.$row->grupo->nombre.') · '.$row->materia->nombre,
+                    'ano_lectivo_token' => OpaqueUrlToken::for('ano-lectivo', $row->ano_lectivo_id),
+                    'ano_lectivo_nombre' => $row->anoLectivo?->nombre,
+                    'grupo_token' => OpaqueUrlToken::for('grupo', $row->grupo_id),
+                    'grupo_nombre' => $row->grupo->grado->nombre.' / ('.$row->grupo->nombre.')',
+                    'materia_token' => OpaqueUrlToken::for('materia', $row->materia_id),
+                    'materia_nombre' => $row->materia->nombre,
+                ])->values()->all()]]);
         }
 
         $result = [];
@@ -349,8 +349,10 @@ final class AsistenciaController extends Controller
                     continue;
                 }
                 abort_unless(! $before || ! in_array($before->estado, ['ausente', 'tarde'], true)
-                    || $item['estado'] === 'ausente', 422,
-                    'Una inasistencia registrada solo se retira mediante solicitud y aprobación.');
+                    || $item['estado'] === 'ausente'
+                    || ($before->estado === 'ausente' && $item['estado'] === 'presente'
+                        && $data['fecha'] === CarbonImmutable::now('America/Bogota')->toDateString()), 422,
+                    'Una ausencia guardada solo puede corregirse a Presente el mismo día de la clase (hora de Colombia). Para fechas pasadas, solicita una justificación y su aprobación.');
                 $changed = true;
                 if ($before) {
                     DB::table('asistencia_marcas')->where('id', $before->id)->update([
@@ -367,7 +369,8 @@ final class AsistenciaController extends Controller
                 AuditLogger::tenant($actor, $before ? 'UPDATE' : 'CREATE', 'asistencia_marca',
                     (string) $markId,
                     $before ? ['estado' => $before->estado] : null,
-                    ['estado' => $item['estado'], 'matricula_id' => $enrollmentId, 'asistencia_clase_id' => $recordId]);
+                    ['estado' => $item['estado'], 'matricula_id' => $enrollmentId, 'asistencia_clase_id' => $recordId,
+                        'fecha' => $data['fecha'], 'zona_horaria' => 'America/Bogota']);
             }
             if ($record && $changed) {
                 DB::table('asistencia_clases')->where('id', $recordId)->update([
