@@ -58,6 +58,7 @@ use App\Services\ConfigurationGate;
 use Illuminate\Support\Facades\Route;
 
 require __DIR__.'/work_drafts.php';
+Route::get('/notification-records', [\App\Http\Controllers\Api\NotificationRecordController::class, 'index']);
 Route::post('/work-draft-files/response/{resourceToken}/{token}', [WorkDraftFileController::class, 'storeResponse'])
     ->where(['resourceToken' => '[A-Za-z0-9_-]{24}', 'token' => '[A-Za-z0-9_-]{24}'])->middleware('throttle:30,1');
 Route::post('/work-draft-files/{sectionToken}/{token}', [WorkDraftFileController::class, 'store'])

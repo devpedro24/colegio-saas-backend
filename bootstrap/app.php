@@ -27,6 +27,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(\App\Http\Middleware\MeasureRequestPerformance::class);
         $middleware->append(\App\Http\Middleware\SynchronizeRealtimeChanges::class);
         $middleware->append(AuditRequests::class);
+        $middleware->append(\App\Http\Middleware\RecordAcademicNotifications::class);
         // Solo el superadministrador de plataforma (rutas centrales del panel).
         $middleware->alias([
             'platform' => EnsurePlatformUser::class,
