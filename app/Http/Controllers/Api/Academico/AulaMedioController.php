@@ -54,11 +54,16 @@ final class AulaMedioController extends Controller
             return response()->json(['message' => $error->getMessage()], 422);
         }
         abort_unless(in_array($stored->mime, self::QUESTION_MIME, true), 422, 'Tipo de medio no admitido.');
-        $medium = AulaPreguntaMedio::create(['pregunta_id' => $question->id, 'opcion_indice' => $index,
-            'archivo_token' => StoredFilePublicToken::for($stored), 'nombre' => $stored->original_name,
-            'mime' => $stored->mime, 'autor_id' => $request->user()->id]);
-        AuditLogger::tenant($request->user(), 'CREATE', 'aula_pregunta_medio', (string) $medium->id, null,
-            ['pregunta_id' => $question->id, 'opcion_indice' => $index, 'nombre' => $medium->nombre]);
+        $medium = DB::transaction(function () use ($resource, $request, $question, $index, $stored) {
+            $medium = AulaPreguntaMedio::create(['pregunta_id' => $question->id, 'opcion_indice' => $index,
+                'archivo_token' => StoredFilePublicToken::for($stored), 'nombre' => $stored->original_name,
+                'mime' => $stored->mime, 'autor_id' => $request->user()->id]);
+            AuditLogger::tenant($request->user(), 'CREATE', 'aula_pregunta_medio', (string) $medium->id, null,
+                ['pregunta_id' => $question->id, 'opcion_indice' => $index, 'nombre' => $medium->nombre]);
+
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user(), edited: true);
+            return $medium;
+        });
 
         return response()->json(['data' => self::presentQuestion($medium)], 201);
     }
@@ -73,9 +78,13 @@ final class AulaMedioController extends Controller
         app(AulaContentPolicy::class)->assertEditable($resource->seccion->periodo);
         abort_if(AulaIntento::where('recurso_id', $resource->id)->exists(), 422,
             'No puedes cambiar los medios de un cuestionario con intentos.');
-        $before = $medium->toArray();
-        $medium->delete();
-        AuditLogger::tenant($request->user(), 'DELETE', 'aula_pregunta_medio', (string) $medium->id, $before, null);
+        DB::transaction(function () use ($resource, $request, $medium): void {
+            $before = $medium->toArray();
+            $medium->delete();
+            AuditLogger::tenant($request->user(), 'DELETE', 'aula_pregunta_medio', (string) $medium->id, $before, null);
+
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user(), edited: true);
+        });
 
         return response()->json(['data' => ['eliminado' => true]]);
     }

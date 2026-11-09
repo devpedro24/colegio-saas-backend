@@ -150,6 +150,7 @@ final class AulaCuestionarioController extends Controller
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_preguntas', (string) $resource->id, null,
                 ['cantidad' => count($data['preguntas'])]);
             $locked->update(['version' => $locked->version + 1]);
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user(), edited: true);
         });
 
         return response()->json(['data' => ['guardado' => true, 'version' => $resource->fresh()->version,
@@ -225,7 +226,8 @@ final class AulaCuestionarioController extends Controller
 
     public function guardarRespuestas(Request $request, string $token): JsonResponse
     {
-        $data = $request->validate(['respuestas' => ['required', 'array', 'max:100']]);
+        $data = $request->validate(['respuestas' => ['required', 'array', 'max:100'],
+            'registrar_accion' => ['sometimes', 'boolean']]);
         $attempt = DB::transaction(function () use ($request, $token, $data) {
             $attempt = Token::find('aula-intento', $token, AulaIntento::query());
             abort_unless($attempt, 404);
@@ -566,6 +568,7 @@ final class AulaCuestionarioController extends Controller
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_intento', (string) $locked->id,
                 $before, $locked->toArray(), $data['motivo']);
 
+            app(\App\Services\AulaNotifications::class)->gradeSaved($locked, $request->user());
             return $locked;
         });
         $transferred = false;
@@ -614,6 +617,7 @@ final class AulaCuestionarioController extends Controller
                 'version' => $attempt->version + 1]);
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_intento', (string) $attempt->id, $before,
                 $attempt->toArray(), $data['motivo']);
+            app(\App\Services\AulaNotifications::class)->gradeSaved($attempt, $request->user());
         });
 
         return response()->json(['data' => ['guardado' => true]]);

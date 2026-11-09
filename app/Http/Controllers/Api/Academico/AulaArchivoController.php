@@ -21,6 +21,7 @@ use App\Support\Storage\StorageService;
 use App\Support\Storage\StoredFilePublicToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
@@ -78,10 +79,15 @@ final class AulaArchivoController extends Controller
         } catch (StorageException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
-        $attachment = AulaAdjunto::create(['recurso_id' => $resource->id, 'archivo_token' => StoredFilePublicToken::for($stored),
-            'nombre' => $data['archivo']->getClientOriginalName(), 'autor_id' => $request->user()->id]);
-        AuditLogger::tenant($request->user(), 'CREATE', 'aula_adjunto', (string) $attachment->id, null,
-            ['recurso_id' => $resource->id, 'nombre' => $attachment->nombre]);
+        $attachment = DB::transaction(function () use ($resource, $request, $stored, $data) {
+            $attachment = AulaAdjunto::create(['recurso_id' => $resource->id, 'archivo_token' => StoredFilePublicToken::for($stored),
+                'nombre' => $data['archivo']->getClientOriginalName(), 'autor_id' => $request->user()->id]);
+            AuditLogger::tenant($request->user(), 'CREATE', 'aula_adjunto', (string) $attachment->id, null,
+                ['recurso_id' => $resource->id, 'nombre' => $attachment->nombre]);
+
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user(), edited: true);
+            return $attachment;
+        });
 
         return response()->json(['data' => $this->present($attachment)], 201);
     }
@@ -217,13 +223,17 @@ final class AulaArchivoController extends Controller
                 'No puedes quitar el último archivo de una entrega sin texto.');
         }
 
-        $before = ['recurso_id' => $attachment->recurso_id, 'entrega_id' => $attachment->entrega_id,
-            'archivo_token' => $attachment->archivo_token,
-            'nombre' => $attachment->nombre];
-        AuditLogger::tenant($request->user(), 'DELETE', 'aula_adjunto', (string) $attachment->id, $before, null);
-        // Una duplicación de año puede reutilizar el mismo archivo almacenado.
-        // Se retira solo este vínculo; la purga física tiene su propio ciclo de retención.
-        $attachment->delete();
+        DB::transaction(function () use ($attachment, $resource, $request): void {
+            $before = ['recurso_id' => $attachment->recurso_id, 'entrega_id' => $attachment->entrega_id,
+                'archivo_token' => $attachment->archivo_token,
+                'nombre' => $attachment->nombre];
+            AuditLogger::tenant($request->user(), 'DELETE', 'aula_adjunto', (string) $attachment->id, $before, null);
+            // Una duplicación de año puede reutilizar el mismo archivo almacenado.
+            // Se retira solo este vínculo; la purga física tiene su propio ciclo de retención.
+            $attachment->delete();
+
+            if ($attachment->recurso_id) app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user(), edited: true);
+        });
 
         return response()->json(['data' => ['eliminado' => true]]);
     }

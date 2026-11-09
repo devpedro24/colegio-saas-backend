@@ -342,6 +342,7 @@ final class AulaController extends Controller
             'visible_estudiantes' => ['sometimes', 'boolean'], 'periodo_token' => ['sometimes', 'required', 'string'],
             'preinforme_token' => ['nullable', 'string']]);
         if (array_key_exists('visible_estudiantes', $data) && $data['visible_estudiantes'] !== $section->visible_estudiantes) {
+            $request->attributes->set('aula.visibility_changed', true);
             $this->access->content($request->user(), $section->aula, 'publicar');
         }
         if (isset($data['titulo'])) {
@@ -370,7 +371,7 @@ final class AulaController extends Controller
         $data['periodo_id'] = $period->id;
         $data['preinforme_id'] = $newPreId;
         $before = $section->toArray();
-        DB::transaction(function () use ($section, $data, $request): void {
+        DB::transaction(function () use ($section, $data, $request, $before): void {
             $section->update($data);
             // Un recurso previamente marcado como visible no debe quedar invisible
             // solo porque su antiguo estado seguía en borrador.
@@ -383,8 +384,9 @@ final class AulaController extends Controller
                         $old, $resource->toArray(), 'Publicación de sección');
                 }
             }
+            app(\App\Services\AulaNotifications::class)->sectionChanged($section, $request->user());
+            AuditLogger::tenant($request->user(), 'UPDATE', 'aula_seccion', (string) $section->id, $before, $section->toArray());
         });
-        AuditLogger::tenant($request->user(), 'UPDATE', 'aula_seccion', (string) $section->id, $before, $section->toArray());
 
         return response()->json(['data' => ['token' => $token]]);
     }
@@ -407,6 +409,7 @@ final class AulaController extends Controller
             $section->delete();
             AuditLogger::tenant($request->user(), 'DELETE', 'aula_seccion', (string) $section->id,
                 $before, $section->toArray());
+            app(\App\Services\AulaNotifications::class)->sectionChanged($section, $request->user());
         });
 
         return response()->json(['data' => ['token' => $token]]);
@@ -430,6 +433,7 @@ final class AulaController extends Controller
                 AuditLogger::tenant($request->user(), 'RESTORE', 'aula_recurso', (string) $resource->id,
                     $old, $resource->toArray(), 'Restaurado con sección');
             }
+            app(\App\Services\AulaNotifications::class)->sectionChanged($section, $request->user());
         });
 
         return response()->json(['data' => ['token' => $token]]);
@@ -441,10 +445,14 @@ final class AulaController extends Controller
         abort_unless($resource, 404);
         $this->access->content($request->user(), $resource->seccion->aula, 'eliminar', $resource->tipo === 'cuestionario');
         app(AulaContentPolicy::class)->assertEditable($resource->seccion->periodo);
-        $before = $resource->toArray();
-        $resource->delete();
-        AuditLogger::tenant($request->user(), 'DELETE', 'aula_recurso', (string) $resource->id,
-            $before, $resource->toArray());
+        DB::transaction(function () use ($resource, $request): void {
+            $before = $resource->toArray();
+            $resource->delete();
+            AuditLogger::tenant($request->user(), 'DELETE', 'aula_recurso', (string) $resource->id,
+                $before, $resource->toArray());
+
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user());
+        });
 
         return response()->json(['data' => ['token' => $token]]);
     }
@@ -457,10 +465,14 @@ final class AulaController extends Controller
         $this->access->manages($request->user(), $section->aula, 'aula.contenido.restaurar');
         abort_if($section->trashed(), 422, 'Restaura primero la sección.');
         app(AulaContentPolicy::class)->assertEditable($section->periodo);
-        $before = $resource->toArray();
-        $resource->restore();
-        AuditLogger::tenant($request->user(), 'RESTORE', 'aula_recurso', (string) $resource->id,
-            $before, $resource->toArray());
+        DB::transaction(function () use ($resource, $request): void {
+            $before = $resource->toArray();
+            $resource->restore();
+            AuditLogger::tenant($request->user(), 'RESTORE', 'aula_recurso', (string) $resource->id,
+                $before, $resource->toArray());
+
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user());
+        });
 
         return response()->json(['data' => ['token' => $token]]);
     }
@@ -491,6 +503,7 @@ final class AulaController extends Controller
             }
             AuditLogger::tenant($request->user(), 'CREATE', 'aula_recurso', (string) $resource->id, null, $resource->toArray());
 
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user());
             return $resource;
         });
 
@@ -505,6 +518,7 @@ final class AulaController extends Controller
             $resource->tipo === 'cuestionario' || $request->input('tipo') === 'cuestionario');
         app(AulaContentPolicy::class)->assertEditable($resource->seccion->periodo);
         $data = $this->resourceInput($request);
+        $request->attributes->set('aula.visibility_changed', $data['visible_estudiantes'] !== $resource->visible_estudiantes);
         if ($data['visible_estudiantes'] !== $resource->visible_estudiantes || $data['visible_estudiantes']) {
             $this->access->content($request->user(), $resource->seccion->aula, 'publicar');
         }
@@ -549,6 +563,7 @@ final class AulaController extends Controller
                 app(AulaGradebookService::class)->link($resource, $request->user());
             }
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_recurso', (string) $resource->id, $before, $resource->toArray());
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user(), edited: true);
         });
 
         return response()->json(['data' => $this->resourceData($resource)]);
@@ -583,6 +598,7 @@ final class AulaController extends Controller
                 'version' => $resource->version + 1]);
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_recurso', (string) $resource->id,
                 $before, $resource->toArray(), 'Archivado desde Aula');
+            app(\App\Services\AulaNotifications::class)->resourceChanged($resource, $request->user());
         });
 
         return response()->json(['data' => $this->resourceData($resource)]);
@@ -829,6 +845,7 @@ final class AulaController extends Controller
                 'calificada_por' => $request->user()->id, 'estado' => 'calificada', 'version' => $submission->version + 1]);
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_entrega', (string) $submission->id,
                 $before, $submission->toArray(), $data['motivo'] ?? null);
+            app(\App\Services\AulaNotifications::class)->gradeSaved($submission, $request->user());
         });
 
         return response()->json(['data' => ['guardado' => true]]);
@@ -852,6 +869,7 @@ final class AulaController extends Controller
                 'calificada_por' => $request->user()->id, 'version' => $submission->version + 1]);
             AuditLogger::tenant($request->user(), 'UPDATE', 'aula_entrega', (string) $submission->id,
                 $before, $submission->toArray(), 'Revisión sin nota');
+            app(\App\Services\AulaNotifications::class)->gradeSaved($submission, $request->user());
         });
 
         return response()->json(['data' => ['revisada' => true]]);
