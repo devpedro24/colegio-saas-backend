@@ -7,17 +7,19 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\AnoLectivo;
-use App\Models\Academico\AsistenciaSolicitud;
 use App\Models\Academico\AsignacionDocente;
+use App\Models\Academico\AsistenciaSolicitud;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\SesionHorario;
-use App\Services\TenantPlanAccess;
 use App\Models\User;
+use App\Services\AttendanceNotifications;
+use App\Services\TenantPlanAccess;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use App\Support\StudentRosterName;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
@@ -60,7 +62,7 @@ final class AsistenciaCorreccionController extends Controller
     {
         $this->plan();
         $actor = $request->user();
-        abort_unless($this->student($actor), 403);
+        abort_unless($actor->hasRole('estudiante') && ($actor->can('asistencia.consultar_propia') || $this->student($actor)), 403);
         $query = DB::table('asistencia_marcas as m')
             ->join('asistencia_clases as c', 'c.id', '=', 'm.asistencia_clase_id')
             ->join('matriculas as matricula', 'matricula.id', '=', 'm.matricula_id')
@@ -225,6 +227,8 @@ final class AsistenciaCorreccionController extends Controller
                 ['estado' => $status, 'matricula_id' => $enrollment->id,
                     'marcas' => array_column($marks, 'id'), 'motivo' => $row->motivo]);
 
+            app(AttendanceNotifications::class)->requestChanged($row);
+
             return ['token' => OpaqueUrlToken::for('asistencia-solicitud', $row->id), 'estado' => $status];
         });
 
@@ -261,6 +265,8 @@ final class AsistenciaCorreccionController extends Controller
             ]);
             AuditLogger::tenant($actor, 'UPDATE', 'asistencia_solicitud', (string) $row->id,
                 ['estado' => $before], ['estado' => $row->estado, 'respuesta_docente' => $row->respuesta_docente]);
+
+            app(AttendanceNotifications::class)->requestChanged($row);
 
             return ['estado' => $row->estado];
         });
@@ -309,14 +315,16 @@ final class AsistenciaCorreccionController extends Controller
                 ['estado' => 'pendiente_aprobacion'], ['estado' => $row->estado,
                     'respuesta_aprobador' => $row->respuesta_aprobador]);
 
+            app(AttendanceNotifications::class)->requestChanged($row);
+
             return ['estado' => $row->estado];
         });
 
         return response()->json(['data' => $result]);
     }
 
-    /** @return \Illuminate\Support\Collection<int, object> */
-    private function assertMarksStillPending(AsistenciaSolicitud $row): \Illuminate\Support\Collection
+    /** @return Collection<int, object> */
+    private function assertMarksStillPending(AsistenciaSolicitud $row): Collection
     {
         $marks = DB::table('asistencia_solicitud_marcas as item')
             ->join('asistencia_marcas as mark', 'mark.id', '=', 'item.asistencia_marca_id')

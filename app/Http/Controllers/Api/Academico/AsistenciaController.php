@@ -11,6 +11,7 @@ use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\SesionHorario;
 use App\Models\User;
+use App\Services\AttendanceNotifications;
 use App\Services\AttendanceSheetService;
 use App\Services\TenantPlanAccess;
 use App\Support\Audit\AuditLogger;
@@ -371,6 +372,7 @@ final class AsistenciaController extends Controller
                     $before ? ['estado' => $before->estado] : null,
                     ['estado' => $item['estado'], 'matricula_id' => $enrollmentId, 'asistencia_clase_id' => $recordId,
                         'fecha' => $data['fecha'], 'zona_horaria' => 'America/Bogota']);
+                app(AttendanceNotifications::class)->markChanged((int) $markId, $item['estado'], $record ? $record->version + 1 : 1);
             }
             if ($record && $changed) {
                 DB::table('asistencia_clases')->where('id', $recordId)->update([
