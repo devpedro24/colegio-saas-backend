@@ -50,13 +50,13 @@ class AccountTest extends TestCase
             'phone' => '+57 300 123 4567',
         ])->assertStatus(200)
             ->assertJsonPath('user.name', 'Nuevo Nombre')
-            ->assertJsonPath('user.phone', '+57 300 123 4567');
+            ->assertJsonPath('user.phone', '+573001234567');
 
         $this->assertMatchesRegularExpression('/\A[A-Za-z0-9_-]{24}\z/', $response->json('user.id'));
         $this->assertNotSame((string) $user->id, $response->json('user.id'));
 
         $this->assertSame('Nuevo Nombre', $user->fresh()->name);
-        $this->assertSame('+57 300 123 4567', $user->fresh()->phone);
+        $this->assertSame('+573001234567', $user->fresh()->phone);
     }
 
     public function test_cambiar_email_exige_contrasena_y_rechaza_duplicados(): void

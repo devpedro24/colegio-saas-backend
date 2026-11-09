@@ -14,7 +14,7 @@ final class ResolveBrowserSession
 {
     private const PLATFORM_PATHS = [
         'api/platform', 'api/colegios', 'api/plans', 'api/planes', 'api/rbac',
-        'api/login', 'api/logout', 'api/me', 'api/user', 'api/account',
+        'api/login', 'api/logout', 'api/me', 'api/user', 'api/account', 'api/contact-options',
         'api/mfa', 'api/forgot-password', 'api/reset-password',
         'api/broadcasting/auth',
     ];

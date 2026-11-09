@@ -219,7 +219,7 @@ return [
         'grado_id' => 'grado',
         'ano_lectivo_id' => 'año lectivo',
         'direccion' => 'dirección',
-        'telefono' => 'teléfono',
+        'telefono' => 'celular',
         'responsable' => 'responsable',
         'es_principal' => 'sede principal',
         'hora_inicio' => 'hora de inicio',

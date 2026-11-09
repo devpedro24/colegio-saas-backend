@@ -1,18 +1,21 @@
 <?php
 
 use App\Http\Controllers\Api\AccountController;
+use App\Http\Controllers\Api\ContactOptionsController;
 use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\Platform\AuditController;
 use App\Http\Controllers\Api\Platform\AulaOfficeCallbackController;
 use App\Http\Controllers\Api\Platform\AuthController as PlatformAuthController;
 use App\Http\Controllers\Api\Platform\ColegioController;
 use App\Http\Controllers\Api\Platform\ColegioSedeController;
+use App\Http\Controllers\Api\Platform\ContactSettingController;
 use App\Http\Controllers\Api\Platform\ImpersonationController;
 use App\Http\Controllers\Api\Platform\MfaController as PlatformMfaController;
 use App\Http\Controllers\Api\Platform\PlanController;
 use App\Http\Controllers\Api\Platform\RbacController;
 use App\Http\Controllers\Api\Platform\SchoolMailRequestsController;
 use App\Http\Controllers\Api\Platform\StorageController;
+use App\Http\Controllers\Api\SubscriptionOffersController;
 use App\Http\Middleware\EnsureMfaReady;
 use App\Support\Account\AccountPresenter;
 use Illuminate\Http\Request;
@@ -74,6 +77,7 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
             // Ajustes de cuenta del usuario autenticado (perfil, email, clave,
             // desactivacion y vinculacion de Google).
             Route::get('/account', [AccountController::class, 'index']);
+            Route::get('/contact-options', ContactOptionsController::class);
             Route::put('/account/profile', [AccountController::class, 'updateProfile']);
             Route::post('/account/email', [AccountController::class, 'changeEmail']);
             Route::post('/account/password', [AccountController::class, 'changePassword']);
@@ -83,6 +87,8 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
 
             // Panel del superadministrador (solo plataforma).
             Route::middleware('platform')->group(function () {
+                Route::get('/platform/contact-setting', [ContactSettingController::class, 'show']);
+                Route::put('/platform/contact-setting', [ContactSettingController::class, 'update']);
                 Route::prefix('platform')->group(base_path('routes/work_drafts.php'));
                 Route::get('/platform/correo-solicitudes/resumen', [SchoolMailRequestsController::class, 'summary']);
                 Route::get('/platform/correo-solicitudes', [SchoolMailRequestsController::class, 'index']);
@@ -110,7 +116,7 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
                 Route::get('/platform/impersonar/estado', [ImpersonationController::class, 'estado']);
 
                 // Planes / membresias (con su catalogo cerrado de features).
-                Route::get('/plans/offers', \App\Http\Controllers\Api\SubscriptionOffersController::class);
+                Route::get('/plans/offers', SubscriptionOffersController::class);
                 Route::post('/plans/quote', [PlanController::class, 'quote']);
                 Route::get('/plans', [PlanController::class, 'index']);
                 Route::post('/plans', [PlanController::class, 'store']);

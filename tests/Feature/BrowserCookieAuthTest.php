@@ -14,6 +14,7 @@ use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Crypt;
+use Symfony\Component\HttpFoundation\Cookie;
 use Tests\TestCase;
 
 class BrowserCookieAuthTest extends TestCase
@@ -85,6 +86,38 @@ class BrowserCookieAuthTest extends TestCase
     {
         $this->get('http://localhost/api/me')->assertUnauthorized()
             ->assertHeader('content-type', 'application/json');
+    }
+
+    public function test_contact_options_preserve_the_platform_browser_session(): void
+    {
+        $admin = $this->admin();
+        $login = $this->postJson('http://localhost/api/login', [
+            'email' => $admin->email, 'password' => 'Password!123',
+        ])->assertOk();
+        $this->withUnencryptedCookies([
+            BrowserAuthCookies::PLATFORM => $this->cookie($login, BrowserAuthCookies::PLATFORM)->getValue(),
+            BrowserAuthCookies::CSRF => $this->cookie($login, BrowserAuthCookies::CSRF)->getValue(),
+        ]);
+
+        // Account settings and campus forms load this catalog immediately after login.
+        app('auth')->forgetGuards();
+        $this->getJson('http://localhost/api/contact-options')->assertOk()
+            ->assertJsonStructure(['countries' => [['country', 'calling_code', 'lengths']]]);
+
+        // An old support cookie must not choose the school identity for this central request.
+        $this->withUnencryptedCookies([BrowserAuthCookies::IMPERSONATION => Crypt::encryptString(json_encode([
+            'token' => 'old-support-session', 'csrf' => 'old-csrf', 'exp' => time() + 3600,
+            'tenant_id' => 'old-school', 'platform_token_hash' => 'old-session-hash',
+        ]))]);
+        app('auth')->forgetGuards();
+        $this->getJson('http://localhost/api/contact-options')->assertOk();
+        app('auth')->forgetGuards();
+        $this->getJson('http://localhost/api/me')->assertOk()->assertJsonPath('user.email', $admin->email);
+        $this->assertSame(1, $admin->tokens()->count());
+
+        $admin->tokens()->delete();
+        app('auth')->forgetGuards();
+        $this->getJson('http://localhost/api/contact-options')->assertUnauthorized();
     }
 
     public function test_https_login_marks_all_browser_cookies_secure(): void
@@ -225,8 +258,7 @@ class BrowserCookieAuthTest extends TestCase
         $start = $this->postJson('http://localhost/api/platform/impersonar', [
             'colegio_slug' => $tenant->slug,
         ])->assertOk();
-        $this->withUnencryptedCookies([BrowserAuthCookies::IMPERSONATION =>
-            $this->cookie($start, BrowserAuthCookies::IMPERSONATION)->getValue()]);
+        $this->withUnencryptedCookies([BrowserAuthCookies::IMPERSONATION => $this->cookie($start, BrowserAuthCookies::IMPERSONATION)->getValue()]);
         app('auth')->forgetGuards();
         $this->getJson('http://localhost/api/anos-lectivos')->assertOk();
         $admin->tokens()->delete();
@@ -295,7 +327,7 @@ class BrowserCookieAuthTest extends TestCase
         return [$result['tenant'], $result['password']];
     }
 
-    private function cookie($response, string $name): \Symfony\Component\HttpFoundation\Cookie
+    private function cookie($response, string $name): Cookie
     {
         foreach ($response->baseResponse->headers->getCookies() as $cookie) {
             if ($cookie->getName() === $name) {

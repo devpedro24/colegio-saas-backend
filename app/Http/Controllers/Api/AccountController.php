@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Impersonation;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\ContactNumbers;
 use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
 use App\Support\PasswordPolicy;
@@ -55,16 +56,22 @@ class AccountController extends Controller
         $data = $request->validate([
             'name' => ['required', 'string', 'max:160'],
             'phone' => ['nullable', 'string', 'max:32'],
+            'phone_country' => ['sometimes', 'required', 'string', 'size:2'],
             'roles' => ['prohibited'], 'permissions' => ['prohibited'],
             'role' => ['prohibited'], 'tenant_id' => ['prohibited'], 'plan' => ['prohibited'],
         ]);
 
         $user = $request->user();
+        $phone = array_key_exists('phone', $data) ? $data['phone'] : $user->phone;
+        if (array_key_exists('phone', $data) || isset($data['phone_country'])) {
+            $country = $data['phone_country'] ?? ContactNumbers::countryForNumber($phone);
+            $phone = ContactNumbers::normalize($phone, $country, 'phone');
+        }
         abort_if(! AccountPresenter::capabilities($user)['edit_name'] && trim($data['name']) !== $user->name,
             403, 'El colegio administra tu nombre académico.');
         $user->update([
             'name' => trim($data['name']),
-            'phone' => trim((string) ($data['phone'] ?? '')),
+            'phone' => $phone,
         ]);
 
         $this->audit($user, 'PROFILE_UPDATE', 'account', (string) $user->id);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\ContactOptionsController;
 use App\Http\Controllers\Api\IngresoPublicController;
 use App\Http\Controllers\Api\MfaController;
 use App\Http\Controllers\Api\OnboardingController;
@@ -121,6 +122,7 @@ Route::middleware([
             // Ajustes de cuenta del usuario autenticado (perfil, email, clave,
             // desactivacion y vinculacion de Google).
             Route::get('/account', [AccountController::class, 'index']);
+            Route::get('/contact-options', ContactOptionsController::class);
             Route::put('/account/profile', [AccountController::class, 'updateProfile']);
             Route::post('/account/email', [AccountController::class, 'changeEmail']);
             Route::post('/account/deactivate', [AccountController::class, 'deactivate']);
