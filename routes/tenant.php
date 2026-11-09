@@ -16,6 +16,7 @@ use App\Http\Middleware\EnsureOnboardingComplete;
 use App\Http\Middleware\EnsureTenantActive;
 use App\Http\Middleware\InitializeTenancyByDomainOrSubdomain;
 use App\Http\Middleware\RequireOpaqueAcademicContract;
+use App\Http\Middleware\UseSchoolAccount;
 use App\Models\Tenant;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
@@ -101,7 +102,7 @@ Route::middleware([
         Route::get('/documentos/{document}', 'download')->middleware('throttle:60,1');
     });
 
-    Route::middleware(['auth:sanctum', EnsureMfaReady::class])->group(function () {
+    Route::middleware(['auth:sanctum', EnsureMfaReady::class, UseSchoolAccount::class])->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/onboarding/status', [OnboardingController::class, 'status']);

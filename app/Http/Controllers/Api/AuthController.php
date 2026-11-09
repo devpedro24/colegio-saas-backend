@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Tenant;
 use App\Models\User;
+use App\Services\SedeAccess;
 use App\Services\TenantOnboarding;
 use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
@@ -32,7 +34,8 @@ class AuthController extends Controller
             'code' => ['nullable', 'string', 'max:32'],
         ]);
 
-        $user = User::where('email', $data['email'])->first();
+        $source = app(SedeAccess::class)->source($data['email']);
+        $user = $source ?? User::where('email', $data['email'])->whereNull('school_user_id')->first();
 
         if (! $user || $user->email === User::PLATFORM_SUPERADMIN_EMAIL || ! Hash::check($data['password'], $user->password)) {
             AuditLogger::tenant(null, 'LOGIN_FAILED', 'auth', null, null, ['email' => $data['email']]);
@@ -64,7 +67,9 @@ class AuthController extends Controller
                 ], 422);
             }
 
-            if (! $verifier->verify($user, $code)) {
+            if (! ($source
+                ? Tenant::findOrFail(tenant()->parent_id)->run(fn () => $verifier->verify($source, $code))
+                : $verifier->verify($user, $code))) {
                 return response()->json([
                     'mfa_required' => true,
                     'message' => 'Codigo invalido.',
@@ -72,6 +77,10 @@ class AuthController extends Controller
             }
         }
 
+        if ($source) {
+            $user = app(SedeAccess::class)->localAccount($source);
+        }
+        app(SedeAccess::class)->authorize($user);
         $expiresAt = now()->addHours(8);
         $token = $user->createToken('web', ['*'], $expiresAt)->plainTextToken;
         $csrf = BrowserAuthCookies::newCsrf();

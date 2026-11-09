@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Tenant;
 use App\Models\User;
+use App\Services\SedeAccess;
 use App\Support\Audit\AuditLogger;
 use App\Support\PasswordPolicy;
 use Illuminate\Auth\Passwords\PasswordBrokerManager;
@@ -22,6 +24,9 @@ class PasswordResetController extends Controller
     public function forgot(Request $request): JsonResponse
     {
         $data = $request->validate(['email' => ['required', 'email', 'max:255']]);
+        if (app(SedeAccess::class)->source($data['email'])) {
+            return Tenant::findOrFail(tenant()->parent_id)->run(fn () => $this->forgot($request));
+        }
         $credentials = $this->credentials($data);
         if ($data['email'] !== User::PLATFORM_SUPERADMIN_EMAIL) {
             // Instancia por petición: el repositorio de tokens usa la BD del tenant actual.
@@ -39,6 +44,9 @@ class PasswordResetController extends Controller
             'token' => ['required', 'string', 'max:255'],
             'password' => ['required', 'confirmed', PasswordPolicy::rule()],
         ]);
+        if (app(SedeAccess::class)->source($data['email'])) {
+            return Tenant::findOrFail(tenant()->parent_id)->run(fn () => $this->reset($request));
+        }
         if ($data['email'] === User::PLATFORM_SUPERADMIN_EMAIL) {
             throw ValidationException::withMessages(['token' => 'El enlace es inválido o ha expirado.']);
         }

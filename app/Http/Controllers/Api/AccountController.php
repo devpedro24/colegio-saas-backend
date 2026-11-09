@@ -9,6 +9,7 @@ use App\Models\Impersonation;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\ContactNumbers;
+use App\Services\SedeAccess;
 use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
 use App\Support\PasswordPolicy;
@@ -271,6 +272,14 @@ class AccountController extends Controller
         }
 
         $payload = $this->readOAuthState((string) $request->query('state'));
+
+        if ($payload && tenant()?->parent_id && $payload['tenant'] === (string) tenant()->parent_id) {
+            $school = Tenant::findOrFail(tenant()->parent_id);
+            $email = $school->run(fn () => User::whereKey($payload['uid'])->value('email'));
+            if ($email && app(SedeAccess::class)->source($email, (int) $payload['uid'])) {
+                return $school->run(fn () => $this->googleCallback($request));
+            }
+        }
 
         if ($payload === null || ! hash_equals($payload['nonce'], (string) $request->cookie(self::STATE_COOKIE))
             || $payload['tenant'] !== (string) (tenant()?->getTenantKey() ?? 'platform')

@@ -6,6 +6,7 @@ namespace App\Http\Middleware;
 
 use App\Models\Impersonation;
 use App\Models\User;
+use App\Services\SedeAccess;
 use Closure;
 use Illuminate\Http\Request;
 use Laravel\Sanctum\PersonalAccessToken;
@@ -47,6 +48,9 @@ final class EnsureMfaReady
                     return response()->json(['message' => 'La sesión de plataforma ya no está activa.'], 401);
                 }
             }
+        }
+        if ($user && tenancy()->initialized) {
+            app(SedeAccess::class)->authorize($user);
         }
         $token = $user?->currentAccessToken();
         if ($token instanceof PersonalAccessToken && $token->name === 'mfa-enrollment') {
