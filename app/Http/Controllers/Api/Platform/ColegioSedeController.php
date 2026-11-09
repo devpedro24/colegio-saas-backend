@@ -4,319 +4,69 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Platform;
 
-use App\Events\SedeCreada;
-use App\Events\TenantDataChanged;
+use App\Http\Controllers\Api\Academico\SedeController;
 use App\Http\Controllers\Controller;
-use App\Http\Controllers\PaginatesRequests;
-use App\Models\Academico\Sede;
 use App\Models\Tenant;
-use App\Services\SedeProvisioner;
 use App\Support\Audit\AuditLogger;
-use App\Support\OpaqueUrlToken;
-use App\Support\Sedes\SedeLimits;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Validation\Rule;
-use RuntimeException;
 
-/**
- * Sedes de un colegio gestionadas por el SUPERADMIN desde el panel central.
- *
- * Las sedes viven en la BD del tenant; cada operacion se ejecuta dentro de
- * `$tenant->run()`. Aplica el mismo gating de plan (max_sedes) que el lado
- * del colegio. Toda operacion sensible queda en el log de auditoria de
- * plataforma (RN-AI-003).
- *
- * Una sede ADICIONAL (no principal) se provisiona como TENANT HIJO con su
- * propia BD, RBAC, usuarios y subdominio `<slug>.<subdominio-colegio>`
- * (SedeProvisioner). Al eliminar la sede, el tenant hijo baja a cuarentena
- * (estado in_retention, subdominio eliminado) liberando el cupo del plan.
- */
-class ColegioSedeController extends Controller
+/** Platform entry points share campus validation, provisioning and presentation. */
+final class ColegioSedeController extends Controller
 {
-    use PaginatesRequests;
-
-    public function __construct(private readonly SedeProvisioner $provisioner) {}
-
-    /** Lista las sedes del colegio (principal primero). */
     public function index(Request $request, string $slug): JsonResponse
     {
-        $tenant = $this->findColegio($slug);
-
-        // Se serializa DENTRO de $tenant->run(): al terminar, Stancl desconecta
-        // la conexion del tenant y un modelo colgado no puede acceder a fechas.
-        $result = $tenant->run(function () use ($request) {
-            return Sede::query()
-                ->orderByRaw('tenant_id IS NULL DESC')
-                ->orderBy('nombre')
-                ->paginate($this->resolvePerPage($request))
-                ->through(fn (Sede $sede) => $this->snapshot($sede));
-        });
-
-        // Fuera del run: enriquece con los datos del tenant hijo (central).
-        $result->setCollection($result->getCollection()->map(fn (array $sede) => $this->enrich($sede)));
-
-        return $this->paginatedResponse($result);
+        return $this->execute($request, $slug, 'index');
     }
 
-    /** Crea una sede en el colegio (con tenant hijo si se indica slug). */
+    public function options(Request $request, string $slug): JsonResponse
+    {
+        return $this->execute($request, $slug, 'options');
+    }
+
     public function store(Request $request, string $slug): JsonResponse
     {
-        $tenant = $this->findColegio($slug);
-
-        $data = $request->validate([
-            'nombre' => ['required', 'string', 'max:120'],
-            'slug' => ['nullable', 'string', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
-            'direccion' => [Rule::when($request->isMethod('post'), 'required'), 'string', 'max:255'],
-            'coordinador_email' => ['nullable', 'email', 'max:255'],
-            'coordinador_name' => ['nullable', 'string', 'max:120'],
-            'heredar' => ['nullable', 'boolean'],
-            'estado' => ['nullable', Rule::in([Sede::ESTADO_ACTIVA, Sede::ESTADO_INACTIVA])],
-        ]);
-        $error = null;
-        $sede = null;
-        $tenant->run(function () use ($data, &$sede, &$error) {
-            if (SedeLimits::alLimite()) {
-                $error = 'El plan del colegio permite máximo '.(string) SedeLimits::maxSedes().' sede(s).';
-
-                return;
-            }
-
-            if (Sede::where('nombre', $data['nombre'])->exists()) {
-                $error = 'Ya existe una sede con ese nombre.';
-
-                return;
-            }
-
-            $sede = SedeLimits::create([
-                'nombre' => $data['nombre'],
-                'direccion' => $data['direccion'] ?? null,
-                'coordinador_name' => $data['coordinador_name'] ?? null,
-                'coordinador_email' => $data['coordinador_email'] ?? null,
-                'estado' => $data['estado'] ?? Sede::ESTADO_ACTIVA,
-            ]);
-        });
-
-        if ($error !== null) {
-            return response()->json(['message' => $error], 422);
-        }
-
-        $password = null;
-
-        if (! empty($data['slug'])) {
-            try {
-                $res = $this->provisioner->provisionAndAttach($tenant, $sede, [
-                    'slug' => $data['slug'],
-                    'name' => $data['nombre'],
-                    'coordinador_email' => $data['coordinador_email'] ?? null,
-                    'coordinador_name' => $data['coordinador_name'] ?? null,
-                    'heredar' => false,
-                ]);
-                $password = $res['password'];
-                try {
-                    SedeCreada::dispatch((string) $sede->id, (string) $tenant->id);
-                    TenantDataChanged::dispatch('sede', 'created', $data['nombre']);
-                } catch (\Throwable $e) {
-                    Log::warning('[WS] SedeCreada dispatch platform failed', ['error' => $e->getMessage()]);
-                }
-            } catch (RuntimeException $e) {
-                // Rollback: la sede creada sin tenant no puede quedar huerfana.
-                $tenant->run(fn () => $sede->forceDelete());
-
-                return response()->json(['message' => $e->getMessage()], 422);
-            }
-        }
-
-        $snapshot = $this->enrich($tenant->run(fn () => $this->snapshot($sede)));
-
-        AuditLogger::platform(
-            $request->user(),
-            'CREATE',
-            'colegio.sede',
-            (string) $tenant->id,
-            null,
-            $snapshot,
-            null,
-            (string) $tenant->id,
-        );
-
-        return response()->json([
-            'data' => $snapshot,
-            'coordinador_password' => $password,
-        ], 201);
+        return $this->execute($request, $slug, 'store');
     }
 
-    /** Edita una sede del colegio. */
     public function update(Request $request, string $slug, string $sedeToken): JsonResponse
     {
-        $tenant = $this->findColegio($slug);
-
-        $data = $request->validate([
-            'nombre' => ['required', 'string', 'max:120'],
-            'direccion' => ['nullable', 'string', 'max:255'],
-            'estado' => ['nullable', Rule::in([Sede::ESTADO_ACTIVA, Sede::ESTADO_INACTIVA])],
-        ]);
-
-        $error = null;
-        $prev = null;
-        $sede = null;
-        $tenant->run(function () use ($data, $sedeToken, &$prev, &$sede, &$error) {
-            $sede = OpaqueUrlToken::find('sede', $sedeToken, Sede::withTrashed());
-
-            if (! $sede || $sede->trashed()) {
-                $error = 'not_found';
-
-                return;
-            }
-
-            if (Sede::where('nombre', $data['nombre'])->where('id', '!=', $sede->id)->exists()) {
-                $error = 'duplicate';
-
-                return;
-            }
-
-            $prev = $this->snapshot($sede);
-
-            $sede->update([
-                'nombre' => $data['nombre'],
-                'direccion' => $data['direccion'] ?? $sede->direccion,
-                'estado' => $data['estado'] ?? $sede->estado,
-            ]);
-
-            try {
-                TenantDataChanged::dispatch('sede', 'updated', $sede->nombre);
-            } catch (\Throwable) {
-            }
-        });
-
-        if ($error === 'not_found') {
-            abort(404);
-        }
-        if ($error === 'duplicate') {
-            return response()->json(['message' => 'Ya existe una sede con ese nombre.'], 422);
-        }
-
-        $current = $this->enrich($tenant->run(fn () => $this->snapshot($sede)));
-
-        AuditLogger::platform(
-            $request->user(),
-            'UPDATE',
-            'colegio.sede',
-            (string) $tenant->id,
-            $this->enrich($prev),
-            $current,
-            null,
-            (string) $tenant->id,
-        );
-
-        return response()->json(['data' => $current]);
+        return $this->execute($request, $slug, 'update', $sedeToken);
     }
 
-    /** Elimina (soft-delete) una sede del colegio y baja su tenant hijo. */
     public function destroy(Request $request, string $slug, string $sedeToken): JsonResponse
     {
-        $tenant = $this->findColegio($slug);
-
-        $error = null;
-        $prev = null;
-        $tenantIdHijo = null;
-        $tenant->run(function () use ($sedeToken, &$prev, &$tenantIdHijo, &$error) {
-            $sede = OpaqueUrlToken::find('sede', $sedeToken, Sede::withTrashed());
-
-            if (! $sede || $sede->trashed()) {
-                $error = 'not_found';
-
-                return;
-            }
-
-            $prev = $this->snapshot($sede);
-            $tenantIdHijo = $sede->tenant_id;
-            $nombre = $sede->nombre;
-            $sede->delete();
-
-            try {
-                TenantDataChanged::dispatch('sede', 'deleted', $nombre);
-            } catch (\Throwable) {
-            }
-        });
-
-        if ($error === 'not_found') {
-            abort(404);
-        }
-
-        // Cuarentena del tenant hijo: estado in_retention + subdominio eliminado.
-        if ($tenantIdHijo !== null) {
-            $this->provisioner->bajarPorId($tenantIdHijo);
-        }
-
-        AuditLogger::platform(
-            $request->user(),
-            'DELETE',
-            'colegio.sede',
-            (string) $tenant->id,
-            $this->enrich($prev),
-            null,
-            null,
-            (string) $tenant->id,
-        );
-
-        return response()->json(['data' => null]);
+        return $this->execute($request, $slug, 'destroy', $sedeToken);
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    private function snapshot(?Sede $sede): array
+    private function execute(Request $request, string $slug, string $action, ?string $token = null): JsonResponse
     {
-        if ($sede === null) {
-            return [];
+        $school = Tenant::where('slug', $slug)->whereNull('parent_id')->firstOrFail();
+        $actor = $request->user();
+        $resolver = $request->getUserResolver();
+        $request->query->set('opaque', '1');
+        $previous = null;
+        try {
+            // A central actor never becomes a tenant user by matching a numeric ID.
+            $request->setUserResolver(fn () => null);
+            $response = $school->run(function () use ($request, $action, $token, &$previous) {
+                $controller = app(SedeController::class);
+                if ($token) {
+                    $previous = $controller->show($token)->getData(true)['data'];
+                }
+
+                return $token ? $controller->{$action}($request, $token) : $controller->{$action}($request);
+            });
+        } finally {
+            $request->setUserResolver($resolver);
+        }
+        if (! $request->isMethodSafe() && $response->isSuccessful()) {
+            AuditLogger::platform($actor, match ($action) {
+                'store' => 'CREATE', 'update' => 'UPDATE', 'destroy' => 'DELETE'
+            },
+                'colegio.sede', $token, $previous, $response->getData(true)['data'], null, $school->id);
         }
 
-        return [
-            'url_token' => $sede->hashed_id,
-            'nombre' => $sede->nombre,
-            'direccion' => $sede->direccion,
-            'telefono' => $sede->telefono,
-            'coordinador_name' => $sede->coordinador_name,
-            'coordinador_email' => $sede->coordinador_email,
-            'tenant_id' => $sede->tenant_id,
-            'estado' => $sede->estado,
-        ];
-    }
-
-    /**
-     * Adjunta los datos del tenant hijo (BD central) al snapshot.
-     * Debe llamarse FUERA de `$tenant->run()` (conexion central).
-     *
-     * @param  array<string, mixed>  $sede
-     * @return array<string, mixed>
-     */
-    private function enrich(array $sede): array
-    {
-        $tenantId = $sede['tenant_id'] ?? null;
-
-        $sede['tenant_slug'] = null;
-        $sede['tenant_domain'] = null;
-        $sede['tenant_status'] = null;
-
-        if ($tenantId !== null) {
-            $hijo = Tenant::find($tenantId);
-
-            if ($hijo !== null) {
-                $sede['tenant_slug'] = $hijo->slug;
-                $sede['tenant_domain'] = $hijo->domains()->first()?->domain;
-                $sede['tenant_status'] = $hijo->status;
-            }
-        }
-
-        unset($sede['tenant_id']);
-
-        return $sede;
-    }
-
-    private function findColegio(string $slug): Tenant
-    {
-        return Tenant::where('slug', $slug)->where('tipo', '!=', Tenant::TIPO_SEDE)->firstOrFail();
+        return $response;
     }
 }

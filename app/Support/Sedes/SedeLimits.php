@@ -7,6 +7,7 @@ namespace App\Support\Sedes;
 use App\Models\Academico\Sede;
 use App\Models\Plan;
 use App\Models\Tenant;
+use App\Services\SedeCapacity;
 use App\Services\TenantPlanAccess;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -67,8 +68,14 @@ class SedeLimits
 
         return $central->transaction(function () use ($central, $attributes) {
             $central->table('tenants')->where('id', tenant()->getKey())->lockForUpdate()->first();
+            tenant()->refresh();
+            app(TenantPlanAccess::class)->forget();
             if (self::alLimite()) {
                 throw ValidationException::withMessages(['plan' => 'Se alcanzó el límite de '.self::maxSedes().' sedes del plan.']);
+            }
+
+            if (isset($attributes['capacidad_maxima'])) {
+                SedeCapacity::validate((int) $attributes['capacidad_maxima']);
             }
 
             return Sede::create($attributes);

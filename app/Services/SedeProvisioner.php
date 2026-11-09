@@ -59,7 +59,7 @@ class SedeProvisioner
             throw new RuntimeException("Ya existe una sede con el slug '{$slug}' en este colegio.");
         }
 
-        if ($colegio->domains()->where('domain', $domain)->exists()) {
+        if (DB::connection(config('tenancy.database.central_connection'))->table('domains')->where('domain', $domain)->exists()) {
             throw new RuntimeException("El subdominio '{$domain}' ya esta en uso.");
         }
 
@@ -74,7 +74,8 @@ class SedeProvisioner
         $tempPassword = PasswordPolicy::temporary();
 
         /** @var Tenant $sede */
-        $sede = Tenant::create([
+        $sede = new Tenant([
+            'id' => (string) Str::uuid(),
             'name' => $data['name'],
             'slug' => $slug,
             'legal_name' => $colegio->legal_name,
@@ -94,9 +95,15 @@ class SedeProvisioner
         // Dentro de la BD de la sede: RBAC + (opcional) coordinador
         // + (opcional) configuracion heredada del colegio.
         $originalTenant = tenant();
+        $manager = $sede->database()->manager();
+        if ($manager->databaseExists($sede->database()->getName())) {
+            throw new RuntimeException('La base de datos de la nueva sede ya existe.');
+        }
         try {
+            $sede->save();
             $sede->run(function () use ($data, $tempPassword, $snapshot) {
                 (new RbacSeeder(firstSeed: true))->run();
+                Sede::firstOrCreate(['nombre' => $data['name'], 'tenant_id' => null], ['estado' => 'activa']);
 
                 if (! empty($data['coordinador_email'])) {
                     $coordinador = User::create([
@@ -112,9 +119,27 @@ class SedeProvisioner
                 }
 
                 if ($snapshot !== null) {
-                    $this->applySnapshot($snapshot);
+                    if ($data['selected_configuration'] ?? false) {
+                        app(SedeInheritance::class)->apply($snapshot);
+                    } else {
+                        $this->applySnapshot($snapshot);
+                    }
                 }
             });
+            // Publica la sede una vez completados los datos y permisos iniciales.
+            $sede->domains()->create(['domain' => $domain]);
+            $sede->update(['status' => Tenant::STATUS_ACTIVE]);
+            $colegio->run(fn () => app(SchoolRoleSynchronizer::class)->synchronize());
+        } catch (\Throwable $error) {
+            tenancy()->end();
+            if ($sede->exists) {
+                if ($manager->databaseExists($sede->database()->getName())) {
+                    $sede->delete();
+                } else {
+                    $sede->deleteQuietly();
+                }
+            }
+            throw $error;
         } finally {
             if ($originalTenant) {
                 tenancy()->initialize($originalTenant);
@@ -122,17 +147,6 @@ class SedeProvisioner
                 tenancy()->end();
             }
         }
-
-        // Publica el dominio solo cuando migración, RBAC y herencia terminaron.
-        $sede->domains()->create(['domain' => $domain]);
-
-        // Provisioning sincrono y exitoso: la sede queda operativa (patron
-        // ConfigurationGate del colegio principal).
-        $sede->update(['status' => Tenant::STATUS_ACTIVE]);
-
-        // La configuración de roles pertenece al colegio, no a una sede:
-        // una sede nueva recibe también los roles adicionales ya definidos.
-        $colegio->run(fn () => app(SchoolRoleSynchronizer::class)->synchronize());
 
         return [
             'tenant' => $sede,

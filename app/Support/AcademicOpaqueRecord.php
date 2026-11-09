@@ -12,7 +12,8 @@ final class AcademicOpaqueRecord
     private const FIELDS = [
         'ano-lectivo' => ['nombre', 'tipo_calendario', 'fecha_inicio', 'fecha_fin', 'estado'],
         'sede' => ['nombre', 'direccion', 'telefono', 'coordinador_name', 'coordinador_email',
-            'estado', 'tenant_slug', 'tenant_domain', 'tenant_status'],
+            'estado', 'tenant_slug', 'tenant_domain', 'tenant_status', 'principal', 'slug',
+            'departamento', 'municipio', 'capacidad_maxima', 'coordinador_token'],
         'jornada' => ['nombre', 'hora_inicio', 'hora_fin', 'estado', 'ano_lectivo_id', 'sede_id', 'sede'],
         'nivel' => ['nombre', 'nivel_educativo', 'estado', 'ano_lectivo_id', 'grados_count', 'grados'],
         'grado' => ['nombre', 'codigo', 'estado', 'ano_lectivo_id', 'nivel_id', 'grupos_count', 'nivel'],

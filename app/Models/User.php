@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Services\SchoolSubscription;
 use App\Services\TenantPlanAccess;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Encryption\DecryptException;
@@ -52,7 +53,7 @@ class User extends Authenticatable
         static::saving(function (self $user): void {
             if (tenancy()->initialized && $user->role === 'estudiante' && $user->status === 'active'
                 && (! $user->exists || $user->isDirty(['role', 'status']))) {
-                \App\Services\SchoolSubscription::ensureStudentCapacity(tenant());
+                SchoolSubscription::ensureStudentCapacity(tenant());
             }
         });
     }
@@ -132,6 +133,8 @@ class User extends Authenticatable
      * @var list<string>
      */
     protected $hidden = [
+        'school_user_id',
+        'school_credential_version',
         'temporary_password',
         'password',
         'remember_token',

@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace App\Models\Academico;
 
 use App\Support\OpaqueUrlToken;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
 /**
  * Sede del colegio (multi-sede). Raíz de la jerarquía
@@ -17,19 +19,19 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * Cuando `tenant_id` no es NULL, la sede es un tenant hijo (tipo 'sede')
  * con su propia BD, RBAC y subdominio <slug>.<subdominio-colegio>.
  *
- * @property int                             $id
- * @property string                          $nombre
- * @property string|null                     $direccion
- * @property string|null                     $telefono
- * @property string|null                     $responsable
- * @property string|null                     $tenant_id
- * @property string|null                     $coordinador_email
- * @property bool                            $es_principal
- * @property string                          $estado
- * @property \Illuminate\Support\Carbon|null  $created_at
- * @property \Illuminate\Support\Carbon|null  $updated_at
- * @property \Illuminate\Support\Carbon|null  $deleted_at
- * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Academico\Jornada> $jornadas
+ * @property int $id
+ * @property string $nombre
+ * @property string|null $direccion
+ * @property string|null $telefono
+ * @property string|null $responsable
+ * @property string|null $tenant_id
+ * @property string|null $coordinador_email
+ * @property bool $es_principal
+ * @property string $estado
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
+ * @property-read Collection<int, Jornada> $jornadas
  */
 class Sede extends Model
 {
@@ -37,7 +39,10 @@ class Sede extends Model
     use SoftDeletes;
 
     public const ESTADO_ACTIVA = 'activa';
+
     public const ESTADO_INACTIVA = 'inactiva';
+
+    public const ESTADO_MANTENIMIENTO = 'mantenimiento';
 
     protected $table = 'sedes';
 
@@ -52,6 +57,10 @@ class Sede extends Model
         'coordinador_email',
         'tenant_id',
         'estado',
+        'departamento',
+        'municipio',
+        'capacidad_maxima',
+        'coordinador_id',
     ];
 
     /**
@@ -69,7 +78,7 @@ class Sede extends Model
      */
     protected function casts(): array
     {
-        return [];
+        return ['capacidad_maxima' => 'integer', 'coordinador_id' => 'integer'];
     }
 
     /** ID opaco y estable para URLs públicas. */

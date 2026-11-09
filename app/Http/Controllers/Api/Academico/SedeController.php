@@ -7,13 +7,20 @@ namespace App\Http\Controllers\Api\Academico;
 use App\Events\ConfiguracionHeredada;
 use App\Events\SedeCreada;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Api\Platform\ContactSettingController;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Academico\Sede;
 use App\Models\Tenant;
+use App\Models\User;
+use App\Services\ContactNumbers;
+use App\Services\Ingreso\EnrollmentSubmission;
+use App\Services\SedeCapacity;
+use App\Services\SedeConfiguration;
+use App\Services\SedeInheritance;
 use App\Services\SedeProvisioner;
-use App\Support\Audit\AuditLogger;
 use App\Support\AcademicOpaqueRecord;
+use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use App\Support\Sedes\SedeLimits;
 use Illuminate\Http\JsonResponse;
@@ -22,7 +29,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
-use RuntimeException;
 
 /**
  * Sedes del colegio (jerarquía Bloque B). Permiso `academico.estructura.gestionar`.
@@ -56,6 +62,27 @@ class SedeController extends Controller
         return $this->paginatedResponse($result);
     }
 
+    public function options(Request $request): JsonResponse
+    {
+        abort_if(tenant()->parent_id, 403);
+        $sede = $request->filled('sede_token') ? $this->findSede($request->query('sede_token')) : null;
+        $coordinators = User::where('status', 'active')
+            ->whereIn('role', SedeConfiguration::COORDINATORS)->orderBy('name')->get();
+
+        return response()->json([
+            'capacidad' => SedeCapacity::summary($sede),
+            'contacto' => ContactSettingController::contact(),
+            'colegio' => tenant()->name,
+            'celular_pais' => ContactNumbers::countryForTimezone(tenant()->zonaHorariaInstitucional()),
+            'matriculados' => $sede ? SedeCapacity::enrolled($sede) : 0,
+            'coordinadores' => $coordinators->map(fn ($user) => ['url_token' => OpaqueUrlToken::for('usuario', $user->id),
+                'nombre' => $user->name, 'correo' => $user->email, 'rol' => $user->role]),
+            'departamentos' => EnrollmentSubmission::geography(),
+            'dominio' => SedeConfiguration::domainHost(tenant()),
+            'dependencias' => SedeInheritance::DEPENDENCIES,
+        ]);
+    }
+
     /** Detalle de una sede. */
     public function show($id): JsonResponse
     {
@@ -74,66 +101,26 @@ class SedeController extends Controller
             ], 422);
         }
 
-        $data = $request->validate([
-            'nombre' => ['required', 'string', 'max:120', Rule::unique('sedes', 'nombre')->where(fn ($q) => $q->whereNull('deleted_at'))],
-            'slug' => ['nullable', 'string', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
-            'direccion' => ['nullable', 'string', 'max:255'],
-            'telefono' => ['nullable', 'string', 'max:60'],
-            'responsable' => ['nullable', 'string', 'max:120'],
-            'coordinador_email' => ['nullable', 'email', 'max:255'],
-            'coordinador_name' => ['nullable', 'string', 'max:120'],
-            'heredar' => ['nullable', 'boolean'],
-            'estado' => ['nullable', Rule::in([Sede::ESTADO_ACTIVA, Sede::ESTADO_INACTIVA])],
-        ]);
-
-        $sede = SedeLimits::create([
-            'nombre' => $data['nombre'],
-            'direccion' => $data['direccion'] ?? null,
-            'telefono' => $data['telefono'] ?? null,
-            'coordinador_name' => $data['coordinador_name'] ?? null,
-            'coordinador_email' => $data['coordinador_email'] ?? null,
-            'estado' => $data['estado'] ?? Sede::ESTADO_ACTIVA,
-        ]);
-
+        $data = app(SedeConfiguration::class)->validate($request);
+        $snapshot = ($data['heredar'] ?? false)
+            ? app(SedeInheritance::class)->capture($data['categorias'] ?? []) : null;
+        $sede = SedeLimits::create(collect($data)->only((new Sede)->getFillable())->all());
         $password = null;
-
-        if (! empty($data['slug'])) {
+        $colegio = tenant();
+        try {
+            tenancy()->end();
             try {
-                $colegio = tenant();
-
-                // Snapshot dentro del contexto actual del colegio y provision
-                // del hijo DESDE contexto central (evita run() anidado).
-                $snapshot = $this->provisioner->capturarConfiguracion(
-                    $colegio,
-                    (bool) ($data['heredar'] ?? true),
-                );
-
-                tenancy()->end();
-
-                try {
-                    $res = $this->provisioner->provision($colegio, [
-                        'slug' => $data['slug'],
-                        'name' => $data['nombre'],
-                        'coordinador_email' => $data['coordinador_email'] ?? null,
-                        'coordinador_name' => $data['coordinador_name'] ?? null,
-                        'heredar' => (bool) ($data['heredar'] ?? true),
-                    ], $snapshot);
-                    $password = $res['password'];
-                } finally {
-                    tenancy()->initialize($colegio);
-                }
-
-                $sede->update([
-                    'tenant_id' => $res['tenant']->id,
-                    'coordinador_email' => $data['coordinador_email'] ?? null,
-                    'coordinador_name' => $data['coordinador_name'] ?? null,
-                ]);
-            } catch (RuntimeException $e) {
-                // Rollback: la sede no puede quedar huerfana sin tenant.
-                $sede->forceDelete();
-
-                return response()->json(['message' => $e->getMessage()], 422);
+                $res = $this->provisioner->provision($colegio, [
+                    'slug' => $data['slug'], 'name' => $data['nombre'],
+                    'heredar' => false, 'selected_configuration' => true,
+                ], $snapshot);
+            } finally {
+                tenancy()->initialize($colegio);
             }
+            $sede->update(['tenant_id' => $res['tenant']->id]);
+        } catch (\Throwable $error) {
+            $sede->forceDelete();
+            throw $error;
         }
 
         AuditLogger::tenant($request->user(), 'CREATE', 'sede', (string) $sede->id, null, $this->enrich($this->snapshot($sede)));
@@ -162,20 +149,25 @@ class SedeController extends Controller
     {
         $sede = $this->findSede($id);
 
-        $data = $request->validate([
-            'nombre' => ['required', 'string', 'max:120', Rule::unique('sedes', 'nombre')->ignore($sede->id)->where(fn ($q) => $q->whereNull('deleted_at'))],
-            'direccion' => ['nullable', 'string', 'max:255'],
-            'telefono' => ['nullable', 'string', 'max:60'],
-            'estado' => ['nullable', Rule::in([Sede::ESTADO_ACTIVA, Sede::ESTADO_INACTIVA])],
-        ]);
-
+        $data = app(SedeConfiguration::class)->validate($request, $sede);
         $prev = $this->enrich($this->snapshot($sede));
-        $sede->update([
-            'nombre' => $data['nombre'],
-            'direccion' => $data['direccion'] ?? $sede->direccion,
-            'telefono' => $data['telefono'] ?? $sede->telefono,
-            'estado' => $data['estado'] ?? $sede->estado,
-        ]);
+        $snapshot = ($data['heredar'] ?? false)
+            ? app(SedeInheritance::class)->capture($data['categorias'] ?? []) : null;
+        if ($snapshot && ! $sede->tenant_id) {
+            abort(422, 'La configuración se hereda desde la principal hacia una sede adicional.');
+        }
+        $central = DB::connection(config('tenancy.database.central_connection'));
+        $central->transaction(function () use ($central, $sede, $data, $snapshot) {
+            $central->table('tenants')->where('id', tenant()->id)->lockForUpdate()->first();
+            SedeCapacity::validate($data['capacidad_maxima'], $sede);
+            if ($snapshot) {
+                Tenant::findOrFail($sede->tenant_id)->run(fn () => app(SedeInheritance::class)->apply($snapshot));
+            }
+            DB::transaction(function () use ($sede, $data) {
+                $sede->update(collect($data)->only($sede->getFillable())->all());
+                app(SedeConfiguration::class)->synchronize($sede, $data);
+            });
+        });
 
         AuditLogger::tenant($request->user(), 'UPDATE', 'sede', (string) $sede->id, $prev, $this->enrich($this->snapshot($sede)));
 
@@ -193,6 +185,7 @@ class SedeController extends Controller
         $sede = $this->findSede($id);
         $prev = $this->enrich($this->snapshot($sede));
 
+        abort_if(! $sede->tenant_id, 422, 'La sede principal se conserva durante la vida del colegio.');
         $sede->delete();
 
         if ($sede->tenant_id !== null) {
@@ -223,20 +216,10 @@ class SedeController extends Controller
             return response()->json(['message' => 'El tenant de la sede no esta disponible.'], 422);
         }
 
-        $categorias = $request->input('categorias', ['anos', 'escalas', 'metodos', 'modelos', 'datos', 'niveles']);
-
-        $snapshot = $this->provisioner->capturarConfiguracion(tenant(), true);
-        if ($snapshot === null) {
-            return response()->json(['message' => 'No se pudo capturar la configuracion del colegio.'], 500);
-        }
-
-        // Solo aplica las categorias seleccionadas
-        $filtrado = array_intersect_key($snapshot, array_flip($categorias));
-        if (empty($filtrado)) {
-            return response()->json(['message' => 'No se selecciono ninguna categoria.'], 422);
-        }
-
-        $hijo->run(fn () => $this->provisioner->applySnapshot($filtrado));
+        $data = $request->validate(['categorias' => ['required', 'array'],
+            'categorias.*' => ['string', Rule::in(SedeInheritance::CATEGORIES)]]);
+        $snapshot = app(SedeInheritance::class)->capture($data['categorias']);
+        $hijo->run(fn () => app(SedeInheritance::class)->apply($snapshot));
 
         $result = $this->enrich($this->snapshot($sede));
         AuditLogger::tenant($request->user(), 'HEREDAR', 'sede', (string) $sede->id, null, $result);
@@ -281,6 +264,10 @@ class SedeController extends Controller
             'nombre' => $sede->nombre,
             'direccion' => $sede->direccion,
             'telefono' => $sede->telefono,
+            'departamento' => $sede->departamento,
+            'municipio' => $sede->municipio,
+            'capacidad_maxima' => $sede->capacidad_maxima,
+            'coordinador_token' => $sede->coordinador_id ? OpaqueUrlToken::for('usuario', $sede->coordinador_id) : null,
             'coordinador_name' => $sede->coordinador_name,
             'coordinador_email' => $sede->coordinador_email,
             'tenant_id' => $sede->tenant_id,
@@ -310,20 +297,26 @@ class SedeController extends Controller
 
         $tenantId = $sede['tenant_id'] ?? null;
         if ($tenantId === null) {
+            $sede['tenant_domain'] = SedeConfiguration::domainHost(tenant());
+            $sede['principal'] = true;
+            $sede['slug'] = tenant()->slug;
+
             return $sede;
         }
+        $sede['principal'] = false;
 
         $central = DB::connection(config('tenancy.database.central_connection'));
 
         $hijo = $central->table('tenants')->where('id', $tenantId)->first();
         if ($hijo !== null) {
             $sede['tenant_slug'] = $hijo->slug;
+            $sede['slug'] = $hijo->slug;
             $sede['tenant_status'] = $hijo->status;
         }
 
         $dominio = $central->table('domains')->where('tenant_id', $tenantId)->first();
         if ($dominio !== null) {
-            $sede['tenant_domain'] = $dominio->domain;
+            $sede['tenant_domain'] = SedeConfiguration::domainHost(Tenant::findOrFail($tenantId));
         }
 
         return $sede;

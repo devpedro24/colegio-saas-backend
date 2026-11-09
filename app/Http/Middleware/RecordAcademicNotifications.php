@@ -35,6 +35,7 @@ use App\Http\Controllers\Api\Academico\PlanEstudiosController;
 use App\Http\Controllers\Api\Academico\PlanillaActividadesController;
 use App\Http\Controllers\Api\Academico\PreinformeController;
 use App\Http\Controllers\Api\Academico\PromocionAcademicaController;
+use App\Http\Controllers\Api\Academico\SedeController;
 use App\Http\Controllers\Api\Academico\SieeController;
 use Closure;
 use Illuminate\Http\Request;
@@ -141,6 +142,7 @@ final class RecordAcademicNotifications
         } else {
             $module = match ($controller) {
                 AnoLectivoController::class => 'year',
+                SedeController::class => 'structure.sede',
                 PeriodoController::class => 'period',
                 PromocionAcademicaController::class => 'promotion',
                 JornadaController::class => 'structure.jornada',

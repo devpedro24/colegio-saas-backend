@@ -11,8 +11,8 @@ use App\Http\Controllers\PaginatesRequests;
 use App\Models\Plan;
 use App\Models\Tenant;
 use App\Models\User;
-use App\Services\SchoolSubscription;
 use App\Services\SchoolRoleSynchronizer;
+use App\Services\SchoolSubscription;
 use App\Services\TenantProvisioner;
 use App\Support\Audit\AuditLogger;
 use App\Support\PasswordPolicy;
@@ -148,7 +148,12 @@ class ColegioController extends Controller
         }
 
         $planChanged = $tenant->plan !== $data['plan'] || $tenant->commercial !== $commercial;
-        $tenant->update($updateData);
+        DB::connection(config('tenancy.database.central_connection'))->transaction(function () use ($tenant, $commercial, $updateData) {
+            Tenant::whereKey($tenant->id)->lockForUpdate()->firstOrFail();
+            $tenant->refresh();
+            $updateData['commercial'] = SchoolSubscription::prepare(Plan::where('key', $updateData['plan'])->firstOrFail(), $commercial, $tenant);
+            $tenant->update($updateData);
+        });
 
         // Si cambio el nombre o el slug, la BD debe renombrarse.
         if ($slugChanged || $nameChanged) {
@@ -263,7 +268,12 @@ class ColegioController extends Controller
 
         $prevPlan = $tenant->plan;
         $prevSubscription = $tenant->commercial;
-        $tenant->update(['plan' => $data['plan'], 'commercial' => $commercial]);
+        DB::connection(config('tenancy.database.central_connection'))->transaction(function () use ($tenant, $data, $commercial) {
+            Tenant::whereKey($tenant->id)->lockForUpdate()->firstOrFail();
+            $tenant->refresh();
+            $contract = SchoolSubscription::prepare(Plan::where('key', $data['plan'])->firstOrFail(), $commercial, $tenant);
+            $tenant->update(['plan' => $data['plan'], 'commercial' => $contract]);
+        });
 
         // Re-siembra spatie del colegio con el nuevo plan (preserva configurables del rector).
         $tenant->run(function (): void {

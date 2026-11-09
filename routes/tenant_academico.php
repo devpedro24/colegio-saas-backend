@@ -46,8 +46,11 @@ use App\Http\Controllers\Api\EnrollmentRosterController;
 use App\Http\Controllers\Api\EnrollmentSettingsController;
 use App\Http\Controllers\Api\IngresoController;
 use App\Http\Controllers\Api\InstitutionContextController;
+use App\Http\Controllers\Api\NotificationRecordController;
+use App\Http\Controllers\Api\NotificationUpdateController;
 use App\Http\Controllers\Api\Platform\StorageController;
 use App\Http\Controllers\Api\SchoolMailController;
+use App\Http\Controllers\Api\SubscriptionOffersController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\WorkDraftFileController;
 use App\Http\Middleware\RequireOpaqueAcademicContract;
@@ -58,8 +61,8 @@ use App\Services\ConfigurationGate;
 use Illuminate\Support\Facades\Route;
 
 require __DIR__.'/work_drafts.php';
-Route::get('/notification-records', [\App\Http\Controllers\Api\NotificationRecordController::class, 'index']);
-Route::get('/notification-updates', [\App\Http\Controllers\Api\NotificationUpdateController::class, 'index']);
+Route::get('/notification-records', [NotificationRecordController::class, 'index']);
+Route::get('/notification-updates', [NotificationUpdateController::class, 'index']);
 Route::post('/work-draft-files/response/{resourceToken}/{token}', [WorkDraftFileController::class, 'storeResponse'])
     ->where(['resourceToken' => '[A-Za-z0-9_-]{24}', 'token' => '[A-Za-z0-9_-]{24}'])->middleware('throttle:30,1');
 Route::post('/work-draft-files/{sectionToken}/{token}', [WorkDraftFileController::class, 'store'])
@@ -277,6 +280,7 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
         // Sedes
         Route::get('/sedes', [SedeController::class, 'index']);
         Route::post('/sedes', [SedeController::class, 'store']);
+        Route::get('/sedes/opciones', [SedeController::class, 'options']);
         Route::get('/sedes/{id}', [SedeController::class, 'show']);
         Route::put('/sedes/{id}', [SedeController::class, 'update']);
         Route::delete('/sedes/{id}', [SedeController::class, 'destroy']);
@@ -472,7 +476,7 @@ Route::get('/usuarios/egreso-candidatos', [UserController::class, 'egresoCandida
     ->middleware('can:estudiantes.egreso.gestionar');
 
 Route::get('/institution-context', InstitutionContextController::class);
-Route::get('/subscription/offers', \App\Http\Controllers\Api\SubscriptionOffersController::class);
+Route::get('/subscription/offers', SubscriptionOffersController::class);
 
 Route::prefix('ingreso/configuracion')->middleware(RequireOpaqueAcademicContract::class)->controller(EnrollmentSettingsController::class)->group(function () {
     Route::get('/', 'show');

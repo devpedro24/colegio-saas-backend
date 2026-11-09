@@ -106,6 +106,7 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
 
                 // Sedes de un colegio gestionadas por el superadmin (viven en la BD del tenant).
                 Route::get('/colegios/{slug}/sedes', [ColegioSedeController::class, 'index'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::get('/colegios/{slug}/sedes/opciones', [ColegioSedeController::class, 'options']);
                 Route::post('/colegios/{slug}/sedes', [ColegioSedeController::class, 'store'])->where('slug', '[a-z][a-z0-9-]*');
                 Route::put('/colegios/{slug}/sedes/{sedeToken}', [ColegioSedeController::class, 'update'])->where(['slug' => '[a-z][a-z0-9-]*', 'sedeToken' => '[A-Za-z0-9_-]{24}']);
                 Route::delete('/colegios/{slug}/sedes/{sedeToken}', [ColegioSedeController::class, 'destroy'])->where(['slug' => '[a-z][a-z0-9-]*', 'sedeToken' => '[A-Za-z0-9_-]{24}']);
