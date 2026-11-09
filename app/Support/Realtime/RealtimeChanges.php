@@ -67,9 +67,9 @@ final class RealtimeChanges
         if (preg_match('#^/?(?:api/)?evaluacion/(planillas|componentes|actividades|recuperaciones|areas|anuales)(?:/|$|\?)#', $path)) {
             return 'grades';
         }
-        if (preg_match('#^/?(?:api/)?boletines/(emisiones|observaciones|plantillas)(?:/|$|\?)#', $path, $match)) {
+        if (preg_match('#^/?(?:api/)?boletines/(emisiones|observaciones|plantillas|predefinidos)(?:/|$|\?)#', $path, $match)) {
             return ['emisiones' => 'bulletin-issues', 'observaciones' => 'bulletin-observations',
-                'plantillas' => 'bulletin-templates'][$match[1]];
+                'plantillas' => 'bulletin-templates', 'predefinidos' => 'bulletin-templates'][$match[1]];
         }
         if (preg_match('#^/?(?:api/)?(?:platform/correo-solicitudes|correo-institucional/solicitudes)(?:/|$|\?)#', $path)) {
             return 'school-mail-requests';

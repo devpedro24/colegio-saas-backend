@@ -47,6 +47,16 @@ use Spatie\Permission\Traits\HasRoles;
  */
 class User extends Authenticatable
 {
+    protected static function booted(): void
+    {
+        static::saving(function (self $user): void {
+            if (tenancy()->initialized && $user->role === 'estudiante' && $user->status === 'active'
+                && (! $user->exists || $user->isDirty(['role', 'status']))) {
+                \App\Services\SchoolSubscription::ensureStudentCapacity(tenant());
+            }
+        });
+    }
+
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes {
         HasRoles::hasPermissionTo as private spatieHasPermissionTo;

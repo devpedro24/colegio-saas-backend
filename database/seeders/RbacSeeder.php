@@ -39,11 +39,7 @@ class RbacSeeder extends Seeder
 
         // Features del plan del colegio (para el gating).
         $school = tenant();
-        $planKey = $school?->parent_id
-            ? Tenant::on(config('tenancy.database.central_connection'))->find($school->parent_id)?->plan
-            : $school?->plan;
-        $planFeatures = $planKey ? (Plan::where('key', $planKey)->value('features') ?? []) : [];
-        $planFeatures = is_array($planFeatures) ? $planFeatures : [];
+        $planFeatures = $school ? (\App\Services\SchoolSubscription::effective($school)?->features ?? []) : [];
 
         // Catalogo central.
         $permissions = RbacPermission::all();

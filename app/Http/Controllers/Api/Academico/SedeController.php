@@ -67,7 +67,7 @@ class SedeController extends Controller
     /** Crea una sede (con tenant hijo si se indica slug). */
     public function store(Request $request): JsonResponse
     {
-        // Gating SaaS: el plan limita la cantidad de sedes (esencial=1, estandar=5).
+        // Gating SaaS: el contrato limita las sedes, incluida la principal.
         if (SedeLimits::alLimite()) {
             return response()->json([
                 'message' => 'El plan del colegio permite máximo '.(string) SedeLimits::maxSedes().' sede(s).',

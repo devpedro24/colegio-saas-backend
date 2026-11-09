@@ -21,7 +21,7 @@ final class SynchronizeRealtimeChanges
             if ($request->is('api/*') && ! $request->isMethodSafe()
                 && $response->getStatusCode() < 400 && $request->user()
                 && ! $request->is('api/broadcasting/auth', 'api/tenant-broadcasting/auth', 'api/login', 'api/logout', 'api/forgot-password',
-                    'api/evaluacion/planillas/*/*/vista-previa')) {
+                    'api/evaluacion/planillas/*/*/vista-previa', 'api/plans/quote')) {
                 $changes->record(tenant()?->getKey(), RealtimeChanges::resourceForPath($request->path()));
             }
 

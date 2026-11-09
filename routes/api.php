@@ -110,6 +110,8 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
                 Route::get('/platform/impersonar/estado', [ImpersonationController::class, 'estado']);
 
                 // Planes / membresias (con su catalogo cerrado de features).
+                Route::get('/plans/offers', \App\Http\Controllers\Api\SubscriptionOffersController::class);
+                Route::post('/plans/quote', [PlanController::class, 'quote']);
                 Route::get('/plans', [PlanController::class, 'index']);
                 Route::post('/plans', [PlanController::class, 'store']);
                 Route::get('/plans/{key}', [PlanController::class, 'show'])->where('key', '[a-z][a-z0-9-]*');

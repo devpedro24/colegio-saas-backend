@@ -35,57 +35,38 @@ class TenantRolePlanTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_standard_has_two_additional_roles_and_downgrade_preserves_but_disables_them(): void
+    public function test_standard_and_premium_keep_all_roles_when_switching_plans(): void
     {
-        [$school, $rectorToken, $teacherToken, $teacherSelector] = $this->school('estandar');
+        [$school, $rectorToken, $teacherToken, $teacherSelector] = $this->school('premium');
         $api = 'http://'.$school->slug.'.localhost/api';
-
         $this->withToken($rectorToken)->getJson($api.'/rbac/roles?per_page=1000')
-            ->assertOk()->assertJsonPath('custom_role_limit', 2)->assertJsonPath('custom_role_count', 0);
+            ->assertOk()->assertJsonPath('custom_role_limit', null);
         $first = $this->withToken($rectorToken)->postJson($api.'/rbac/roles', ['label' => 'Apoyo académico'])
             ->assertCreated()->json('role.key');
-        $this->assertStringStartsWith('custom_', $first);
-        $this->withToken($rectorToken)->postJson($api.'/rbac/roles', ['label' => 'Convivencia'])
-            ->assertCreated();
-        $this->withToken($rectorToken)->postJson($api.'/rbac/roles', ['label' => 'Tercer rol'])
-            ->assertUnprocessable();
+        foreach (['Convivencia', 'Tercer rol'] as $label) {
+            $this->withToken($rectorToken)->postJson($api.'/rbac/roles', ['label' => $label])->assertCreated();
+        }
         $this->withToken($rectorToken)->putJson($api.'/rbac/roles/'.$first.'/permissions/indicadores.grupo.editar',
             ['granted' => true])->assertOk();
         $this->withToken($rectorToken)->putJson($api.'/rbac/usuarios/'.$teacherSelector.'/roles-adicionales',
             ['roles' => [$first]])->assertOk();
-
+        $school->update(['plan' => 'estandar']);
         app('auth')->forgetGuards();
-        $this->withToken($teacherToken)->getJson($api.'/me')->assertOk()
-            ->assertJsonPath('user.roles.1', $first);
-        $school->run(function () {
-            $teacher = User::where('email', 'docente@roles.test')->firstOrFail();
-            $this->assertTrue($teacher->can('indicadores.grupo.editar'));
-        });
-
-        $school->update(['plan' => 'esencial']);
-        app('auth')->forgetGuards();
-        $permissions = $this->withToken($teacherToken)->getJson($api.'/me')->assertOk()->json('user.permissions');
-        $this->assertNotContains('indicadores.grupo.editar', $permissions);
+        $this->assertContains('indicadores.grupo.editar',
+            $this->withToken($teacherToken)->getJson($api.'/me')->assertOk()->json('user.permissions'));
         app('auth')->forgetGuards();
         $this->withToken($rectorToken)->getJson($api.'/rbac/roles?per_page=1000')
-            ->assertOk()->assertJsonPath('custom_role_limit', 0)
-            ->assertJsonPath('custom_role_count', 2);
-        $school->run(function () use ($first) {
-            $this->assertSame(2, CustomRole::count());
-            $this->assertTrue(User::where('email', 'docente@roles.test')->firstOrFail()->hasRole($first));
-        });
+            ->assertOk()->assertJsonPath('custom_role_limit', null)->assertJsonPath('custom_role_count', 3);
     }
 
-    public function test_basic_blocks_role_creation_and_plan_feature_even_for_rector(): void
+    public function test_standard_blocks_excluded_features_even_for_rector(): void
     {
-        [$school, $rectorToken] = $this->school('esencial');
+        [$school, $rectorToken] = $this->school('estandar');
         $api = 'http://'.$school->slug.'.localhost/api';
-        $this->withToken($rectorToken)->postJson($api.'/rbac/roles', ['label' => 'Sin cupo'])
-            ->assertUnprocessable();
+        $this->withToken($rectorToken)->postJson($api.'/rbac/roles', ['label' => 'Equipo académico'])->assertCreated();
         $this->withToken($rectorToken)->putJson($api.'/rbac/roles/rector/permissions/aula.ver_todas',
             ['granted' => true])->assertUnprocessable();
-        $this->withToken($rectorToken)->getJson($api.'/me')->assertOk()
-            ->assertJsonMissing(['aula.ver_todas']);
+        $this->withToken($rectorToken)->getJson($api.'/me')->assertOk()->assertJsonMissing(['aula.ver_todas']);
     }
 
     public function test_premium_allows_multiple_roles_and_non_rector_cannot_manage_them(): void
@@ -105,13 +86,13 @@ class TenantRolePlanTest extends TestCase
 
     public function test_plan_downgrade_blocks_aula_api_and_reupgrade_restores_prior_grants(): void
     {
-        [$school, , $teacherToken] = $this->school('estandar');
+        [$school, , $teacherToken] = $this->school('premium');
         $api = 'http://'.$school->slug.'.localhost/api';
         $school->run(function (): void {
             $this->assertTrue(User::where('email', 'docente@roles.test')->firstOrFail()->can('aula.ver_asignadas'));
         });
 
-        $school->update(['plan' => 'esencial']);
+        $school->update(['plan' => 'estandar']);
         $school->run(fn () => (new RbacSeeder)->run());
         app('auth')->forgetGuards();
         $this->withToken($teacherToken)->getJson($api.'/aula/catalogo')->assertForbidden();
@@ -119,7 +100,7 @@ class TenantRolePlanTest extends TestCase
         $this->assertNotContains('aula.ver_asignadas',
             $this->withToken($teacherToken)->getJson($api.'/me')->assertOk()->json('user.permissions'));
 
-        $school->update(['plan' => 'estandar']);
+        $school->update(['plan' => 'premium']);
         $school->run(fn () => (new RbacSeeder)->run());
         app('auth')->forgetGuards();
         $this->assertContains('aula.ver_asignadas',
@@ -128,9 +109,9 @@ class TenantRolePlanTest extends TestCase
 
     public function test_editing_plan_features_blocks_existing_permissions_without_tenant_reseed(): void
     {
-        [$school, , $teacherToken] = $this->school('estandar');
+        [$school, , $teacherToken] = $this->school('premium');
         $api = 'http://'.$school->slug.'.localhost/api';
-        $plan = Plan::where('key', 'estandar')->firstOrFail();
+        $plan = Plan::where('key', 'premium')->firstOrFail();
         $plan->update(['features' => array_values(array_diff($plan->features, ['aula']))]);
 
         app('auth')->forgetGuards();
@@ -142,8 +123,8 @@ class TenantRolePlanTest extends TestCase
 
     public function test_removing_academic_feature_blocks_academic_permissions_but_keeps_core_access(): void
     {
-        [$school, $rectorToken] = $this->school('esencial');
-        $plan = Plan::where('key', 'esencial')->firstOrFail();
+        [$school, $rectorToken] = $this->school('estandar');
+        $plan = Plan::where('key', 'estandar')->firstOrFail();
         $plan->update(['features' => array_values(array_diff($plan->features, ['academico']))]);
 
         app('auth')->forgetGuards();
@@ -193,7 +174,7 @@ class TenantRolePlanTest extends TestCase
             $this->assertNotNull(tenant()->parent_id);
             $this->assertSame('estandar', Tenant::on(config('tenancy.database.central_connection'))
                 ->find(tenant()->parent_id)?->plan);
-            $this->assertSame(2, app(TenantPlanAccess::class)->customRoleLimit());
+            $this->assertNull(app(TenantPlanAccess::class)->customRoleLimit());
             $this->assertContains($role, app(TenantPlanAccess::class)->effectiveCustomRoleKeys());
             $this->assertContains('indicadores.grupo.editar',
                 app(TenantPlanAccess::class)->effectivePermissions($teacher));
@@ -220,12 +201,12 @@ class TenantRolePlanTest extends TestCase
         $child->update(['parent_id' => $school->id, 'tipo' => Tenant::TIPO_SEDE]);
 
         $this->expectException(ValidationException::class);
-        SchoolPlanSedeGuard::ensureSchoolFits($school, Plan::where('key', 'esencial')->firstOrFail());
+        SchoolPlanSedeGuard::ensureSchoolFits($school, Plan::where('key', 'estandar')->firstOrFail());
     }
 
     public function test_new_sede_inherits_roles_already_created_by_school(): void
     {
-        [$school, $rectorToken] = $this->school('estandar');
+        [$school, $rectorToken] = $this->school('premium');
         $api = 'http://'.$school->slug.'.localhost/api';
         $role = $this->withToken($rectorToken)->postJson($api.'/rbac/roles', ['label' => 'Equipo pedagógico'])
             ->assertCreated()->json('role.key');

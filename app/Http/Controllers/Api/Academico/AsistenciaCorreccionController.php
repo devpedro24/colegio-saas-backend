@@ -11,7 +11,7 @@ use App\Models\Academico\AsistenciaSolicitud;
 use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\SesionHorario;
-use App\Models\Plan;
+use App\Services\TenantPlanAccess;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
@@ -28,7 +28,7 @@ final class AsistenciaCorreccionController extends Controller
 
     private function plan(): void
     {
-        $features = Plan::where('key', tenant()->plan)->value('features') ?? [];
+        $features = app(TenantPlanAccess::class)->features();
         abort_unless(in_array('asistencia', $features, true), 403);
     }
 

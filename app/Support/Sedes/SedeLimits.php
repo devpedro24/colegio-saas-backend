@@ -31,7 +31,7 @@ class SedeLimits
         if ($tenant->tipo === Tenant::TIPO_SEDE) {
             throw ValidationException::withMessages(['plan' => 'Las sedes se administran desde el colegio principal.']);
         }
-        $plan = Plan::where('key', $tenant->fresh()->plan)->first();
+        $plan = app(TenantPlanAccess::class)->plan();
         if ($plan === null) {
             throw ValidationException::withMessages(['plan' => 'El colegio no tiene un plan válido asignado.']);
         }

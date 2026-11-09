@@ -9,10 +9,10 @@ use App\Plans\PlanCatalog;
 use Illuminate\Database\Seeder;
 
 /**
- * Siembra los 3 planes comerciales por defecto (Esencial / Estandar / Premium)
+ * Siembra los dos planes comerciales por defecto (Estándar / Premium)
  * con sus features y limites segun App\Plans\PlanCatalog.
  *
- * Idempotente: usa updateOrCreate por `key`, asi que reejecutar no duplica.
+ * Idempotente: usa firstOrCreate por `key`; respeta tarifas y funciones ya configuradas.
  * Solo corre en la BD CENTRAL (no dentro de un tenant).
  */
 class PlanSeeder extends Seeder
@@ -20,7 +20,7 @@ class PlanSeeder extends Seeder
     public function run(): void
     {
         foreach (PlanCatalog::defaultPlans() as $plan) {
-            Plan::updateOrCreate(
+            Plan::firstOrCreate(
                 ['key' => $plan['key']],
                 [
                     'name' => $plan['name'],
@@ -32,6 +32,7 @@ class PlanSeeder extends Seeder
                     'max_pasarelas' => $plan['max_pasarelas'],
                     'max_roles_personalizados' => $plan['max_roles_personalizados'],
                     'features' => $plan['features'],
+                    'pricing' => \App\Plans\PlanPricing::defaults($plan['key']),
                     'sort_order' => $plan['sort_order'],
                 ],
             );

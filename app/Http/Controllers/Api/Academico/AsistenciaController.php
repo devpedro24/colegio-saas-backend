@@ -10,9 +10,9 @@ use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\SesionHorario;
-use App\Models\Plan;
 use App\Models\User;
 use App\Services\AttendanceSheetService;
+use App\Services\TenantPlanAccess;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use App\Support\StudentRosterName;
@@ -30,7 +30,7 @@ final class AsistenciaController extends Controller
 
     private function plan(): void
     {
-        $features = Plan::where('key', tenant()->plan)->value('features') ?? [];
+        $features = app(TenantPlanAccess::class)->features();
         abort_unless(in_array('asistencia', $features, true), 403,
             'El plan del colegio no incluye asistencia.');
     }

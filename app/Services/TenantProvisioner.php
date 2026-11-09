@@ -34,6 +34,11 @@ class TenantProvisioner
             throw new RuntimeException("Ya existe un colegio con el slug '{$slug}'.");
         }
 
+        $planKey = $data['plan'] ?? Tenant::PLAN_ESTANDAR;
+        $commercial = $data['commercial'] ?? null;
+        if ($commercial === null && in_array($planKey, ['estandar', 'premium'], true)) {
+            $commercial = SchoolSubscription::prepare(\App\Models\Plan::where('key', $planKey)->where('is_active', true)->firstOrFail(), null);
+        }
         $tempPassword = PasswordPolicy::temporary();
 
         /** @var Tenant $tenant */
@@ -42,8 +47,9 @@ class TenantProvisioner
             'slug' => $slug,
             'legal_name' => $data['legal_name'] ?? null,
             'nit' => $data['nit'] ?? null,
-            'plan' => $data['plan'] ?? Tenant::PLAN_ESENCIAL,
+            'plan' => $data['plan'] ?? Tenant::PLAN_ESTANDAR,
             'status' => Tenant::STATUS_PROVISIONING,
+            'commercial' => $commercial,
             // Se guarda CIFRADA (cast 'encrypted') para poder mostrarla al
             // superadmin mientras siga vigente (must_change_password = true).
             'rector_temporary_password' => $tempPassword,

@@ -66,10 +66,10 @@ class Tenant extends BaseTenant implements TenantWithDatabase
     public const STATUS_IN_RETENTION = 'in_retention';
     public const STATUS_DELETED = 'deleted';
 
-    /** Planes comerciales por numero de estudiantes (bandas). */
-    public const PLAN_ESENCIAL = 'esencial';   // < 300 estudiantes
-    public const PLAN_ESTANDAR = 'estandar';   // 300 - 800
-    public const PLAN_PREMIUM = 'premium';     // 800 +
+    /** Catálogo comercial; la cantidad de estudiantes se contrata por colegio. */
+    public const PLAN_ESENCIAL = 'esencial';   // Solo referencias históricas; no se comercializa.
+    public const PLAN_ESTANDAR = 'estandar';   // Capacidad definida por contrato.
+    public const PLAN_PREMIUM = 'premium';     // Capacidad definida por contrato.
 
     /** Tipo de tenant: colegio principal o sede (tenant hijo). */
     public const TIPO_COLEGIO = 'colegio';

@@ -40,6 +40,7 @@ class Plan extends Model
         'max_roles_personalizados',
         'features',
         'sort_order',
+        'pricing',
     ];
 
     protected $casts = [
@@ -52,6 +53,7 @@ class Plan extends Model
         'max_pasarelas' => 'integer',
         'max_roles_personalizados' => 'integer',
         'features' => 'array',
+        'pricing' => 'array',
         'sort_order' => 'integer',
     ];
 

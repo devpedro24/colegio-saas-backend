@@ -21,12 +21,7 @@ return [
 
     'disk' => env('STORAGE_TENANT_DISK', 'tenant'),
 
-    // Cuotas por plan, en GIGABYTES (D-STORAGE). El servicio las traduce a bytes.
-    'quotas_gb' => [
-        'esencial' => 50,
-        'estandar' => 200,
-        'premium' => 1024,
-    ],
+    // La cuota compartida se obtiene del plan persistido en la BD central.
 
     // Tamano maximo por archivo (bytes). 25 MB en MVP; ajustable por env.
     'max_file_bytes' => (int) env('STORAGE_MAX_FILE_MB', 25) * 1024 * 1024,

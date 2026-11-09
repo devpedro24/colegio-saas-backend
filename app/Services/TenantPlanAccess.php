@@ -52,7 +52,7 @@ final class TenantPlanAccess
 
         $this->planTenant = $tenantKey;
 
-        return $this->currentPlan = $owner ? Plan::where('key', $owner->fresh()->plan)->first() : null;
+        return $this->currentPlan = $owner ? SchoolSubscription::effective($owner->fresh()) : null;
     }
 
     /** @return list<string> */

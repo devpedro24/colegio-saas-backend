@@ -190,8 +190,11 @@ final class StorageService
      */
     public function quotaBytes(Tenant $tenant): int
     {
-        $gb = (int) (config("storage.quotas_gb.{$tenant->plan}")
-            ?? config('storage.quotas_gb.esencial'));
+        $plan = \App\Services\SchoolSubscription::effective($tenant);
+        $gb = $plan ? $plan->storage_gb : 0;
+        if ($gb === null) {
+            return PHP_INT_MAX;
+        }
 
         return $gb * 1024 * 1024 * 1024;
     }
@@ -225,7 +228,9 @@ final class StorageService
 
     private function assertQuota(Tenant $tenant, int $newBytes): void
     {
-        $used = StoredFile::usedBytesFor((string) $tenant->id);
+        $owner = \App\Services\SchoolSubscription::owner($tenant);
+        $ids = [$owner->id, ...$owner->sedes()->pluck('id')->all()];
+        $used = (int) StoredFile::whereIn('tenant_id', $ids)->sum('size');
         $quota = $this->quotaBytes($tenant);
 
         if ($used + $newBytes > $quota) {

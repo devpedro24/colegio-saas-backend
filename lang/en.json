@@ -80,5 +80,14 @@
   "La plantilla cambió. Recarga antes de eliminar.": "The template has changed. Reload before deleting.",
   "Desempeño": "Performance",
   "El boletín no contiene páginas visibles.": "The report has no visible pages.",
-  "La paginación del PDF no coincide con el boletín.": "The PDF pagination does not match the report."
+  "La paginación del PDF no coincide con el boletín.": "The PDF pagination does not match the report.",
+  "Solo se comercializan Estándar y Premium. Personaliza el contrato del colegio.": "Only Standard and Premium are offered. Customize the school’s contract.",
+  "El complemento no está disponible para este plan.": "This add-on is not available for this plan.",
+  "Se alcanzó el cupo contratado de estudiantes del colegio.": "The school has reached its contracted student capacity.",
+  "El contrato no puede dejar sedes existentes fuera de capacidad.": "The contract must cover all existing sites.",
+  "El contrato no puede dejar estudiantes activos fuera de capacidad.": "The contract must cover all active students.",
+  "El plan permite únicamente diseños predefinidos.": "The plan only permits preset report designs.",
+  "El plan del colegio no incluye preinformes. Activa Premium o el complemento de preinformes.": "The school plan does not include progress reports. Enable Premium or the progress report add-on.",
+  "Personalizado": "Custom",
+  "El contrato personalizado utiliza Estándar como base.": "A custom contract uses Standard as its base plan."
 }

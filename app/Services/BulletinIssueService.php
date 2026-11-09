@@ -44,9 +44,9 @@ final class BulletinIssueService
             return ['id' => null, 'revision' => null, 'nombre' => 'Plantilla institucional base',
                 'configuracion' => BulletinTemplateDesign::base($scope)];
         }
-        $this->plan->requireCustomBulletins();
         $item = OpaqueUrlToken::find('boletin-plantilla', $token, BoletinPlantilla::where('ambito', $scope));
         abort_unless($item && $item->revision_publicada, 422, 'La plantilla no tiene una revisión publicada.');
+        abort_unless($this->plan->customBulletins() || ($item->preset_key && app(TenantPlanAccess::class)->has('boletines_predefinidos')), 403, __('El plan permite únicamente diseños predefinidos.'));
         $revision ??= (int) $item->revision_publicada;
         $published = DB::table('boletin_plantilla_revisiones')->where('plantilla_id', $item->id)
             ->where('revision', $revision)->first();

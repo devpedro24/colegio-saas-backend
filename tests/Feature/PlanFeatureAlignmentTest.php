@@ -47,11 +47,11 @@ class PlanFeatureAlignmentTest extends TestCase
         ]);
         $this->withToken($admin->createToken('platform')->plainTextToken);
 
-        $this->putJson('/api/plans/esencial', [
-            'key' => 'esencial', 'name' => 'Esencial', 'features' => ['academico'],
+        $this->putJson('/api/plans/estandar', [
+            'key' => 'estandar', 'name' => 'Estándar', 'features' => ['academico'],
         ])->assertOk()->assertJsonPath('plan.features.0', 'nucleo');
-        $this->postJson('/api/plans', [
-            'key' => 'guardian', 'name' => 'Guardian', 'features' => ['app_acudientes'],
+        $this->putJson('/api/plans/estandar', [
+            'key' => 'estandar', 'name' => 'Estándar', 'features' => ['app_acudientes'],
         ])->assertUnprocessable()->assertJsonValidationErrors('features.0');
         $this->postJson('/api/rbac/permissions', [
             'key' => 'prueba.sin_plan', 'module' => 'Prueba', 'action' => 'Sin plan',

@@ -112,6 +112,8 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
     Route::get('/boletines/observaciones/{matriculaToken}', [BoletinObservacionController::class, 'index']);
     Route::put('/boletines/observaciones/{matriculaToken}', [BoletinObservacionController::class, 'guardar']);
     Route::post('/boletines/observaciones/{matriculaToken}/aprobar', [BoletinObservacionController::class, 'aprobar']);
+    Route::get('/boletines/predefinidos', [BoletinPlantillaController::class, 'presets']);
+    Route::post('/boletines/predefinidos/{key}', [BoletinPlantillaController::class, 'usePreset']);
     Route::get('/boletines/plantillas', [BoletinPlantillaController::class, 'index']);
     Route::post('/boletines/plantillas', [BoletinPlantillaController::class, 'create']);
     Route::post('/boletines/plantillas/archivos', [BoletinPlantillaController::class, 'uploadAsset']);
@@ -468,6 +470,7 @@ Route::get('/usuarios/egreso-candidatos', [UserController::class, 'egresoCandida
     ->middleware('can:estudiantes.egreso.gestionar');
 
 Route::get('/institution-context', InstitutionContextController::class);
+Route::get('/subscription/offers', \App\Http\Controllers\Api\SubscriptionOffersController::class);
 
 Route::prefix('ingreso/configuracion')->middleware(RequireOpaqueAcademicContract::class)->controller(EnrollmentSettingsController::class)->group(function () {
     Route::get('/', 'show');

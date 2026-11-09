@@ -8,8 +8,12 @@ use App\Events\PlatformDataChanged;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\PaginatesRequests;
 use App\Models\Plan;
+use App\Models\Tenant;
 use App\Plans\PlanCatalog;
+use App\Plans\PlanPricing;
 use App\Services\SchoolPlanSedeGuard;
+use App\Services\SchoolSubscription;
+use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -29,7 +33,7 @@ class PlanController extends Controller
     public function index(Request $request): JsonResponse
     {
         $result = Plan::query()
-            ->orderBy('sort_order')
+            ->whereIn('key', ['estandar', 'premium'])->orderBy('sort_order')
             ->orderBy('id')
             ->paginate($this->resolvePerPage($request))
             ->through(fn (Plan $plan) => $this->present($plan));
@@ -43,22 +47,26 @@ class PlanController extends Controller
         return $response;
     }
 
-    /** Crea un plan nuevo. */
+    public function quote(Request $request): JsonResponse
+    {
+        $data = $request->validate(['plan' => ['required', 'in:estandar,premium']]);
+        $contract = SchoolSubscription::validate($request);
+        abort_unless($contract, 422);
+        $plan = Plan::where('key', $data['plan'])->where('is_active', true)->firstOrFail();
+
+        return response()->json(['quote' => PlanPricing::quote($plan, $contract)])->header('Cache-Control', 'private, no-store');
+    }
+
+    /** The commercial catalog is closed; customization belongs to a school. */
     public function store(Request $request): JsonResponse
     {
-        $data = $this->validatePlan($request, null);
-
-        $plan = Plan::create($data);
-
-        PlatformDataChanged::dispatch('plans', 'created');
-
-        return response()->json(['plan' => $this->present($plan)], 201);
+        abort(422, __('Solo se comercializan Estándar y Premium. Personaliza el contrato del colegio.'));
     }
 
     /** Detalle de un plan. */
     public function show(string $key): JsonResponse
     {
-        $plan = Plan::where('key', $key)->firstOrFail();
+        $plan = Plan::whereIn('key', ['estandar', 'premium'])->where('key', $key)->firstOrFail();
 
         return response()->json(['plan' => $this->present($plan)]);
     }
@@ -66,12 +74,17 @@ class PlanController extends Controller
     /** Actualiza un plan (nombre, descripcion, estado, precios, limites, features). */
     public function update(Request $request, string $key): JsonResponse
     {
-        $plan = Plan::where('key', $key)->firstOrFail();
+        $plan = Plan::whereIn('key', ['estandar', 'premium'])->where('key', $key)->firstOrFail();
 
         $data = $this->validatePlan($request, $plan->id);
         SchoolPlanSedeGuard::ensureSubscribersFit($plan->key, $data['features'],
             array_key_exists('max_sedes', $data) ? $data['max_sedes'] : $plan->max_sedes);
+        $before = $this->present($plan);
         $plan->update($data);
+        AuditLogger::platform($request->user(), 'UPDATE', 'plan', $plan->key, $before, $this->present($plan));
+        foreach (Tenant::whereNull('parent_id')->where('plan', $plan->key)->cursor() as $school) {
+            SchoolSubscription::notifyChanged($school);
+        }
 
         PlatformDataChanged::dispatch('plans', 'updated');
 
@@ -86,7 +99,16 @@ class PlanController extends Controller
     private function validatePlan(Request $request, ?int $ignoreId): array
     {
         $validated = $request->validate([
+            'pricing' => ['sometimes', 'array:currency,student_monthly,minimum_students,included_sites,additional_site_monthly,addons'],
+            'pricing.currency' => ['required_with:pricing', 'in:COP'],
+            'pricing.student_monthly' => ['required_with:pricing', 'integer', 'min:0', 'max:10000000'],
+            'pricing.minimum_students' => ['required_with:pricing', 'integer', 'min:30', 'max:100000'],
+            'pricing.included_sites' => ['required_with:pricing', 'integer', 'min:1', 'max:100'],
+            'pricing.additional_site_monthly' => ['required_with:pricing', 'integer', 'min:0', 'max:10000000'],
+            'pricing.addons' => ['required_with:pricing', 'array:asistencia,preinformes,boletines_personalizables,aula,soporte_prioritario'],
+            'pricing.addons.*' => ['integer', 'min:0', 'max:1000000'],
             'key' => [
+                Rule::in(['estandar', 'premium']),
                 'required', 'string', 'max:60', 'regex:/^[a-z0-9-]+$/',
                 Rule::unique('plans', 'key')->ignore($ignoreId),
             ],
@@ -110,6 +132,11 @@ class PlanController extends Controller
         $validated['features'] = array_values(array_unique([
             ...PlanCatalog::requiredFeatureKeys(), ...($validated['features'] ?? []),
         ]));
+        // The customization of Aula is part of Aula, never a separate product.
+        $validated['features'] = array_values(array_diff($validated['features'], ['aula_colores']));
+        if (in_array('aula', $validated['features'], true)) {
+            $validated['features'][] = 'aula_colores';
+        }
         $validated['is_active'] = $validated['is_active'] ?? true;
         if (! $request->exists('max_roles_personalizados')) {
             if ($ignoreId === null) {
@@ -160,6 +187,7 @@ class PlanController extends Controller
             'max_roles_personalizados' => $plan->max_roles_personalizados,
             'features' => $plan->features ?? [],
             'sort_order' => $plan->sort_order,
+            'pricing' => PlanPricing::rules($plan),
         ];
     }
 }

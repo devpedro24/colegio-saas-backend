@@ -22,12 +22,16 @@ class CreateTenant extends Command
         {slug : Subdominio del colegio (ej: colegio-san-jose)}
         {rector_email : Correo institucional del rector}
         {--rector-name=Rector : Nombre del rector}
-        {--plan=esencial : Plan comercial (esencial|estandar|premium)}';
+        {--plan=estandar : Plan comercial (estandar|premium)}';
 
     protected $description = 'Provisiona un nuevo colegio (tenant): BD aislada, RBAC y usuario rector (CU-001)';
 
     public function handle(TenantProvisioner $provisioner): int
     {
+        if (! in_array($this->option('plan'), ['estandar', 'premium'], true)) {
+            $this->error('Selecciona Estándar o Premium.');
+            return self::FAILURE;
+        }
         $this->info("Provisionando colegio '{$this->argument('name')}'...");
 
         try {

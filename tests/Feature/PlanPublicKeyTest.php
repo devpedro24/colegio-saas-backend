@@ -21,14 +21,14 @@ class PlanPublicKeyTest extends TestCase
             'status' => User::STATUS_ACTIVE,
         ]);
         $token = $user->createToken('platform')->plainTextToken;
-        $plan = Plan::create(['key' => 'plan-seguro', 'name' => 'Plan Seguro']);
+        $plan = Plan::updateOrCreate(['key' => 'estandar'], ['name' => 'Plan Seguro']);
 
         $this->withToken($token)->getJson('/api/plans')->assertOk()
-            ->assertJsonPath('data.0.key', 'plan-seguro')
+            ->assertJsonPath('data.0.key', 'estandar')
             ->assertJsonMissing(['id' => $plan->id]);
         $this->getJson('/api/plans/'.$plan->id)->assertNotFound();
         $this->getJson('/api/plans/'.$plan->key)->assertOk()
-            ->assertJsonPath('plan.key', 'plan-seguro')
+            ->assertJsonPath('plan.key', 'estandar')
             ->assertJsonMissing(['id' => $plan->id]);
 
         $this->putJson('/api/plans/'.$plan->key, [

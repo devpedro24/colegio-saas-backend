@@ -11,7 +11,7 @@ use App\Http\Controllers\PaginatesRequests;
 use App\Models\Plan;
 use App\Models\Tenant;
 use App\Models\User;
-use App\Services\SchoolPlanSedeGuard;
+use App\Services\SchoolSubscription;
 use App\Services\SchoolRoleSynchronizer;
 use App\Services\TenantProvisioner;
 use App\Support\Audit\AuditLogger;
@@ -58,6 +58,10 @@ class ColegioController extends Controller
             'plan' => ['nullable', 'string', 'exists:plans,key'],
         ]);
 
+        $data['plan'] ??= 'estandar';
+        abort_unless(in_array($data['plan'], ['estandar', 'premium'], true), 422);
+        $data['commercial'] = SchoolSubscription::prepare(Plan::where('key', $data['plan'])->where('is_active', true)->firstOrFail(), SchoolSubscription::validate($request));
+
         try {
             ['tenant' => $tenant, 'password' => $password] = $provisioner->provision($data);
         } catch (RuntimeException $exception) {
@@ -76,6 +80,7 @@ class ColegioController extends Controller
                 'name' => $tenant->name,
                 'slug' => $tenant->slug,
                 'plan' => $tenant->plan,
+                'subscription' => $tenant->commercial,
                 'status' => $tenant->status,
             ],
             null,
@@ -101,6 +106,8 @@ class ColegioController extends Controller
     public function update(Request $request, string $slug): JsonResponse
     {
         $tenant = $this->findColegio($slug);
+        $before = ['name' => $tenant->name, 'slug' => $tenant->slug, 'legal_name' => $tenant->legal_name,
+            'nit' => $tenant->nit, 'plan' => $tenant->plan, 'subscription' => $tenant->commercial];
 
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
@@ -110,7 +117,8 @@ class ColegioController extends Controller
             'plan' => ['required', 'string', 'exists:plans,key'],
         ]);
 
-        SchoolPlanSedeGuard::ensureSchoolFits($tenant, Plan::where('key', $data['plan'])->firstOrFail());
+        abort_unless(in_array($data['plan'], ['estandar', 'premium'], true), 422);
+        $commercial = SchoolSubscription::prepare(Plan::where('key', $data['plan'])->where('is_active', true)->firstOrFail(), SchoolSubscription::validate($request), $tenant);
 
         $slugChanged = ! empty($data['slug']) && $data['slug'] !== $tenant->slug;
         $nameChanged = $data['name'] !== $tenant->name;
@@ -131,7 +139,7 @@ class ColegioController extends Controller
             }
         }
 
-        $updateData = ['name' => $data['name'], 'plan' => $data['plan']];
+        $updateData = ['name' => $data['name'], 'plan' => $data['plan'], 'commercial' => $commercial];
         if (isset($data['legal_name'])) {
             $updateData['legal_name'] = $data['legal_name'];
         }
@@ -139,7 +147,7 @@ class ColegioController extends Controller
             $updateData['nit'] = $data['nit'];
         }
 
-        $planChanged = $tenant->plan !== $data['plan'];
+        $planChanged = $tenant->plan !== $data['plan'] || $tenant->commercial !== $commercial;
         $tenant->update($updateData);
 
         // Si cambio el nombre o el slug, la BD debe renombrarse.
@@ -165,7 +173,7 @@ class ColegioController extends Controller
                 (new RbacSeeder)->run();
                 app(SchoolRoleSynchronizer::class)->synchronize();
             });
-            TenantChanged::dispatch($tenant->id, 'plan');
+            SchoolSubscription::notifyChanged($tenant);
         }
 
         PlatformDataChanged::dispatch('colegios', 'updated');
@@ -175,19 +183,14 @@ class ColegioController extends Controller
             'UPDATE',
             'colegio',
             (string) $tenant->id,
-            [
-                'name' => $tenant->getOriginal('name') ?? '',
-                'slug' => $tenant->getOriginal('slug') ?? '',
-                'legal_name' => $tenant->getOriginal('legal_name'),
-                'nit' => $tenant->getOriginal('nit'),
-                'plan' => $tenant->getOriginal('plan'),
-            ],
+            $before,
             [
                 'name' => $tenant->name,
                 'slug' => $tenant->slug,
                 'legal_name' => $tenant->legal_name,
                 'nit' => $tenant->nit,
                 'plan' => $tenant->plan,
+                'subscription' => $tenant->commercial,
             ],
             null,
             (string) $tenant->id,
@@ -255,10 +258,12 @@ class ColegioController extends Controller
             'plan' => ['required', 'string', 'exists:plans,key'],
         ]);
 
-        SchoolPlanSedeGuard::ensureSchoolFits($tenant, Plan::where('key', $data['plan'])->firstOrFail());
+        abort_unless(in_array($data['plan'], ['estandar', 'premium'], true), 422);
+        $commercial = SchoolSubscription::prepare(Plan::where('key', $data['plan'])->where('is_active', true)->firstOrFail(), SchoolSubscription::validate($request), $tenant);
 
         $prevPlan = $tenant->plan;
-        $tenant->update(['plan' => $data['plan']]);
+        $prevSubscription = $tenant->commercial;
+        $tenant->update(['plan' => $data['plan'], 'commercial' => $commercial]);
 
         // Re-siembra spatie del colegio con el nuevo plan (preserva configurables del rector).
         $tenant->run(function (): void {
@@ -266,7 +271,7 @@ class ColegioController extends Controller
             app(SchoolRoleSynchronizer::class)->synchronize();
         });
 
-        TenantChanged::dispatch($tenant->id, 'plan');
+        SchoolSubscription::notifyChanged($tenant);
         PlatformDataChanged::dispatch('colegios', 'updated');
 
         AuditLogger::platform(
@@ -274,8 +279,8 @@ class ColegioController extends Controller
             'UPDATE',
             'colegio.plan',
             (string) $tenant->id,
-            ['plan' => $prevPlan],
-            ['plan' => $tenant->plan],
+            ['plan' => $prevPlan, 'subscription' => $prevSubscription],
+            ['plan' => $tenant->plan, 'subscription' => $tenant->commercial],
             null,
             (string) $tenant->id,
         );
@@ -381,6 +386,7 @@ class ColegioController extends Controller
             'nit' => $tenant->nit,
             'plan' => $tenant->plan,
             'status' => $tenant->status,
+            'subscription' => $tenant->commercial,
             'subdomain' => $tenant->slug.'.localhost',
             'created_at' => $tenant->created_at?->toIso8601String(),
         ];

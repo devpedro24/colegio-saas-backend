@@ -13,6 +13,9 @@ final class SchoolPlanSedeGuard
 {
     public static function ensureSchoolFits(Tenant $school, Plan $plan): void
     {
+        if (is_array($school->commercial)) {
+            $plan = SchoolSubscription::effective($school) ?? $plan;
+        }
         self::ensureCapacity($school, $plan->features ?? [], $plan->max_sedes);
     }
 
@@ -22,7 +25,11 @@ final class SchoolPlanSedeGuard
         Tenant::on(config('tenancy.database.central_connection'))
             ->where('plan', $planKey)->whereNull('parent_id')
             ->whereNotIn('status', [Tenant::STATUS_DELETED, Tenant::STATUS_IN_RETENTION])
-            ->cursor()->each(fn (Tenant $school) => self::ensureCapacity($school, $features, $maxSedes));
+            ->cursor()->each(function (Tenant $school) use ($features, $maxSedes): void {
+                if (! is_array($school->commercial)) {
+                    self::ensureCapacity($school, $features, $maxSedes);
+                }
+            });
     }
 
     private static function ensureCapacity(Tenant $school, array $features, ?int $maxSedes): void

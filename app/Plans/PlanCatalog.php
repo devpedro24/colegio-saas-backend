@@ -40,7 +40,9 @@ class PlanCatalog
      */
     public static function features(): array
     {
-        return [
+        return array_map(static fn (array $feature): array => [...$feature, 'available' => self::available($feature['key'])], [
+            ['key' => 'boletines_predefinidos', 'category' => 'academico', 'label' => 'plan.f.presets', 'description' => 'plan.f.presets.desc'],
+            ['key' => 'simat', 'category' => 'reportes', 'label' => 'plan.f.simat', 'description' => 'plan.f.simat.desc'],
             ['key' => 'nucleo', 'category' => 'general', 'label' => 'plan.f.nucleo', 'description' => 'plan.f.nucleo.desc', 'required' => true],
             // ---- Academico y operacion (nucleo) ----
             ['key' => 'academico', 'category' => 'academico', 'label' => 'plan.f.academico', 'description' => 'plan.f.academico.desc'],
@@ -59,7 +61,6 @@ class PlanCatalog
             // ---- Academico avanzado ----
             ['key' => 'preinformes', 'category' => 'academico_avanzado', 'label' => 'plan.f.preinformes', 'description' => 'plan.f.preinformes.desc'],
             ['key' => 'aula', 'category' => 'academico_avanzado', 'label' => 'plan.f.aula', 'description' => 'plan.f.aula.desc'],
-            ['key' => 'aula_colores', 'category' => 'academico_avanzado', 'label' => 'plan.f.aulaColores', 'description' => 'plan.f.aulaColores.desc'],
             ['key' => 'boletines_personalizables', 'category' => 'academico_avanzado', 'label' => 'plan.f.boletines', 'description' => 'plan.f.boletines.desc'],
             ['key' => 'multi_sede', 'category' => 'academico_avanzado', 'label' => 'plan.f.multiSede', 'description' => 'plan.f.multiSede.desc'],
             ['key' => 'firma_electronica', 'category' => 'academico_avanzado', 'label' => 'plan.f.firmaElectronica', 'description' => 'plan.f.firmaElectronica.desc'],
@@ -73,7 +74,7 @@ class PlanCatalog
             // ---- Soporte e integraciones ----
             ['key' => 'soporte_prioritario', 'category' => 'soporte', 'label' => 'plan.f.soportePrioritario', 'description' => 'plan.f.soportePrioritario.desc'],
             ['key' => 'sso', 'category' => 'soporte', 'label' => 'plan.f.sso', 'description' => 'plan.f.sso.desc'],
-        ];
+        ]);
     }
 
     /**
@@ -96,7 +97,7 @@ class PlanCatalog
     /** Todas las claves de feature validas (para validar el request). */
     public static function featureKeys(): array
     {
-        return array_map(static fn (array $f): string => $f['key'], self::features());
+        return [...array_map(static fn (array $f): string => $f['key'], self::features()), 'aula_colores'];
     }
 
     /** Capacidades de operación que ningún plan puede desactivar. */
@@ -115,63 +116,29 @@ class PlanCatalog
     }
 
     /**
-     * Definicion por defecto de los 3 planes comerciales (para el seed).
+     * Definicion por defecto de los dos planes comerciales (para el seed).
      * `features` = subconjunto de featureKeys(); limites null = ilimitado.
      *
      * @return list<array<string,mixed>>
      */
     public static function defaultPlans(): array
     {
-        $esencial = ['nucleo', 'academico', 'asistencia', 'comunicacion_basica', 'pagos_pension'];
-
-        $estandar = array_merge($esencial, [
-            'multi_pasarela', 'pagos_sin_friccion',
-            'boletines_personalizables', 'multi_sede', 'firma_electronica', 'preinformes', 'aula', 'aula_colores',
-            'carne_qr', 'reportes_financieros',
-        ]);
-
-        $premium = array_merge($estandar, [
-            'dian', 'whatsapp', 'generador_horarios', 'bi_avanzado',
-            'soporte_prioritario', 'sso',
-        ]);
-
+        $base = ['nucleo', 'academico', 'comunicacion_basica', 'boletines_predefinidos'];
         return [
-            [
-                'key' => 'esencial',
-                'name' => 'Esencial',
-                'description' => 'Colegios pequenos (menos de 300 estudiantes).',
-                'max_estudiantes' => 300,
-                'storage_gb' => 50,
-                'max_sedes' => 1,
-                'max_pasarelas' => 1,
-                'max_roles_personalizados' => 0,
-                'features' => $esencial,
-                'sort_order' => 1,
-            ],
-            [
-                'key' => 'estandar',
-                'name' => 'Estandar',
-                'description' => 'Colegios medianos (300 a 800 estudiantes).',
-                'max_estudiantes' => 800,
-                'storage_gb' => 200,
-                'max_sedes' => 5,
-                'max_pasarelas' => 3,
-                'max_roles_personalizados' => 2,
-                'features' => $estandar,
-                'sort_order' => 2,
-            ],
-            [
-                'key' => 'premium',
-                'name' => 'Premium',
-                'description' => 'Colegios grandes (800+ estudiantes) o con necesidades avanzadas.',
-                'max_estudiantes' => null,
-                'storage_gb' => 1024,
-                'max_sedes' => null,
-                'max_pasarelas' => null,
+            ['key' => 'estandar', 'name' => 'Estándar', 'description' => 'Gestión académica con boletines predefinidos. Complementos configurables.',
+                'max_estudiantes' => null, 'storage_gb' => 2, 'max_sedes' => 1, 'max_pasarelas' => 1,
+                'max_roles_personalizados' => null, 'features' => $base, 'sort_order' => 1],
+            ['key' => 'premium', 'name' => 'Premium', 'description' => 'Herramientas avanzadas, Aula y diseño libre de boletines.',
+                'max_estudiantes' => null, 'storage_gb' => 5, 'max_sedes' => 3, 'max_pasarelas' => 1,
                 'max_roles_personalizados' => null,
-                'features' => $premium,
-                'sort_order' => 3,
-            ],
+                'features' => [...$base, 'asistencia', 'preinformes', 'aula', 'aula_colores',
+                    'boletines_personalizables', 'multi_sede', 'soporte_prioritario'], 'sort_order' => 2],
         ];
+    }
+
+    public static function available(string $key): bool
+    {
+        return ! in_array($key, ['pagos_pension', 'multi_pasarela', 'pagos_sin_friccion', 'dian', 'whatsapp',
+            'firma_electronica', 'carne_qr', 'generador_horarios', 'reportes_financieros', 'bi_avanzado', 'sso', 'simat'], true);
     }
 }

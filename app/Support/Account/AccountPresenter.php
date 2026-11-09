@@ -31,7 +31,7 @@ final class AccountPresenter
         $owner = $school->parent_id
             ? Tenant::on(config('tenancy.database.central_connection'))->find($school->parent_id)
             : $school;
-        $plan = $owner ? Plan::where('key', $owner->plan)->first() : null;
+        $plan = $owner ? \App\Services\SchoolSubscription::effective($owner) : null;
 
         return ['name' => $school->name, 'plan' => $plan ? ['key' => $plan->key, 'name' => $plan->name,
             'features' => $plan->features ?? []] : null];

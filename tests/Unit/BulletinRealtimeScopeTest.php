@@ -11,7 +11,7 @@ class BulletinRealtimeScopeTest extends TestCase
     {
         foreach (['emisiones/token/emitir' => 'bulletin-issues', 'emisiones/documentos/token/publicar' => 'bulletin-issues',
             'observaciones/token' => 'bulletin-observations', 'observaciones/token/aprobar' => 'bulletin-observations',
-            'plantillas/token/publicar' => 'bulletin-templates', 'politica' => 'bulletins'] as $path => $resource) {
+            'plantillas/token/publicar' => 'bulletin-templates', 'predefinidos/periodo-numerico' => 'bulletin-templates', 'politica' => 'bulletins'] as $path => $resource) {
             $this->assertSame($resource, RealtimeChanges::resourceForPath('/api/boletines/'.$path.'?opaque=1'));
         }
     }

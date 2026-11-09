@@ -28,7 +28,7 @@ class StoragePipelineTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function fakeTenant(string $plan = 'esencial'): Tenant
+    private function fakeTenant(string $plan = 'estandar'): Tenant
     {
         $tenant = new Tenant;
         $tenant->forceFill([
@@ -87,7 +87,7 @@ class StoragePipelineTest extends TestCase
         Storage::fake('tenant');
 
         $service = new StorageService(new NullScanner);
-        $tenant = $this->fakeTenant('esencial');
+        $tenant = $this->fakeTenant('estandar');
 
         $file = UploadedFile::fake()->create('boletin.pdf', 80, 'application/pdf');
         $stored = $service->store($file, 'matriculas', 'rector@col.test', $tenant);
@@ -246,7 +246,7 @@ class StoragePipelineTest extends TestCase
     {
         Storage::fake('tenant');
 
-        $tenant = $this->fakeTenant('esencial');
+        $tenant = $this->fakeTenant('estandar');
         $quota = (new StorageService(new NullScanner))->quotaBytes($tenant);
 
         // Deja solo 10 bytes libres.

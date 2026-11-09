@@ -29,11 +29,43 @@ use Illuminate\Support\Facades\Storage;
 /** Design management only. This controller never emits or approves a report. */
 final class BoletinPlantillaController extends Controller
 {
+    public function presets(Request $request): JsonResponse
+    {
+        $this->mayRead($request);
+        return response()->json(['data' => array_map(fn (string $key) => ['key' => $key,
+            ...\App\Services\BulletinPreset::design($key)], \App\Services\BulletinPreset::KEYS)]);
+    }
+
+    public function usePreset(Request $request, string $key): JsonResponse
+    {
+        abort_unless($request->user()->can('boletines.emisiones.preparar'), 403);
+        abort_unless(app(\App\Services\TenantPlanAccess::class)->has('boletines_predefinidos'), 403);
+        $data = $request->validate(['accent' => ['required', 'regex:/^#[a-fA-F0-9]{6}$/'],
+            'size' => ['required', 'integer', 'min:10', 'max:16']]);
+        $design = \App\Services\BulletinPreset::design($key, $data['accent'], $data['size']);
+        $item = DB::transaction(function () use ($request, $design): BoletinPlantilla {
+            $item = BoletinPlantilla::create([...$design, 'version' => 1, 'revision_publicada' => 1,
+                'preset_key' => $design['configuracion']['canvas']['key'],
+                'created_by' => $request->user()->id, 'updated_by' => $request->user()->id]);
+            DB::table('boletin_plantilla_revisiones')->insert(['plantilla_id' => $item->id, 'revision' => 1,
+                'nombre' => $item->nombre, 'ambito' => $item->ambito,
+                'configuracion' => json_encode($item->configuracion, JSON_THROW_ON_ERROR),
+                'published_by' => $request->user()->id, 'published_at' => now()]);
+            AuditLogger::tenant($request->user(), 'CREATE', 'boletin_predefinido', (string) $item->id, null,
+                ['diseno' => $design['configuracion']['canvas']['key']]);
+            return $item;
+        });
+        return response()->json(['data' => $this->present($item)], 201);
+    }
+
     public function index(Request $request, AcademicPlanAccess $plan): JsonResponse
     {
         $this->mayRead($request);
         $request->validate(['ambito' => 'sometimes|in:periodo,final', 'publicadas' => 'sometimes|boolean']);
         $query = BoletinPlantilla::query()->when($request->filled('ambito'), fn ($q) => $q->where('boletin_plantillas.ambito', $request->input('ambito')));
+        if (! $plan->customBulletins()) {
+            $query->whereNotNull('boletin_plantillas.preset_key');
+        }
         if ($request->boolean('publicadas')) {
             $query->join('boletin_plantilla_revisiones as revision', function ($join): void {
                 $join->on('revision.plantilla_id', '=', 'boletin_plantillas.id')
@@ -150,7 +182,7 @@ final class BoletinPlantillaController extends Controller
         DB::transaction(function () use ($request, $item, $version, $data): void {
             $locked = BoletinPlantilla::whereKey($item->id)->lockForUpdate()->firstOrFail();
             abort_unless($locked->version === $version, 409, 'La plantilla cambió. Recarga antes de guardar.');
-            $locked->update(['nombre' => $data['nombre'], 'configuracion' => $data['configuracion'],
+            $locked->update(['preset_key' => null, 'nombre' => $data['nombre'], 'configuracion' => $data['configuracion'],
                 'version' => $version + 1, 'updated_by' => $request->user()->id]);
             if ($locked->wasChanged('nombre')) {
                 app(BulletinArchiveSync::class)->forTemplate($locked, $request->user());
@@ -179,7 +211,7 @@ final class BoletinPlantillaController extends Controller
                 'configuracion' => json_encode($data['configuracion'], JSON_THROW_ON_ERROR),
                 'published_by' => $request->user()->id, 'published_at' => now(),
             ]);
-            $locked->update(['nombre' => $data['nombre'], 'configuracion' => $data['configuracion'],
+            $locked->update(['preset_key' => null, 'nombre' => $data['nombre'], 'configuracion' => $data['configuracion'],
                 'version' => $version + 1, 'revision_publicada' => $revision,
                 'updated_by' => $request->user()->id]);
             if ($locked->wasChanged('nombre')) {

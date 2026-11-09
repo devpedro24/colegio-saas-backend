@@ -335,7 +335,9 @@ class AcademicModulesTest extends TestCase
     public function test_aula_requested_gradebook_link_is_visible_and_resolved_when_period_opens(): void
     {
         $this->withoutMiddleware(EnsureOnboardingComplete::class);
-        Plan::updateOrCreate(['key' => 'estandar'], ['name' => 'Estándar', 'features' => ['aula', 'academico']]);
+        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-10-31 12:00:00'));
+        $this->beforeApplicationDestroyed(fn () => $this->travelBack());
+        Plan::updateOrCreate(['key' => 'estandar'], ['name' => 'Estándar', 'features' => ['aula', 'academico', 'preinformes']]);
         $this->school->update(['plan' => 'estandar']);
         [$previous] = $this->gradeFixture();
         foreach (['aula.ver_todas', 'aula.recursos.gestionar'] as $permission) {
@@ -3356,7 +3358,8 @@ class AcademicModulesTest extends TestCase
         parent::setUp();
         // El catálogo académico ahora exige un plan real incluso en escenarios
         // históricos que solo prueban la lógica de un módulo.
-        Plan::updateOrCreate(['key' => 'esencial'], PlanCatalog::defaultPlans()[0]);
+        Plan::updateOrCreate(['key' => 'esencial'], [...PlanCatalog::defaultPlans()[0],
+            'key' => 'esencial', 'name' => 'Plan histórico de prueba', 'is_active' => false]);
         $this->seed(RbacCatalogSeeder::class);
         // Los tests históricos de este módulo usan el contrato numérico antiguo.
         // La excepción existe únicamente en testing y requiere esta cabecera.
@@ -4916,8 +4919,10 @@ class AcademicModulesTest extends TestCase
         app(TenantPlanAccess::class)->forget();
         $this->assertTrue(SedeLimits::alLimite());
         Plan::where('key', 'estandar')->update(['max_sedes' => 5]);
+        app(TenantPlanAccess::class)->forget();
         $this->assertFalse(SedeLimits::alLimite());
         $this->school->update(['plan' => 'missing']);
+        app(TenantPlanAccess::class)->forget();
         $this->expectException(ValidationException::class);
         SedeLimits::maxSedes();
     }

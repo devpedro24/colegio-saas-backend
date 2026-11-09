@@ -13,7 +13,7 @@ final class AcademicPlanAccess
 
     public function requirePreinformes(): void
     {
-        abort_unless($this->preinformes(), 403, 'El plan del colegio no incluye preinformes. Están disponibles desde Estándar o en un plan personalizado que los incluya.');
+        abort_unless($this->preinformes(), 403, __('El plan del colegio no incluye preinformes. Activa Premium o el complemento de preinformes.'));
     }
 
     public function aula(): bool
