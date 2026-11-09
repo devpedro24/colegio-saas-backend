@@ -15,6 +15,8 @@ final class Solicitud extends Model
     protected function casts(): array
     {
         return ['datos' => 'array', 'validacion_edad' => 'array', 'consentimiento_privacidad' => 'array',
+            'requisitos_snapshot' => 'array', 'correcciones' => 'array', 'pin_manual' => 'boolean',
+            'pin_activado_en' => 'datetime', 'validada_en' => 'datetime',
             'pin_expira' => 'datetime', 'email_verificado' => 'datetime', 'enviada_en' => 'datetime'];
     }
 

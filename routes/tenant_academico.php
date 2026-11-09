@@ -488,11 +488,16 @@ Route::prefix('matriculas')->middleware(RequireOpaqueAcademicContract::class)->c
 Route::prefix('ingreso')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoController::class)->group(function () {
     Route::get('/catalogo', 'catalog');
     Route::get('/mi-estado', 'studentStatus');
+    Route::get('/solicitudes', 'applications');
+    Route::get('/notificaciones', 'notifications');
     Route::post('/campanas', 'saveCampaign');
     Route::put('/campanas/{campaign}', 'saveCampaign');
     Route::get('/campanas/{campaign}/solicitudes', 'applications');
     Route::post('/campanas/{campaign}/distribuir', 'distribute');
     Route::get('/solicitudes/{application}', 'show');
+    Route::post('/solicitudes/{application}/pin', 'activatePin');
+    Route::post('/solicitudes/{application}/correcciones', 'correction');
+    Route::post('/solicitudes/{application}/validar', 'validateDocuments');
     Route::post('/solicitudes/{application}/decision', 'decide');
     Route::put('/solicitudes/{application}/grado', 'changeGrade');
     Route::put('/solicitudes/{application}/documentos/{document}', 'review');

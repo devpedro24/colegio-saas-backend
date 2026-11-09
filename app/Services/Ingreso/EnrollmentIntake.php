@@ -12,7 +12,6 @@ use App\Models\Academico\Matricula;
 use App\Models\Ingreso\Campana;
 use App\Models\Ingreso\Notificacion;
 use App\Models\Ingreso\Solicitud;
-use App\Models\Plan;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Support\Audit\AuditLogger;
@@ -30,13 +29,13 @@ final class EnrollmentIntake
 {
     public const EDITABLE = ['borrador', 'correcciones'];
 
-    public const REVIEWABLE = ['enviada', 'revision', 'correcciones', 'espera'];
+    public const REVIEWABLE = ['enviada', 'revision', 'correcciones', 'espera', 'validada'];
 
     public const DOCUMENT_TYPES = ['RC', 'TI', 'CC', 'CE', 'PASAPORTE', 'OTRO'];
 
     public function requirePlan(): void
     {
-        abort_unless(in_array('academico', Plan::where('key', tenant()?->plan)->value('features') ?? [], true), 403, __('El plan no incluye gestión académica.'));
+        abort_unless(app(\App\Services\TenantPlanAccess::class)->has('academico'), 403, __('El plan no incluye gestión académica.'));
     }
 
     public function resolve(string $type, string $token, Builder $query): mixed
@@ -46,7 +45,9 @@ final class EnrollmentIntake
 
     public function open(Campana $campaign): void
     {
-        $today = now(tenant()->timezone ?: 'America/Bogota')->toDateString();
+        $today = now(tenant()->zonaHorariaInstitucional())->toDateString();
+        abort_if(($campaign->apertura_en && $campaign->apertura_en->isFuture()) || ($campaign->cierre_en && $campaign->cierre_en->isPast()),
+            422, __('La convocatoria está fuera del plazo de inscripción.'));
         abort_unless($campaign->abierta && $today >= $campaign->desde->toDateString() && ($campaign->hasta === null || $today <= $campaign->hasta->toDateString())
             && in_array(AnoLectivo::findOrFail($campaign->ano_lectivo_id)->estado, ['planificado', 'en_curso'], true), 422, __('La convocatoria no está abierta para nuevas cargas.'));
     }
@@ -69,13 +70,19 @@ final class EnrollmentIntake
         return ($parts['scheme'] ?? 'https').'://'.$domain.(isset($parts['port']) ? ':'.$parts['port'] : '');
     }
 
-    public function campaign(Campana $c): array
+    public function campaign(Campana $c, ?array $snapshot = null): array
     {
         $config = app(EnrollmentSettings::class)->configuration($c);
+        if ($snapshot !== null) {
+            $config = [...$config, ...Arr::only($snapshot, ['documentos', 'campos', 'documento_identidad'])];
+        }
 
         return ['url_token' => OpaqueUrlToken::for('ingreso-campana', $c->id), 'nombre' => $c->nombre,
             'ano_token' => OpaqueUrlToken::for('ano-lectivo', $c->ano_lectivo_id),
             'abierta' => $c->abierta, 'desde' => $c->desde->toDateString(), 'hasta' => $c->hasta?->toDateString(),
+            'apertura_en' => $c->apertura_en?->setTimezone(tenant()->zonaHorariaInstitucional())->format('Y-m-d\TH:i'),
+            'cierre_en' => $c->cierre_en?->setTimezone(tenant()->zonaHorariaInstitucional())->format('Y-m-d\TH:i'),
+            'correcciones_hasta' => $c->correcciones_hasta?->setTimezone(tenant()->zonaHorariaInstitucional())->format('Y-m-d\TH:i'),
             'zona_horaria' => tenant()->zonaHorariaInstitucional(), 'privacidad_version' => hash('sha256', $config['privacidad']),
             'configuracion' => $config, 'enlace' => $this->baseUrl().'/ingreso/'.OpaqueUrlToken::for('ingreso-campana', $c->id)];
     }
@@ -86,13 +93,16 @@ final class EnrollmentIntake
             'radicado' => 'MAT-'.strtoupper(substr(OpaqueUrlToken::for('ingreso-solicitud', $s->id), 0, 10)),
             'estado' => $s->estado, 'email' => $s->email, 'datos' => $s->datos ?? [],
             'renovacion' => $s->estudiante_id !== null,
+            'pin_manual' => (bool) $s->pin_manual, 'pin_activado_en' => $s->pin_activado_en?->toIso8601String(),
+            'correcciones' => $s->correcciones ?? [], 'validada_en' => $s->validada_en?->toIso8601String(),
+            'actualizada_en' => $s->updated_at?->toIso8601String(),
             'grado_token' => OpaqueUrlToken::for('grado', $s->grado_id),
             'grado_aprobado_token' => $s->grado_aprobado_id ? OpaqueUrlToken::for('grado', $s->grado_aprobado_id) : null,
             'observacion' => $s->observacion, 'enviada_en' => $s->enviada_en?->toIso8601String()];
         if (! $detail) {
             return $result;
         }
-        $result['campana'] = $this->campaign($s->campana);
+        $result['campana'] = $this->campaign($s->campana, $s->requisitos_snapshot);
         if ($snapshot = $s->validacion_edad) {
             $result['validacion_edad'] = ['grado_token' => OpaqueUrlToken::for('grado', $snapshot['grado_id']),
                 ...Arr::only($snapshot, ['nacimiento', 'edad', 'fecha', 'edad_min', 'edad_max'])];
@@ -102,7 +112,10 @@ final class EnrollmentIntake
             'version' => $d->version, 'nombre' => $d->nombre, 'estado' => $d->estado, 'observacion' => $d->observacion,
         ])->all();
         $result['historial'] = DB::table('ingreso_historial')->where('solicitud_id', $s->id)->orderByDesc('id')->limit(100)
-            ->get(['evento', 'observacion', 'created_at'])->all();
+            ->get(['evento', 'observacion', 'created_at'])->map(fn ($event) => [
+                'evento' => $event->evento, 'observacion' => $event->observacion,
+                'created_at' => CarbonImmutable::parse($event->created_at, 'UTC')->toIso8601String(),
+            ])->all();
         $result['grupo'] = $s->matricula_id ? Matricula::with('grupo.grado')->find($s->matricula_id)?->grupo?->nombre : null;
 
         return $result;
@@ -170,8 +183,13 @@ final class EnrollmentIntake
     {
         $grade = OpaqueUrlToken::for('grado', $s->grado_aprobado_id ?? $s->grado_id);
 
-        return array_values(array_filter($s->campana->configuracion['documentos'],
+        return array_values(array_filter($this->configurationFor($s)['documentos'],
             fn ($d) => empty($d['grados']) || in_array($grade, $d['grados'], true)));
+    }
+
+    public function configurationFor(Solicitud $application): array
+    {
+        return $application->requisitos_snapshot ?? $application->campana->configuracion;
     }
 
     public function complete(Solicitud $s, bool $approved = false): void
@@ -203,6 +221,7 @@ final class EnrollmentIntake
             abort_unless(in_array($year->estado, ['planificado', 'en_curso'], true), 422, __('El año lectivo está cerrado.'));
             abort_unless(in_array($s->estado, self::REVIEWABLE, true), 422, __('La solicitud no admite esta decisión.'));
             if ($data['estado'] === 'aprobada') {
+                abort_if($s->pin_manual && ! $manual && (! $s->validada_en || ! in_array($s->estado, ['validada', 'espera'], true)), 422, __('Valida primero la documentación y luego registra la admisión.'));
                 abort_if($s->estado === 'correcciones' || (! $manual && ! $s->email_verificado) || ! $s->consentimiento_en || ! $s->enviada_en,
                     422, __('El aspirante debe completar y enviar la solicitud antes de aprobarla.'));
                 $grade = $this->resolve('grado', $data['grado_token'], Grado::where('ano_lectivo_id', $year->id)->where('estado', 'activo'));
@@ -220,34 +239,9 @@ final class EnrollmentIntake
                 $active = Matricula::where('ano_lectivo_id', $year->id)->where('estado', 'activa')
                     ->whereHas('grupo', fn ($q) => $q->where('grado_id', $grade->id))->count();
                 abort_if($setting['cupo'] !== null && $pending + $active >= $setting['cupo'], 422, __('No quedan cupos en el grado. Usa la lista de espera.'));
-                $student = app(EnrollmentRenewal::class)->find($s, $s->datos['tipo_documento'], $s->datos['numero_documento']);
-                abort_if($s->estudiante_id !== $student?->id, 422, __('La identidad de la renovación cambió. Solicita una nueva revisión.'));
-                $name = trim(implode(' ', array_filter(array_map(fn ($k) => $s->datos[$k] ?? '',
-                    ['primer_nombre', 'segundo_nombre', 'primer_apellido', 'segundo_apellido']))));
-                if ($student) {
-                    $student = User::whereKey($student->id)->lockForUpdate()->firstOrFail();
-                    $student->update(['name' => $name]);
-                    DB::table('ingreso_perfiles')->where('estudiante_id', $student->id)->update([
-                        'datos' => json_encode($s->datos, JSON_THROW_ON_ERROR), 'updated_at' => now()]);
-                    $this->notify($s, 'renovacion-aprobada', 'Renovación aprobada',
-                        'Tu renovación fue aprobada. Conservas tu cuenta y contraseña habituales. El grupo está pendiente de asignación.');
-                } else {
-                    $limit = Plan::where('key', tenant()->plan)->value('max_estudiantes');
-                    abort_if($limit !== null && User::role('estudiante')->where('status', 'active')->count() >= $limit, 422, __('Se alcanzó el límite de estudiantes del plan.'));
-                    $password = PasswordPolicy::temporary(16);
-                    $student = User::create(['name' => $name,
-                        'email' => $s->email, 'password' => $password, 'temporary_password' => $password,
-                        'status' => 'active', 'role' => 'estudiante', 'must_change_password' => true]);
-                    $student->forceFill(['temporary_password_expires_at' => now()->addDays(3)])->save();
-                    $student->assignRole('estudiante');
-                    DB::table('ingreso_perfiles')->insert(['estudiante_id' => $student->id,
-                        'tipo_documento' => $s->datos['tipo_documento'], 'numero_documento' => $s->datos['numero_documento'],
-                        'datos' => json_encode($s->datos, JSON_THROW_ON_ERROR), 'created_at' => now(), 'updated_at' => now()]);
-                    $this->notify($s, 'credenciales', 'Solicitud aprobada: acceso del estudiante',
-                        'Tu solicitud fue aprobada. Grupo pendiente de asignación. Correo: '.$s->email."\nContraseña temporal: ".$password.
-                        "\nCámbiala al ingresar. Caduca en 72 horas; después puedes usar Olvidé mi contraseña.\nIngreso: ".$this->baseUrl().'/auth');
+                if (! $s->pin_manual || $manual) {
+                    $this->createStudent($s);
                 }
-                $s->estudiante_id = $student->id;
                 $s->grado_aprobado_id = $grade->id;
             } else {
                 abort_unless(filled($data['observacion'] ?? null), 422, __('Escribe el motivo de la decisión.'));
@@ -259,10 +253,44 @@ final class EnrollmentIntake
             if ($s->estado !== 'aprobada') {
                 $this->notify($s, 'decision:'.Str::uuid(), 'Actualización de matrícula',
                     'Estado: '.$s->estado.".\n".$s->observacion);
+            } elseif ($s->pin_manual && ! $manual) {
+                $this->notify($s, 'admision:'.Str::uuid(), __('Tu inscripción fue admitida'), __('El colegio continuará con la matrícula y la asignación de grupo.'));
             }
 
             return $s;
         });
+    }
+
+    private function createStudent(Solicitud $s): void
+    {
+        $student = app(EnrollmentRenewal::class)->find($s, $s->datos['tipo_documento'], $s->datos['numero_documento']);
+        abort_if($s->estudiante_id !== $student?->id, 422, __('La identidad de la renovación cambió. Solicita una nueva revisión.'));
+        $name = trim(implode(' ', array_filter(array_map(fn ($k) => $s->datos[$k] ?? '',
+            ['primer_nombre', 'segundo_nombre', 'primer_apellido', 'segundo_apellido']))));
+        if ($student) {
+            $student = User::whereKey($student->id)->lockForUpdate()->firstOrFail();
+            $student->update(['name' => $name]);
+            DB::table('ingreso_perfiles')->where('estudiante_id', $student->id)->update([
+                'datos' => json_encode($s->datos, JSON_THROW_ON_ERROR), 'updated_at' => now()]);
+            $this->notify($s, 'renovacion-aprobada', 'Renovación aprobada',
+                $s->pin_manual ? 'Tu matrícula de renovación fue confirmada. Conservas tu cuenta y contraseña habituales.' : 'Tu renovación fue aprobada. Conservas tu cuenta y contraseña habituales. El grupo está pendiente de asignación.');
+        } else {
+            $limit = app(\App\Services\TenantPlanAccess::class)->plan()?->max_estudiantes;
+            abort_if($limit !== null && User::role('estudiante')->where('status', 'active')->count() >= $limit, 422, __('Se alcanzó el límite de estudiantes del plan.'));
+            $password = PasswordPolicy::temporary(16);
+            $student = User::create(['name' => $name,
+                'email' => $s->email, 'password' => $password, 'temporary_password' => $password,
+                'status' => 'active', 'role' => 'estudiante', 'must_change_password' => true]);
+            $student->forceFill(['temporary_password_expires_at' => now()->addDays(3)])->save();
+            $student->assignRole('estudiante');
+            DB::table('ingreso_perfiles')->insert(['estudiante_id' => $student->id,
+                'tipo_documento' => $s->datos['tipo_documento'], 'numero_documento' => $s->datos['numero_documento'],
+                'datos' => json_encode($s->datos, JSON_THROW_ON_ERROR), 'created_at' => now(), 'updated_at' => now()]);
+            $this->notify($s, 'credenciales', 'Solicitud aprobada: acceso del estudiante',
+                ($s->pin_manual ? 'Tu matrícula fue confirmada. Correo: ' : 'Tu solicitud fue aprobada. Grupo pendiente de asignación. Correo: ').$s->email."\nContraseña temporal: ".$password.
+                "\nCámbiala al ingresar. Caduca en 72 horas; después puedes usar Olvidé mi contraseña.\nIngreso: ".$this->baseUrl().'/auth');
+        }
+        $s->estudiante_id = $student->id;
     }
 
     /** Preview never reserves seats; confirmation rechecks every seat under year locks. */
@@ -298,6 +326,9 @@ final class EnrollmentIntake
                 abort_if($g->cupo_maximo !== null && ($used[$g->id] ?? 0) >= $g->cupo_maximo, 422, __('El grupo alcanzó su cupo. Genera otra propuesta.'));
                 $used[$g->id] = ($used[$g->id] ?? 0) + 1;
                 if ($confirm) {
+                    if ($s->pin_manual) {
+                        $this->createStudent($s);
+                    }
                     $student = User::findOrFail($s->estudiante_id);
                     abort_unless($student->status === 'active' && $student->hasRole('estudiante'), 422, __('La cuenta del estudiante no está activa.'));
                     abort_if(Matricula::where('estudiante_id', $s->estudiante_id)->where('ano_lectivo_id', $year->id)->exists(), 422, __('El estudiante ya tiene matrícula este año.'));

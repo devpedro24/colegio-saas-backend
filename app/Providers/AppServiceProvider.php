@@ -81,7 +81,7 @@ class AppServiceProvider extends ServiceProvider
         });
         RateLimiter::for('ingreso-access', fn (Request $r) => [
             Limit::perMinute(5)->by('ingreso-ip|'.$r->getHost().'|'.$r->ip()),
-            Limit::perHour(5)->by('ingreso-secret|'.$r->getHost().'|'.hash('sha256', strtolower((string) ($r->input('email') ?: $r->input('access') ?: $r->cookie('ingreso_challenge') ?: $r->input('pin'))))),
+            Limit::perHour(5)->by('ingreso-secret|'.$r->getHost().'|'.hash('sha256', strtolower((string) ($r->input('email') ?: $r->input('numero_documento') ?: $r->input('access') ?: $r->cookie('ingreso_challenge') ?: $r->input('pin'))))),
         ]);
         RateLimiter::for('ingreso-upload', fn (Request $r) => [
             Limit::perMinute(5)->by($r->getHost().'|'.$r->ip()),

@@ -125,7 +125,7 @@ class EnrollmentIntakeTest extends TestCase
     {
         return ['nombre' => 'Ingreso 2026', 'ano_token' => OpaqueUrlToken::for('ano-lectivo', $this->year->id), 'abierta' => true,
             'desde' => today()->subDay()->toDateString(), 'hasta' => today()->addMonth()->toDateString(),
-            'configuracion' => ['pin_expira_en' => now('America/Bogota')->addDays(7)->format('Y-m-d\TH:i'),
+            'configuracion' => ['pin_manual' => false, 'pin_expira_en' => now('America/Bogota')->addDays(7)->format('Y-m-d\TH:i'),
                 'grados' => [['token' => OpaqueUrlToken::for('grado', $this->grade->id), 'nombre' => 'Primero', 'cupo' => 3]],
                 'campos' => [], 'privacidad' => 'Autorización de datos para pruebas de matrícula del colegio.',
                 'documentos' => [['key' => 'identidad', 'nombre' => 'Identificación', 'instrucciones' => 'Legible', 'obligatorio' => true, 'formatos' => ['png'], 'grados' => []]]]];
@@ -135,6 +135,49 @@ class EnrollmentIntakeTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
         $this->flushHeaders()->withToken(($user ?? $this->rector)->createToken('test')->plainTextToken);
+    }
+
+    public function test_campaign_document_validity_and_extra_fields_survive_catalog_reload(): void
+    {
+        $payload = $this->configuration();
+        $payload['configuracion']['documentos'][0]['vigencia'] = 'Expedido durante los últimos tres meses';
+        $payload['configuracion']['campos'] = [
+            ['key' => 'contacto', 'nombre' => 'Teléfono de contacto', 'tipo' => 'telefono', 'obligatorio' => true],
+            ['key' => 'jornada', 'nombre' => 'Jornada', 'tipo' => 'seleccion', 'obligatorio' => false, 'opciones' => ['Mañana', 'Tarde']],
+        ];
+        $this->putJson($this->base.'/ingreso/campanas/'.$this->campaignToken, $payload)->assertOk();
+        $campaign = $this->getJson($this->base.'/ingreso/catalogo')->assertOk()->json('campanas.0');
+        $this->assertSame($payload['configuracion']['documentos'][0]['vigencia'], $campaign['configuracion']['documentos'][0]['vigencia']);
+        $this->assertSame('telefono', $campaign['configuracion']['campos'][0]['tipo']);
+        $this->assertSame(['Mañana', 'Tarde'], $campaign['configuracion']['campos'][1]['opciones']);
+    }
+
+    public function test_admin_search_metrics_and_detail_groups_are_scoped(): void
+    {
+        $this->manualPin();
+        $this->staff();
+        $application = Solicitud::firstOrFail();
+        $this->getJson($this->base.'/ingreso/catalogo')->assertOk()->assertJsonPath('conteos.borrador', 1);
+        $radicado = 'MAT-'.strtoupper(substr(OpaqueUrlToken::for('ingreso-solicitud', $application->id), 0, 10));
+        $this->getJson($this->base.'/ingreso/solicitudes?buscar='.urlencode($radicado))
+            ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.url_token', $this->applicationToken);
+        $this->getJson($this->base.'/ingreso/solicitudes?buscar=NO-EXISTE')->assertOk()->assertJsonCount(0, 'data');
+        $otherGrade = $this->grade->replicate();
+        $otherGrade->nombre = 'Segundo';
+        $otherGrade->save();
+        Grupo::create(['ano_lectivo_id' => $this->year->id, 'grado_id' => $otherGrade->id, 'nombre' => '02A', 'estado' => 'activo']);
+        $inactive = $this->group->replicate();
+        $inactive->nombre = '01B';
+        $inactive->estado = 'inactivo';
+        $inactive->save();
+        $this->getJson($this->base.'/ingreso/solicitudes/'.$this->applicationToken)->assertOk()
+            ->assertJsonCount(1, 'grupos')->assertJsonPath('grupos.0.token', OpaqueUrlToken::for('grupo', $this->group->id));
+
+        $configurator = User::create(['name' => 'Configuración', 'email' => 'config@test.test', 'password' => 'TestPassword123!', 'status' => 'active']);
+        $configurator->givePermissionTo('ingreso.configurar');
+        $this->staff($configurator);
+        $this->getJson($this->base.'/ingreso/catalogo')->assertOk()->assertJsonPath('conteos', []);
+        $this->getJson($this->base.'/ingreso/solicitudes')->assertForbidden();
     }
 
     private function saveSchoolSettings(?int $min = null, ?int $max = null, ?string $notice = null): array
@@ -373,7 +416,7 @@ class EnrollmentIntakeTest extends TestCase
             ->assertOk()->assertJsonPath('data.hasta', null);
         $this->assertNull(Campana::firstOrFail()->hasta);
         $this->visitor();
-        $this->getJson($this->base.'/ingreso-publico/catalogo')->assertOk()->assertJsonMissingPath('campanas');
+        $this->getJson($this->base.'/ingreso-publico/catalogo')->assertOk()->assertJsonStructure(['campanas']);
         $this->getJson($this->base.'/ingreso-publico/campanas/'.$this->campaignToken)->assertOk()->assertJsonPath('data.hasta', null);
         $this->start();
         $this->putJson($this->base.'/ingreso-publico/solicitud', ['datos' => $this->data(), 'enviar' => false])->assertUnprocessable();
@@ -419,7 +462,7 @@ class EnrollmentIntakeTest extends TestCase
             $this->withHeader('Accept-Language', $locale)
                 ->postJson($this->base.'/ingreso-publico/'.$this->campaignToken.'/iniciar', [])
                 ->assertUnprocessable()->assertJsonPath('message', $message);
-            $this->getJson($this->base.'/ingreso-publico/catalogo')->assertOk()->assertJsonMissingPath('campanas');
+            $this->getJson($this->base.'/ingreso-publico/catalogo')->assertOk()->assertJsonStructure(['campanas']);
             $this->getJson($this->base.'/ingreso-publico/campanas/'.$this->campaignToken)->assertOk()
                 ->assertJsonPath('data.nombre', 'Ingreso 2026')
                 ->assertJsonPath('data.configuracion.documentos.0.nombre', 'Identificación');
@@ -626,6 +669,153 @@ class EnrollmentIntakeTest extends TestCase
         return ['primer_nombre' => 'Ana', 'primer_apellido' => 'Pruebas', 'nacimiento' => '2018-02-14',
             'tipo_documento' => 'TI', 'numero_documento' => '123456789', 'telefono' => '+573186037751',
             'direccion' => 'Calle 1 # 2-3', 'pais' => 'CO', 'departamento' => '41', 'municipio' => '41001', 'adicionales' => []];
+    }
+
+    private function manualPin(): string
+    {
+        $this->submissionKey = (string) Str::uuid();
+        $this->pendingFiles = [];
+        $this->staff();
+        $payload = $this->configuration();
+        $payload['configuracion']['pin_manual'] = true;
+        $this->putJson($this->base.'/ingreso/campanas/'.$this->campaignToken, $payload)->assertOk();
+        $this->visitor();
+        $this->postJson($this->base.'/ingreso-publico/'.$this->campaignToken.'/iniciar', [
+            'email' => 'student@test.test', 'grado_token' => OpaqueUrlToken::for('grado', $this->grade->id),
+            'primer_nombre' => 'Ana', 'primer_apellido' => 'Pruebas', 'tipo_documento' => 'TI', 'numero_documento' => '123456789',
+        ])->assertAccepted()->assertJsonStructure(['radicado']);
+        $application = Solicitud::firstOrFail();
+        $this->assertSame('pin_pendiente', $application->estado);
+        $this->applicationToken = OpaqueUrlToken::for('ingreso-solicitud', $application->id);
+        $this->staff();
+        $pin = $this->postJson($this->base.'/ingreso/solicitudes/'.$this->applicationToken.'/pin', ['expira_en' => null])
+            ->assertOk()->assertJsonPath('data.estado', 'borrador')->json('pin');
+        $this->assertMatchesRegularExpression('/^[0-9]{8}$/', $pin);
+        $this->assertNotSame($pin, $application->fresh()->pin_hash);
+        $this->visitor();
+        $response = $this->postJson($this->base.'/ingreso-publico/consultar', [
+            'tipo_documento' => 'TI', 'numero_documento' => '123456789', 'pin' => $pin, 'campana_token' => $this->campaignToken,
+        ])->assertOk();
+        foreach ($response->headers->getCookies() as $cookie) {
+            $this->cookies[$cookie->getName()] = $cookie->getValue();
+        }
+        $this->visitor();
+
+        return $pin;
+    }
+
+    private function manualData(): array
+    {
+        return [...$this->data(), 'responsable' => 'María Pruebas', 'parentesco' => 'Madre', 'telefono_responsable' => '+573186037751'];
+    }
+
+    public function test_manual_pin_workflow_keeps_drafts_and_defers_account_until_enrollment(): void
+    {
+        $this->manualPin();
+        $this->putJson($this->base.'/ingreso-publico/solicitud/borrador', ['datos' => $this->manualData()])
+            ->assertOk()->assertJsonPath('data.datos.responsable', 'María Pruebas');
+        $this->getJson($this->base.'/ingreso-publico/solicitud')->assertOk()->assertJsonPath('data.datos.telefono', '+573186037751');
+        $load = (string) Str::uuid();
+        $document = $this->post($this->base.'/ingreso-publico/documentos/identidad', [
+            'documento' => UploadedFile::fake()->image('identidad.png'), 'carga_token' => $load,
+        ], ['Accept' => 'application/json'])->assertOk()->json('data.documentos.0.url_token');
+        $this->post($this->base.'/ingreso-publico/documentos/identidad', [
+            'documento' => UploadedFile::fake()->image('identidad.png'), 'carga_token' => $load,
+        ], ['Accept' => 'application/json'])->assertOk()->assertJsonCount(1, 'data.documentos');
+        $this->get($this->base.'/ingreso-publico/documentos/'.$document.'?vista=1')->assertOk()->assertHeader('Content-Type', 'image/png');
+        $this->send($this->manualData())->assertOk()->assertJsonPath('data.estado', 'enviada');
+        $this->staff();
+        $this->approve()->assertUnprocessable();
+        $this->postJson($this->base.'/ingreso/solicitudes/'.$this->applicationToken.'/validar')->assertUnprocessable();
+        $this->review($document, 'aprobado')->assertOk();
+        $this->postJson($this->base.'/ingreso/solicitudes/'.$this->applicationToken.'/validar')->assertOk()->assertJsonPath('data.estado', 'validada');
+        $this->approve()->assertOk()->assertJsonPath('data.estado', 'aprobada');
+        $this->assertNull(User::where('email', 'student@test.test')->first());
+        $pairs = [['solicitud_token' => $this->applicationToken, 'grupo_token' => OpaqueUrlToken::for('grupo', $this->group->id)]];
+        $this->postJson($this->base.'/ingreso/campanas/'.$this->campaignToken.'/distribuir', ['confirmar' => true, 'asignaciones' => $pairs])->assertOk();
+        $this->postJson($this->base.'/ingreso/campanas/'.$this->campaignToken.'/distribuir', ['confirmar' => true, 'asignaciones' => $pairs])->assertOk();
+        $this->assertSame(1, Matricula::count());
+        $student = User::where('email', 'student@test.test')->firstOrFail();
+        $this->assertTrue($student->must_change_password);
+        $this->assertSame(1, Notificacion::where('clave', 'like', '%:credenciales')->count());
+    }
+
+    public function test_manual_corrections_unlock_only_requested_items_and_keep_versions(): void
+    {
+        $this->manualPin();
+        $this->upload();
+        $this->send($this->manualData())->assertOk();
+        $this->pendingFiles = [];
+        $this->staff();
+        $base = $this->base.'/ingreso/solicitudes/'.$this->applicationToken;
+        $deadline = now('America/Bogota')->addDays(2)->format('Y-m-d\TH:i');
+        $this->postJson($base.'/correcciones', ['campo' => 'datos.telefono', 'motivo' => 'Actualiza tu teléfono', 'hasta' => $deadline])->assertOk();
+        $this->postJson($base.'/correcciones', ['campo' => 'documentos.identidad', 'motivo' => 'Adjunta una copia legible', 'hasta' => $deadline])->assertOk();
+        Campana::firstOrFail()->update(['abierta' => false]);
+        $this->visitor();
+        $changed = [...$this->manualData(), 'primer_nombre' => 'Otro'];
+        $this->putJson($this->base.'/ingreso-publico/solicitud/borrador', ['datos' => $changed])->assertUnprocessable();
+        $changed = [...$this->manualData(), 'telefono' => '+573112345678'];
+        $this->putJson($this->base.'/ingreso-publico/solicitud/borrador', ['datos' => $changed])->assertOk();
+        $this->submissionKey = (string) Str::uuid();
+        $this->send($changed)->assertUnprocessable();
+        $this->post($this->base.'/ingreso-publico/documentos/identidad', ['documento' => UploadedFile::fake()->image('legible.png'),
+            'carga_token' => (string) Str::uuid()], ['Accept' => 'application/json'])->assertOk()->assertJsonCount(2, 'data.documentos');
+        $this->send($changed)->assertOk()->assertJsonPath('data.estado', 'enviada')->assertJsonPath('data.correcciones.0.resuelta', true);
+        $this->assertSame(2, Documento::count());
+    }
+
+    public function test_manual_pin_permissions_unique_email_and_five_attempt_lock(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+        $pin = $this->manualPin();
+        $this->postJson($this->base.'/ingreso-publico/'.$this->campaignToken.'/iniciar', [
+            'email' => 'student@test.test', 'grado_token' => OpaqueUrlToken::for('grado', $this->grade->id),
+            'primer_nombre' => 'Otro', 'primer_apellido' => 'Estudiante', 'tipo_documento' => 'TI', 'numero_documento' => '987654321',
+        ])->assertUnprocessable();
+        $wrong = $pin === '11111111' ? '22222222' : '11111111';
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $this->postJson($this->base.'/ingreso-publico/consultar', ['tipo_documento' => 'TI', 'numero_documento' => '123456789', 'pin' => $wrong])->assertUnprocessable();
+        }
+        $this->postJson($this->base.'/ingreso-publico/consultar', ['tipo_documento' => 'TI', 'numero_documento' => '123456789', 'pin' => $pin])->assertUnprocessable();
+        $viewer = User::create(['name' => 'Consulta', 'email' => 'viewer@test.test', 'password' => 'Password123!', 'role' => 'docente', 'status' => 'active']);
+        $viewer->givePermissionTo('ingreso.ver');
+        $this->staff($viewer);
+        $this->postJson($this->base.'/ingreso/solicitudes/'.$this->applicationToken.'/pin', ['expira_en' => null])->assertForbidden();
+        $this->getJson($this->base.'/ingreso/solicitudes')->assertOk()->assertJsonPath('total', 1);
+        $this->getJson($this->base.'/ingreso/solicitudes/'.str_repeat('z', 24))->assertNotFound();
+    }
+
+    public function test_cancelled_manual_application_remains_readable_but_cannot_be_edited(): void
+    {
+        $this->manualPin();
+        $this->staff();
+        $this->postJson($this->base.'/ingreso/solicitudes/'.$this->applicationToken.'/decision', ['estado' => 'anulada', 'observacion' => 'Retiro solicitado por el aspirante'])
+            ->assertOk()->assertJsonPath('data.estado', 'anulada');
+        $this->visitor();
+        $this->getJson($this->base.'/ingreso-publico/solicitud')->assertOk()->assertJsonPath('data.estado', 'anulada');
+        $this->putJson($this->base.'/ingreso-publico/solicitud/borrador', ['datos' => $this->manualData()])->assertUnprocessable();
+        $this->assertSame(0, Matricula::count());
+    }
+
+    public function test_manual_correction_deadlines_and_hourly_campaign_window_are_enforced(): void
+    {
+        $this->manualPin();
+        $this->upload();
+        $this->send($this->manualData())->assertOk();
+        $this->staff();
+        $this->postJson($this->base.'/ingreso/solicitudes/'.$this->applicationToken.'/correcciones', [
+            'campo' => 'datos.telefono', 'motivo' => 'Verifica el número', 'hasta' => now('America/Bogota')->addHour()->format('Y-m-d\TH:i'),
+        ])->assertOk();
+        $this->travel(61)->minutes();
+        $this->visitor();
+        $this->putJson($this->base.'/ingreso-publico/solicitud/borrador', ['datos' => $this->manualData()])->assertUnprocessable();
+        $this->travelBack();
+        $campaign = Campana::firstOrFail();
+        $campaign->update(['apertura_en' => now()->addHour()]);
+        $this->postJson($this->base.'/ingreso-publico/'.$this->campaignToken.'/iniciar', [])->assertUnprocessable();
+        $campaign->update(['apertura_en' => now()->subDay(), 'cierre_en' => now()->subMinute()]);
+        $this->postJson($this->base.'/ingreso-publico/'.$this->campaignToken.'/iniciar', [])->assertUnprocessable();
     }
 
     public function test_manual_enrollment_reuses_validations_creates_account_and_exposes_a_separate_roster(): void
@@ -948,7 +1138,9 @@ class EnrollmentIntakeTest extends TestCase
         $this->staff();
         $payload = $this->configuration();
         $payload['configuracion']['documentos'] = [];
-        $this->putJson($this->base.'/ingreso/campanas/'.$this->campaignToken, $payload)->assertUnprocessable();
+        $this->putJson($this->base.'/ingreso/campanas/'.$this->campaignToken, $payload)->assertOk();
+        $this->assertCount(1, Solicitud::firstOrFail()->requisitos_snapshot['documentos']);
+        $this->assertCount(0, Campana::firstOrFail()->configuracion['documentos']);
         $payload = $this->configuration();
         $payload['abierta'] = false;
         $this->putJson($this->base.'/ingreso/campanas/'.$this->campaignToken, $payload)->assertOk();

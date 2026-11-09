@@ -13,7 +13,7 @@ final class EnrollmentMail
         $pin = null;
         if (str_contains($noticeKey, ':pin')) {
             foreach ($lines as $line) {
-                if (preg_match('/^Tu PIN es ([0-9]{4})\./', trim($line), $match)) {
+                if (preg_match('/^Tu PIN es ([0-9]{4}|[0-9]{8})\./', trim($line), $match)) {
                     $pin = $match[1];
                 }
                 if (str_starts_with($line, 'Enlace privado: ')) {

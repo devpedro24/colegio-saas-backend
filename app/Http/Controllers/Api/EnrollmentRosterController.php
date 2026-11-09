@@ -72,7 +72,7 @@ final class EnrollmentRosterController extends Controller
             'anos' => $years->map(fn ($y) => ['token' => OpaqueUrlToken::for('ano-lectivo', $y->id), 'nombre' => $y->nombre, 'estado' => $y->estado]),
             'grupos' => $groups->map(fn ($g) => ['token' => OpaqueUrlToken::for('grupo', $g->id), 'grado_token' => OpaqueUrlToken::for('grado', $g->grado_id),
                 'nombre' => $g->grado->nombre.' / '.$g->nombre, 'sede' => $g->sede?->nombre ?? tenant('name'), 'estado' => $g->estado]),
-            'campanas' => $campaigns->map($this->intake->campaign(...)), 'correo_operativo' => app(SchoolMail::class)->ready()]);
+            'campanas' => $campaigns->map(fn ($campaign) => $this->intake->campaign($campaign)), 'correo_operativo' => app(SchoolMail::class)->ready()]);
     }
 
     private function present(Matricula $enrollment): array

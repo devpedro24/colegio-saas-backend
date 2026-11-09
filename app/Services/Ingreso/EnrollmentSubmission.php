@@ -20,6 +20,50 @@ final class EnrollmentSubmission
 {
     public function __construct(private EnrollmentIntake $intake, private IdentityDocumentReader $reader, private StorageService $storage) {}
 
+    public function draft(Request $request, Solicitud $application): void
+    {
+        $data = $request->validate(['datos' => 'required|array:primer_nombre,segundo_nombre,primer_apellido,segundo_apellido,nacimiento,tipo_documento,numero_documento,telefono,direccion,pais,departamento,municipio,adicionales,madre,padre,responsable,parentesco,telefono_responsable',
+            'datos.adicionales' => 'present|array', 'datos.adicionales.*' => 'nullable|string|max:1000',
+            'datos.*' => 'nullable',
+        ])['datos'];
+        foreach ($data as $key => $value) {
+            abort_unless($key === 'adicionales' || $value === null || (is_string($value) && mb_strlen($value) <= 1000), 422, __('Revisa los datos del formulario.'));
+        }
+        $allowed = array_column($this->intake->configurationFor($application)['campos'], 'key');
+        abort_if(array_diff(array_keys($data['adicionales']), $allowed), 422, __('El formulario contiene campos desconocidos.'));
+        $this->intake->requirePlan();
+        app(EnrollmentWorkflow::class)->restrictChanges($application, $data, [], [], false);
+        $application->update(['datos' => $data]);
+    }
+
+    public function stage(Request $request, Solicitud $application, string $key, ?StoredFile &$created): void
+    {
+        $requirement = collect($this->intake->requirements($application))->firstWhere('key', $key);
+        abort_unless($requirement, 404);
+        $formats = array_unique([...$requirement['formatos'], ...(in_array('jpg', $requirement['formatos'], true) ? ['jpeg'] : [])]);
+        $data = $request->validate(['carga_token' => 'required|uuid', 'documento' => ['required', 'file', 'mimes:'.implode(',', $formats),
+            'extensions:'.implode(',', $formats), 'max:'.(int) ceil(self::limits()['max_file_bytes'] / 1024)]]);
+        if ($application->documentos()->where('carga_token', $data['carga_token'])->exists()) {
+            return;
+        }
+        $latest = $application->documentos()->where('requisito', $key)->orderByDesc('version')->first();
+        abort_if(($latest?->version ?? 0) >= 20 || $latest?->estado === 'aprobado', 422, __('Este documento no admite otra versión.'));
+        $otherFiles = $application->documentos()->where('requisito', '!=', $key)->orderByDesc('version')->get()
+            ->unique('requisito')->where('estado', '!=', 'retirado')->pluck('archivo_id');
+        $bytes = StoredFile::where('tenant_id', tenant()->getTenantKey())->whereIn('id', $otherFiles)->sum('size');
+        abort_if($bytes + $request->file('documento')->getSize() > config('enrollment.max_submission_bytes'),
+            422, __('intake.batchTooLarge'));
+        if ($application->estado === 'correcciones') {
+            abort_unless(collect($application->correcciones ?? [])->contains(fn ($entry) => ! $entry['resuelta'] && $entry['campo'] === 'documentos.'.$key),
+                422, __('Solo puedes reemplazar los documentos solicitados.'));
+        }
+        $created = $this->storage->store($request->file('documento'), 'matriculas/Envio_'.Str::uuid().'/'.$key, $application->email,
+            maxBytes: (int) config('enrollment.max_file_bytes'));
+        $application->documentos()->create(['requisito' => $key, 'version' => ($latest?->version ?? 0) + 1,
+            'archivo_id' => $created->id, 'nombre' => $created->original_name, 'estado' => 'pendiente', 'carga_token' => $data['carga_token']]);
+        $this->intake->event($application, 'documento_cargado', $requirement['nombre']);
+    }
+
     public static function geography(): array
     {
         return json_decode(file_get_contents(resource_path('data/colombia-divipola.json')), true, flags: JSON_THROW_ON_ERROR)['departamentos'];
@@ -60,7 +104,7 @@ final class EnrollmentSubmission
         $rules = [
             'enviar' => 'accepted', 'consentimiento' => 'accepted',
             'privacidad_version' => 'required|string|size:64',
-            'datos' => 'required|array:primer_nombre,segundo_nombre,primer_apellido,segundo_apellido,nacimiento,tipo_documento,numero_documento,telefono,direccion,pais,departamento,municipio,adicionales',
+            'datos' => 'required|array:primer_nombre,segundo_nombre,primer_apellido,segundo_apellido,nacimiento,tipo_documento,numero_documento,telefono,direccion,pais,departamento,municipio,adicionales,madre,padre,responsable,parentesco,telefono_responsable',
             'datos.primer_nombre' => 'required|string|max:80', 'datos.segundo_nombre' => 'nullable|string|max:80',
             'datos.primer_apellido' => 'required|string|max:80', 'datos.segundo_apellido' => 'nullable|string|max:80',
             'datos.nacimiento' => 'required|date_format:Y-m-d|before:today|after:1900-01-01',
@@ -70,12 +114,23 @@ final class EnrollmentSubmission
             'datos.direccion' => 'required|string|max:200', 'datos.pais' => 'required|string|max:80',
             'datos.departamento' => 'required|string|max:100', 'datos.municipio' => 'required|string|max:100',
             'datos.adicionales' => 'present|array',
+            'datos.madre' => 'nullable|string|max:160', 'datos.padre' => 'nullable|string|max:160',
+            'datos.responsable' => ($s->pin_manual ? 'required' : 'nullable').'|string|max:160',
+            'datos.parentesco' => ($s->pin_manual ? 'required' : 'nullable').'|string|max:100',
+            'datos.telefono_responsable' => [$s->pin_manual ? 'required' : 'nullable', 'string', 'regex:/^\+[0-9]{7,15}$/'],
             'documentos' => 'sometimes|array|max:30', 'retirar' => 'sometimes|array|max:30', 'retirar.*' => 'string|distinct|max:50',
         ];
-        foreach ($s->campana->configuracion['campos'] as $field) {
+        foreach ($this->intake->configurationFor($s)['campos'] as $field) {
             $phone = preg_match('/telefono|celular|movil/', Str::lower(Str::ascii($field['key'].' '.$field['nombre'])));
             $rules['datos.adicionales.'.$field['key']] = [$field['obligatorio'] ? 'required' : 'nullable',
-                ...($field['tipo'] === 'fecha' ? ['date_format:Y-m-d'] : ($field['tipo'] === 'numero' ? ['string', 'max:1000', 'regex:/^[0-9]+$/D'] : ($phone ? ['string', 'regex:/^\+[0-9]{7,15}$/'] : ['string', 'max:1000'])))];
+                ...match ($field['tipo']) {
+                    'fecha' => ['date_format:Y-m-d'],
+                    'numero' => ['string', 'max:1000', 'regex:/^[0-9]+$/D'],
+                    'telefono' => ['string', 'regex:/^\+[0-9]{7,15}$/'],
+                    'email' => ['email', 'max:255'],
+                    'seleccion' => ['string', Rule::in($field['opciones'] ?? [])],
+                    default => $phone ? ['string', 'regex:/^\+[0-9]{7,15}$/'] : ['string', 'max:1000'],
+                }];
         }
         $requirements = collect($this->intake->requirements($s))->keyBy('key');
         foreach ($requirements as $key => $requirement) {
@@ -94,7 +149,7 @@ final class EnrollmentSubmission
             $this->error('privacidad_version', 'intake.privacyChanged');
         }
         $data = $d['datos'];
-        if (array_diff(array_keys($data['adicionales']), array_column($s->campana->configuracion['campos'], 'key'))) {
+        if (array_diff(array_keys($data['adicionales']), array_column($this->intake->configurationFor($s)['campos'], 'key'))) {
             $this->error('datos.adicionales', 'intake.unknownField');
         }
         foreach ([$data['telefono'], ...array_values($data['adicionales'])] as $phone) {
@@ -102,7 +157,7 @@ final class EnrollmentSubmission
                 $this->error('datos.telefono', 'intake.invalidPhone');
             }
         }
-        foreach ($s->campana->configuracion['campos'] as $field) {
+        foreach ($this->intake->configurationFor($s)['campos'] as $field) {
             if ($field['obligatorio'] && preg_match('/parentesco|relacion|vinculo/', Str::lower(Str::ascii($field['key'].' '.$field['nombre'])))
                 && Str::lower($data['adicionales'][$field['key']] ?? '') === 'otro') {
                 $this->error('datos.adicionales.'.$field['key'], 'intake.specifyRelationship');
@@ -125,6 +180,7 @@ final class EnrollmentSubmission
             $this->error('datos.numero_documento', 'intake.identityNumberMismatch');
         }
         $files = $r->file('documentos', []);
+        app(EnrollmentWorkflow::class)->restrictChanges($s, $data, $files, $d['retirar'] ?? []);
         foreach ($files as $key => $file) {
             if ($file->getSize() > self::limits()['max_file_bytes']) {
                 $this->error('documentos.'.$key, 'intake.fileTooLarge');
@@ -155,7 +211,7 @@ final class EnrollmentSubmission
         }
         // Explicit configuration preferred; legacy identity labels work until staff assigns the role.
         $identityCandidates = $requirements->filter(fn ($req) => (bool) preg_match('/identidad|identifica|identity/', Str::lower(Str::ascii($req['key'].' '.$req['nombre']))));
-        $identityKey = $s->campana->configuracion['documento_identidad'] ?? ($identityCandidates->count() === 1 ? $identityCandidates->keys()->first() : null);
+        $identityKey = $this->intake->configurationFor($s)['documento_identidad'] ?? ($identityCandidates->count() === 1 ? $identityCandidates->keys()->first() : null);
         if (! $identityKey || ! $requirements->has($identityKey)) {
             $this->error('documentos', 'intake.identityNotConfigured');
         }
@@ -193,6 +249,7 @@ final class EnrollmentSubmission
                 'archivo_id' => $file->id, 'nombre' => $file->original_name, 'estado' => 'pendiente']);
         }
         $data['numero_documento'] = Str::upper($data['numero_documento']);
+        $s->correcciones = array_map(fn ($entry) => [...$entry, 'resuelta' => true], $s->correcciones ?? []);
         $s->fill(['datos' => $data, 'estudiante_id' => $renewal?->id, 'estado' => 'enviada', 'enviada_en' => now(), 'consentimiento_en' => now(),
             'validacion_edad' => $ageValidation,
             'consentimiento_privacidad' => ['texto' => $notice, 'version' => $d['privacidad_version']]])->save();

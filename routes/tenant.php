@@ -93,6 +93,7 @@ Route::middleware([
         Route::post('/solicitud/renovacion', 'renewal')->middleware('throttle:ingreso-access');
         Route::put('/solicitud', 'save')->middleware('throttle:30,1');
         Route::post('/solicitud', 'save')->middleware('throttle:ingreso-upload');
+        Route::put('/solicitud/borrador', 'draft')->middleware('throttle:60,1');
         Route::post('/salir', 'logout');
         Route::post('/documentos/{requirement}', 'upload')->middleware('throttle:ingreso-upload');
         Route::delete('/documentos/{requirement}', 'removeDocument')->middleware('throttle:30,1');

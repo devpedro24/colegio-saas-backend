@@ -16,6 +16,7 @@ use App\Models\Tenant;
 use App\Services\Ingreso\EnrollmentIntake;
 use App\Services\Ingreso\EnrollmentRenewal;
 use App\Services\Ingreso\EnrollmentSubmission;
+use App\Services\Ingreso\EnrollmentWorkflow;
 use App\Support\OpaqueUrlToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
@@ -23,6 +24,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 final class IngresoPublicController extends Controller
@@ -68,8 +70,7 @@ final class IngresoPublicController extends Controller
 
     private function editable(Solicitud $s): void
     {
-        $this->intake->open($s->campana);
-        abort_unless(in_array($s->estado, EnrollmentIntake::EDITABLE, true), 422, __('La solicitud está en revisión o ya fue decidida.'));
+        app(EnrollmentWorkflow::class)->editable($s);
     }
 
     public function catalog()
@@ -77,6 +78,7 @@ final class IngresoPublicController extends Controller
         $this->available();
 
         return response()->json(['colegio' => tenant()->name, 'limites_envio' => EnrollmentSubmission::limits(),
+            'campanas' => Campana::where('abierta', true)->orderByDesc('id')->limit(100)->get()->map(fn ($campaign) => $this->intake->campaign($campaign)),
             'zona_horaria' => tenant()->zonaHorariaInstitucional()]);
     }
 
@@ -89,6 +91,16 @@ final class IngresoPublicController extends Controller
     {
         $c = $this->campaign($campaign);
         $this->intake->open($c);
+        if ($c->configuracion['pin_manual'] ?? true) {
+            $data = $r->validate(['email' => 'required|email|max:255', 'grado_token' => 'required|string|size:24',
+                'primer_nombre' => 'required|string|max:80', 'primer_apellido' => 'required|string|max:80',
+                'tipo_documento' => ['required', Rule::in(EnrollmentIntake::DOCUMENT_TYPES)],
+                'numero_documento' => 'required|string|regex:/^[a-zA-Z0-9-]{3,40}$/']);
+            $application = app(EnrollmentWorkflow::class)->requestPin($c, $data);
+
+            return response()->json(['radicado' => $this->intake->present($application, false)['radicado'],
+                'message' => __('Solicitud recibida. El colegio debe activar y entregar el PIN.')], 202);
+        }
         $d = $r->validate(['email' => 'required|email|max:255', 'grado_token' => 'required|string|size:24']);
         abort_unless(collect($c->configuracion['grados'])->contains('token', $d['grado_token']), 404);
         $grade = $this->intake->resolve('grado', $d['grado_token'], Grado::where('ano_lectivo_id', $c->ano_lectivo_id)->where('estado', 'activo'));
@@ -122,8 +134,17 @@ final class IngresoPublicController extends Controller
     public function consult(Request $r)
     {
         $this->available();
-        $d = $r->validate(['pin' => ['required', 'string', 'regex:/\A[0-9]{4}\z/'],
+        $d = $r->validate(['pin' => ['required', 'string', 'regex:/\A(?:[0-9]{4}|[0-9]{8})\z/'],
+            'tipo_documento' => ['required_with:numero_documento', Rule::in(EnrollmentIntake::DOCUMENT_TYPES)],
+            'numero_documento' => [Rule::requiredIf(strlen((string) $r->input('pin')) === 8), 'nullable', 'string', 'regex:/^[a-zA-Z0-9-]{3,40}$/'],
+            'campana_token' => 'nullable|string|size:24',
             'access' => ['nullable', 'string', 'regex:/\A[a-f0-9]{64}\z/']]);
+        if (isset($d['numero_documento'])) {
+            $application = app(EnrollmentWorkflow::class)->authenticate($d);
+            abort_unless($application, 422, __('La identificación o el PIN no son válidos, están bloqueados o vencieron. Consulta al colegio.'));
+
+            return $this->issueSession($r, $application);
+        }
         $pin = $d['pin'];
         $access = $d['access'] ?? $r->cookie('ingreso_challenge');
         abort_unless(is_string($access) && preg_match('/\A[a-f0-9]{64}\z/', $access), 422, __('Abre el enlace privado del correo e ingresa el PIN.'));
@@ -185,6 +206,7 @@ final class IngresoPublicController extends Controller
     {
         $d = $r->validate(['tipo_documento' => 'required|string|in:RC,TI,CC,CE,PASAPORTE,OTRO',
             'numero_documento' => 'required|string|regex:/^[a-zA-Z0-9-]{3,40}$/']);
+
         return response()->json(['data' => DB::transaction(function () use ($r, $d, $renewal) {
             $s = $this->session($r, true);
             $this->editable($s);
@@ -224,10 +246,40 @@ final class IngresoPublicController extends Controller
         return response()->json(['data' => $this->intake->present($s)]);
     }
 
+    public function draft(Request $request, EnrollmentSubmission $submission)
+    {
+        $application = DB::transaction(function () use ($request, $submission) {
+            $application = $this->session($request, true);
+            $this->editable($application);
+            $submission->draft($request, $application);
+
+            return $application;
+        });
+
+        return response()->json(['data' => $this->intake->present($application)]);
+    }
+
     public function upload(Request $r, string $requirement)
     {
-        $this->session($r);
-        abort(410, __('intake.finalSubmissionOnly'));
+        $created = null;
+        try {
+            $application = DB::transaction(function () use ($r, $requirement, &$created) {
+                $application = $this->session($r, true);
+                abort_unless($application->pin_manual, 410, __('intake.finalSubmissionOnly'));
+                $this->editable($application);
+                app(EnrollmentSubmission::class)->stage($r, $application, $requirement, $created);
+
+                return $application;
+            });
+        } catch (\Throwable $error) {
+            if ($created) {
+                Storage::disk($created->disk)->delete($created->path);
+                $created->forceDelete();
+            }
+            throw $error;
+        }
+
+        return response()->json(['data' => $this->intake->present($application)]);
     }
 
     public function removeDocument(Request $r, string $requirement)
@@ -241,6 +293,10 @@ final class IngresoPublicController extends Controller
         $s = $this->session($r);
         $d = $this->intake->resolve('ingreso-documento', $document, Documento::where('solicitud_id', $s->id));
         $file = StoredFile::where('tenant_id', tenant()->getTenantKey())->findOrFail($d->archivo_id);
+
+        if ($r->boolean('vista') && in_array($file->mime, ['application/pdf', 'image/png', 'image/jpeg'], true)) {
+            return Storage::disk($file->disk)->response($file->path, $file->original_name, ['Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff'], 'inline');
+        }
 
         return Storage::disk($file->disk)->download($file->path, $file->original_name, ['Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
     }

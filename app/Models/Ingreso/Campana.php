@@ -12,6 +12,7 @@ final class Campana extends Model
 
     protected function casts(): array
     {
-        return ['configuracion' => 'array', 'abierta' => 'boolean', 'desde' => 'date', 'hasta' => 'date'];
+        return ['configuracion' => 'array', 'abierta' => 'boolean', 'desde' => 'date', 'hasta' => 'date',
+            'apertura_en' => 'datetime', 'cierre_en' => 'datetime', 'correcciones_hasta' => 'datetime'];
     }
 }
