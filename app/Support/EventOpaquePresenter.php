@@ -10,7 +10,7 @@ use App\Models\Academico\Grupo;
 final class EventOpaquePresenter
 {
     /** @param array<int, array<string, mixed>>|null $files
-     *  @return array<string, mixed>
+     * @return array<string, mixed>
      */
     public static function present(Evento $event, ?array $files = null, ?bool $canEdit = null): array
     {
@@ -30,6 +30,7 @@ final class EventOpaquePresenter
             'categoria' => $event->categoria,
             'origen' => 'evento',
             'estado' => $event->estado,
+            'eliminado' => $event->trashed(),
             'version' => $event->version,
             'publicado_en' => $event->publicado_en?->toIso8601String(),
             'enviar_correo' => (bool) $event->enviar_correo,

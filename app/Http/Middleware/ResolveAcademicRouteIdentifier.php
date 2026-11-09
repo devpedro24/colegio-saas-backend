@@ -10,15 +10,15 @@ use App\Models\Academico\Area;
 use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\BloqueHorario;
 use App\Models\Academico\ComponenteEvaluacion;
-use App\Models\Academico\EscalaValorativa;
 use App\Models\Academico\EscalaOpcion;
+use App\Models\Academico\EscalaValorativa;
 use App\Models\Academico\EspacioFisico;
 use App\Models\Academico\Evento;
 use App\Models\Academico\Grado;
 use App\Models\Academico\Grupo;
 use App\Models\Academico\Jornada;
-use App\Models\Academico\Matricula;
 use App\Models\Academico\Materia;
+use App\Models\Academico\Matricula;
 use App\Models\Academico\MetodoAprobacion;
 use App\Models\Academico\ModeloPedagogico;
 use App\Models\Academico\Nivel;
@@ -76,7 +76,12 @@ final class ResolveAcademicRouteIdentifier
 
         $modelClass = self::MODELS[$resource] ?? null;
         abort_unless($modelClass !== null, 500, 'Recurso académico no configurado.');
-        $model = OpaqueUrlToken::find($resource, $value, $modelClass::query());
+        $query = $modelClass::query();
+        // Only the read endpoint may resolve an event tombstone; show() checks its private receipt.
+        if ($resource === 'evento' && $request->isMethod('GET')) {
+            $query->withTrashed();
+        }
+        $model = OpaqueUrlToken::find($resource, $value, $query);
         abort_unless($model !== null, 404);
         $request->route()->setParameter($parameter, (string) $model->getKey());
 

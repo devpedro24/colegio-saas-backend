@@ -14,6 +14,7 @@ use App\Models\StoredFile;
 use App\Services\EventAccess;
 use App\Services\EventAgendaCache;
 use App\Services\EventMailOutbox;
+use App\Services\EventNotifications;
 use App\Services\TaskCalendar;
 use App\Support\Audit\AuditLogger;
 use App\Support\EventOpaquePresenter;
@@ -106,7 +107,7 @@ class EventoController extends Controller
             'grupo_id' => ['nullable', 'integer'], 'page' => ['nullable', 'integer', 'min:1'],
         ]);
         abort_if(Carbon::parse($filters['desde'])->diffInDays($filters['hasta']) > 93, 422, 'Consulta como máximo tres meses a la vez.');
-        $events = $this->access->visible($request->user())->with('grupos:id,nombre')
+        $events = $this->access->visible($request->user())->with('grupos.grado')
             ->whereBetween('fecha', [$filters['desde'], $filters['hasta']])
             ->when(! empty($filters['grupo_id']), fn ($q) => $q->where(fn ($q) => $q->where('institucional', true)->orWhereHas('grupos', fn ($q) => $q->where('grupos.id', $filters['grupo_id']))))
             ->orderBy('fecha')->orderBy('hora_inicio')->orderBy('id')->paginate(200);
@@ -200,19 +201,23 @@ class EventoController extends Controller
 
     public function show(Request $request, int $id): JsonResponse
     {
-        $event = $this->access->visible($request->user())->with('grupos:id,nombre')->findOrFail($id);
-        $fileIds = DB::table('evento_archivos')->where('evento_id', $id)->pluck('stored_file_id');
+        $event = $this->access->visible($request->user())->withTrashed()->with('grupos.grado')->findOrFail($id);
+        if ($event->trashed()) {
+            abort_unless(DB::table('user_notification_updates')->where('user_id', $request->user()->id)
+                ->where('evento_id', $id)->where('event', 'calendar.event.deleted')->exists(), 404);
+        }
+        $fileIds = $event->trashed() ? collect() : DB::table('evento_archivos')->where('evento_id', $id)->pluck('stored_file_id');
         $files = StoredFile::where('tenant_id', tenant()->getKey())->whereIn('id', $fileIds)->get()->map(fn ($file) => [
             'url_token' => StoredFilePublicToken::for($file),
             'nombre' => $file->original_name, 'mime' => $file->mime, 'size' => $file->size,
             'url' => $this->storage->signedUrl($file),
         ]);
 
-        $canEdit = $event->institucional
+        $canEdit = ! $event->trashed() && ($event->institucional
             ? $request->user()->can('eventos.publicar_institucional')
                 && ($this->access->rector($request->user()) || $event->created_by === $request->user()->id)
             : $this->access->rector($request->user())
-                || ($this->access->teacher($request->user()) && $event->created_by === $request->user()->id);
+                || ($this->access->teacher($request->user()) && $event->created_by === $request->user()->id));
 
         if ($request->boolean('opaque')) {
             return response()->json(['data' => [...EventOpaquePresenter::present($event, $files->all(), $canEdit),
@@ -248,14 +253,27 @@ class EventoController extends Controller
                     || $event->enviar_correo !== ($data['enviar_correo'] ?? $event->enviar_correo),
                     422, __('El alcance y la notificación se definen antes de publicar. Crea otro evento para cambiarlos.'));
             }
-            $previous = $event?->load('grupos:id,nombre')->toArray();
+            $previous = $event?->load('grupos.grado')->toArray();
             $event ??= new Evento(['created_by' => $request->user()->id, 'estado' => 'borrador', 'version' => 0]);
             $event->fill(collect($data)->except(['grupo_ids', 'version'])->all());
+            $changed = $id && collect(['titulo', 'descripcion', 'fecha', 'hora_inicio', 'hora_fin', 'categoria'])
+                ->contains(function ($field) use ($event, $previous) {
+                    $before = $previous[$field] ?? null;
+                    $after = $event->$field;
+                    if (str_starts_with($field, 'hora_')) {
+                        return substr((string) $before, 0, 5) !== substr((string) $after, 0, 5);
+                    }
+
+                    return (string) $before !== (string) $after;
+                });
             $event->version++;
             $event->save();
             $event->grupos()->sync($data['grupo_ids'] ?? []);
-            $event->load('grupos:id,nombre');
+            $event->load('grupos.grado');
             AuditLogger::tenant($request->user(), $id ? 'UPDATE' : 'CREATE', 'evento', (string) $event->id, $previous, $event->toArray());
+            if ($changed) {
+                app(EventNotifications::class)->changed($event, 'updated');
+            }
 
             return $event;
         });
@@ -279,6 +297,7 @@ class EventoController extends Controller
                 $file = $this->storage->store($request->file('file'), 'eventos', $request->user()->email);
                 DB::table('evento_archivos')->insertOrIgnore(['evento_id' => $id, 'stored_file_id' => $file->id]);
                 AuditLogger::tenant($request->user(), 'UPLOAD', 'evento', (string) $id, null, ['archivo_id' => $file->id, 'nombre' => $file->original_name]);
+                app(EventNotifications::class)->changed($event, 'updated', 'attachment:'.$file->id);
 
                 return $file;
             });
@@ -305,6 +324,7 @@ class EventoController extends Controller
             $event->save();
             $mail->prepare($event);
             AuditLogger::tenant($request->user(), 'PUBLISH', 'evento', (string) $id, null, ['enviar_correo' => $event->enviar_correo]);
+            app(EventNotifications::class)->changed($event, 'published');
 
             return $event;
         });
@@ -330,6 +350,7 @@ class EventoController extends Controller
             $event = Evento::with('grupos')->lockForUpdate()->findOrFail($id);
             $this->access->authorizeWrite($request->user(), [...$event->toArray(), 'grupo_ids' => $event->grupos->pluck('id')->all()], $event);
             AuditLogger::tenant($request->user(), 'DELETE', 'evento', (string) $id, $event->toArray());
+            app(EventNotifications::class)->changed($event, 'deleted');
             $event->delete();
             EventoCorreo::where('evento_id', $id)->whereIn('estado', ['pendiente', 'fallido'])
                 ->update(['estado' => 'cancelado']);
