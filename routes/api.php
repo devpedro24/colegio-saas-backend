@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\ContactOptionsController;
+use App\Http\Controllers\Api\LoginAppearanceController;
 use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\Platform\AuditController;
 use App\Http\Controllers\Api\Platform\AulaOfficeCallbackController;
@@ -35,9 +36,13 @@ use Stancl\Tenancy\Middleware\InitializeTenancyByRequestData;
 */
 foreach (config('tenancy.central_domains') as $centralDomain) {
     Route::domain($centralDomain)->group(function () {
+        Route::get('/branding/login', [LoginAppearanceController::class, 'publicShow']);
+        Route::get('/branding/login/image', [LoginAppearanceController::class, 'publicImage']);
         Route::post('/login', [PlatformAuthController::class, 'login'])->middleware('throttle:account-security');
         Route::post('/forgot-password', [PasswordResetController::class, 'forgot'])->middleware('throttle:account-security');
         Route::post('/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:account-security');
+        Route::post('/forgot-password/otp', [PasswordResetController::class, 'forgotOtp'])->middleware('throttle:account-security');
+        Route::post('/reset-password/otp', [PasswordResetController::class, 'resetOtp'])->middleware('throttle:account-security');
 
         // Descarga de archivos del colegio con URL FIRMADA de corta vida
         // (RN-AC-004): la firma incluye el tenant dueno para impedir cruces.
@@ -77,6 +82,8 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
             // Ajustes de cuenta del usuario autenticado (perfil, email, clave,
             // desactivacion y vinculacion de Google).
             Route::get('/account', [AccountController::class, 'index']);
+            Route::get('/account/photo', [\App\Http\Controllers\Api\AccountPhotoController::class, 'handle']);
+            Route::post('/account/photo', [\App\Http\Controllers\Api\AccountPhotoController::class, 'handle'])->middleware('throttle:school-uploads');
             Route::get('/contact-options', ContactOptionsController::class);
             Route::put('/account/profile', [AccountController::class, 'updateProfile']);
             Route::post('/account/email', [AccountController::class, 'changeEmail']);
@@ -87,6 +94,19 @@ foreach (config('tenancy.central_domains') as $centralDomain) {
 
             // Panel del superadministrador (solo plataforma).
             Route::middleware('platform')->group(function () {
+                Route::get('/platform/support/tickets', [\App\Http\Controllers\Api\SupportTicketController::class, 'index']);
+                Route::get('/platform/support/tickets/{token}', [\App\Http\Controllers\Api\SupportTicketController::class, 'show']);
+                Route::post('/platform/support/tickets/{token}/messages', [\App\Http\Controllers\Api\SupportTicketController::class, 'reply'])->middleware('throttle:support-reply');
+                Route::put('/platform/support/tickets/{token}/state', [\App\Http\Controllers\Api\SupportTicketController::class, 'state'])->middleware('throttle:support-state');
+                Route::get('/platform/login-appearance', [LoginAppearanceController::class, 'show']);
+                Route::get('/platform/login-appearance/schools', [LoginAppearanceController::class, 'schools']);
+                Route::get('/platform/login-appearance/image', [LoginAppearanceController::class, 'image']);
+                Route::post('/platform/login-appearance', [LoginAppearanceController::class, 'update'])->middleware('throttle:school-uploads');
+                Route::delete('/platform/login-appearance', [LoginAppearanceController::class, 'update']);
+                Route::get('/colegios/{slug}/login-appearance', [LoginAppearanceController::class, 'show'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::get('/colegios/{slug}/login-appearance/image', [LoginAppearanceController::class, 'image'])->where('slug', '[a-z][a-z0-9-]*');
+                Route::post('/colegios/{slug}/login-appearance', [LoginAppearanceController::class, 'update'])->where('slug', '[a-z][a-z0-9-]*')->middleware('throttle:school-uploads');
+                Route::delete('/colegios/{slug}/login-appearance', [LoginAppearanceController::class, 'update'])->where('slug', '[a-z][a-z0-9-]*');
                 Route::get('/platform/contact-setting', [ContactSettingController::class, 'show']);
                 Route::put('/platform/contact-setting', [ContactSettingController::class, 'update']);
                 Route::prefix('platform')->group(base_path('routes/work_drafts.php'));

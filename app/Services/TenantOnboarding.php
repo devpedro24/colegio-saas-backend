@@ -18,6 +18,8 @@ final class TenantOnboarding
 
     public static function logoReadPath(): string
     {
+        $configured = DatosInstitucionales::query()->first()?->logo_principal;
+        if ($configured && Storage::disk('tenant')->exists($configured)) return $configured;
         $path = self::logoPath();
         if (Storage::disk('tenant')->exists($path)) {
             return $path;

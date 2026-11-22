@@ -38,11 +38,12 @@ class AppServiceProvider extends ServiceProvider
         $this->app->scoped(AcademicTokenIndex::class);
         $this->app->scoped(RequestPerformance::class);
         $this->app->scoped(TenantPlanAccess::class);
-        // En producción nunca se permite subir archivos sin escaneo real.
+        // Laravel interpreta STORAGE_SCANNER=null como null de PHP. El
+        // aprobador sin antivirus solo se permite en desarrollo y pruebas.
         $this->app->bind(FileScanner::class, function () {
             return match (config('storage.scanner')) {
                 'clamav' => app(ClamAvScanner::class),
-                'null' => $this->app->environment('production') ? new RejectingScanner : new NullScanner,
+                null, 'null' => $this->app->environment('local', 'testing') ? new NullScanner : new RejectingScanner,
                 default => new RejectingScanner,
             };
         });
@@ -53,6 +54,13 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        foreach (['support-create' => 5, 'support-reply' => 30, 'support-state' => 20] as $name => $attempts) {
+            RateLimiter::for($name, function (Request $request) use ($name, $attempts) {
+                $key = $name.'|'.(tenant()?->getKey() ?? 'platform').'|'.$request->user()?->getAuthIdentifier();
+                $minute = Limit::perMinute($attempts)->by($key.':minute');
+                return $name === 'support-create' ? [$minute, Limit::perHour(20)->by($key.':hour')] : $minute;
+            });
+        }
         app(ChannelManager::class)->extend('mail', fn ($app) => new SchoolMailChannel(
             new SchoolMailFactory, $app->make(Markdown::class)
         ));

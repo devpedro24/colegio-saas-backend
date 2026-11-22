@@ -46,6 +46,7 @@ use App\Http\Controllers\Api\EnrollmentRosterController;
 use App\Http\Controllers\Api\EnrollmentSettingsController;
 use App\Http\Controllers\Api\IngresoController;
 use App\Http\Controllers\Api\InstitutionContextController;
+use App\Http\Controllers\Api\LoginAppearanceController;
 use App\Http\Controllers\Api\NotificationRecordController;
 use App\Http\Controllers\Api\NotificationUpdateController;
 use App\Http\Controllers\Api\Platform\StorageController;
@@ -61,6 +62,14 @@ use App\Services\ConfigurationGate;
 use Illuminate\Support\Facades\Route;
 
 require __DIR__.'/work_drafts.php';
+Route::get('/school-branding', [\App\Http\Controllers\Api\OnboardingController::class, 'status']);
+Route::post('/school-branding/logo', [\App\Http\Controllers\Api\OnboardingController::class, 'uploadLogo'])->middleware('throttle:school-uploads');
+Route::get('/school-branding/logo', [\App\Http\Controllers\Api\OnboardingController::class, 'logo']);
+Route::get('/subscription', [\App\Http\Controllers\Api\SubscriptionOffersController::class, 'current']);
+Route::get('/login-appearance', [LoginAppearanceController::class, 'show']);
+Route::get('/login-appearance/image', [LoginAppearanceController::class, 'image']);
+Route::post('/login-appearance', [LoginAppearanceController::class, 'update'])->middleware('throttle:school-uploads');
+Route::delete('/login-appearance', [LoginAppearanceController::class, 'update']);
 Route::get('/notification-records', [NotificationRecordController::class, 'index']);
 Route::get('/notification-updates', [NotificationUpdateController::class, 'index']);
 Route::post('/work-draft-files/response/{resourceToken}/{token}', [WorkDraftFileController::class, 'storeResponse'])

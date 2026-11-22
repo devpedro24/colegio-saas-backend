@@ -46,6 +46,7 @@ final class AccountPresenter
 
         return [
             'id' => PublicIdentityToken::forUser($user), 'name' => $user->name, 'email' => $user->email,
+            'avatar_url' => \App\Models\AccountPhoto::url($user),
             'phone' => $user->phone, 'google_email' => ($source ?? $user)->google_email,
             'email_verified' => ($source ?? $user)->email_verified_at !== null,
             'tenant_channel' => tenant() ? TenantChannelName::tokenForId((string) tenant()->getTenantKey()) : null,

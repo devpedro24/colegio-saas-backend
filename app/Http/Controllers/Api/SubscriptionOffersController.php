@@ -15,6 +15,22 @@ use Illuminate\Http\Request;
 /** Authenticated, read-only comparison. The school comes only from the session/host. */
 final class SubscriptionOffersController extends Controller
 {
+    public function current(Request $request): JsonResponse
+    {
+        abort_unless(tenant() && ($request->user()->hasRole('rector') || $request->user()->esSuperadminPlataforma()), 403);
+        $owner = SchoolSubscription::owner(tenant());
+        $effective = SchoolSubscription::effective($owner);
+        $contract = $owner->commercial;
+        $quote = is_array($contract) && $effective ? ($contract['quote'] ?? PlanPricing::quote(Plan::where('key', $effective->key)->firstOrFail(), $contract)) : null;
+        return response()->json(['school' => $owner->name,
+            'labels' => array_column(PlanCatalog::features(), 'label', 'key'),
+            'plan' => $effective ? ['name' => $effective->name, 'features' => $effective->features, 'storage_gb' => $effective->storage_gb] : null,
+            'contract' => is_array($contract) ? ['students' => $contract['students'], 'sites' => $contract['sites'], 'addons' => $contract['addons'] ?? []] : null,
+            'quote' => $quote,
+            'storage_used' => (int) \App\Models\StoredFile::whereIn('tenant_id', [$owner->id, ...$owner->sedes()->pluck('id')->all()])->sum('size'),
+        ])->header('Cache-Control', 'private, no-store');
+    }
+
     public function __invoke(Request $request): JsonResponse
     {
         $selection = $request->validate(['students' => ['sometimes', 'integer', 'min:30', 'max:100000'],

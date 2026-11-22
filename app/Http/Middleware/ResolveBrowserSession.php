@@ -77,7 +77,8 @@ final class ResolveBrowserSession
 
     private function publicCredentialRoute(Request $request): bool
     {
-        return $request->is('api/ingreso-publico/*', 'api/login', 'api/forgot-password', 'api/reset-password',
+        return $request->is('api/ingreso-publico/*', 'api/login', 'api/forgot-password', 'api/forgot-password/otp', 'api/reset-password', 'api/reset-password/otp',
+            'api/branding/login', 'api/branding/login/image',
             'api/account/google/callback');
     }
 

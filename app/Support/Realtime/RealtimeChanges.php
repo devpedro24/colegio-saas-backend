@@ -64,6 +64,8 @@ final class RealtimeChanges
 
     public static function resourceForPath(string $path): string
     {
+        if (preg_match('#^/?(?:api/)?(?:platform/)?support(?:/|$|\?)#', $path)) return 'support';
+        if (preg_match('#/(?:login-appearance)(?:/|$|\?)#', $path)) return 'login-appearance';
         if (preg_match('#^/?(?:api/)?evaluacion/(planillas|componentes|actividades|recuperaciones|areas|anuales)(?:/|$|\?)#', $path)) {
             return 'grades';
         }
@@ -107,7 +109,7 @@ final class RealtimeChanges
             'correo-institucional' => 'school-mail',
             'siee', 'config' => 'academic-config',
             'eventos' => 'events',
-            'onboarding', 'branding' => 'institution',
+            'onboarding', 'branding', 'school-branding' => 'institution',
             'usuarios' => 'users',
             'rbac' => 'rbac',
             'colegios' => 'schools',

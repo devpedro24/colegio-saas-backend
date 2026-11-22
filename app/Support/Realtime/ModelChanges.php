@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Support\Realtime;
 
 use App\Models\StoredFile;
+use App\Models\AccountPhoto;
+use App\Models\LoginAppearance;
 use App\Models\Tenant;
 use App\Services\EventAgendaCache;
 use Illuminate\Database\Eloquent\Model;
@@ -29,6 +31,24 @@ final class ModelChanges
         }
         $changes = app(RealtimeChanges::class);
         $connection = $model->getConnection();
+        if ($model instanceof \App\Models\SupportTicket || $model instanceof \App\Models\SupportMessage) {
+            $owner = (string) $model->tenant_id;
+            foreach ([$owner, ...Tenant::where('parent_id', $owner)->pluck('id')->all()] as $scope) {
+                $changes->record($scope, 'support', $connection);
+            }
+            $changes->record(null, 'support', $connection);
+            return;
+        }
+        if ($model instanceof AccountPhoto) {
+            $changes->record(tenant()?->getKey(), 'account', $connection);
+            return;
+        }
+        if ($model instanceof LoginAppearance) {
+            $scope = str_starts_with($model->key, 'school:') ? substr($model->key, 7) : null;
+            $changes->record($scope, 'login-appearance', $connection);
+            if ($scope !== null) $changes->record(null, 'login-appearance', $connection);
+            return;
+        }
         $tenantId = $connection->getName() === 'tenant' ? tenant()?->getKey() : null;
         if ($tenantId !== null && in_array($table, ['eventos', 'grupos', 'matriculas', 'asignaciones_docentes', 'users'], true)) {
             $invalidate = fn () => app(EventAgendaCache::class)->invalidate((string) $tenantId);

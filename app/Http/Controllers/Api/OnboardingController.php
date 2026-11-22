@@ -21,7 +21,11 @@ class OnboardingController extends Controller
 {
     public function status(Request $request): JsonResponse
     {
-        return response()->json(TenantOnboarding::status($request->user()));
+        $status = TenantOnboarding::status($request->user());
+        if ($request->user()->esSuperadminPlataforma() && $status['logo_url']) {
+            $status['logo_url'] = str_replace('/branding/logo', '/school-branding/logo', $status['logo_url']);
+        }
+        return response()->json($status);
     }
 
     public function institution(Request $request): JsonResponse
@@ -58,7 +62,8 @@ class OnboardingController extends Controller
 
     public function uploadLogo(Request $request): JsonResponse
     {
-        abort_unless($request->user()->hasRole('rector'), 403);
+        abort_unless($request->user()->esSuperadminPlataforma() ||
+            ($request->user()->hasRole('rector') && $request->user()->can('academico.configurar')), 403);
         abort_if($request->user()->must_change_password, 423, 'Cambia primero la contraseña temporal.');
 
         $settings = $request->validate([
@@ -79,7 +84,10 @@ class OnboardingController extends Controller
             ]);
         }
 
+        $quarantine = \App\Support\Storage\StorageService::tenantFolder(tenant()).'/branding/quarantine/'.bin2hex(random_bytes(16));
         try {
+            abort_unless(Storage::disk('tenant')->put($quarantine, $sourceBytes), 500);
+            app(\App\Support\Storage\FileScanner::class)->scan('tenant', $quarantine);
             $processed = LogoProcessor::process($sourceBytes,
                 (string) ($settings['aspect'] ?? 'auto'),
                 (float) ($settings['zoom'] ?? 1),
@@ -87,13 +95,31 @@ class OnboardingController extends Controller
                 (float) ($settings['offset_y'] ?? 0));
         } catch (\InvalidArgumentException $exception) {
             throw ValidationException::withMessages(['logo' => [$exception->getMessage()]]);
+        } catch (\App\Support\Storage\StorageException $exception) {
+            throw ValidationException::withMessages(['logo' => [$exception->getMessage()]]);
+        } finally {
+            Storage::disk('tenant')->delete($quarantine);
         }
 
-        Storage::disk('tenant')->put(TenantOnboarding::logoPath(), $processed);
+        $temporary = tempnam(sys_get_temp_dir(), 'school-logo-');
+        try {
+            file_put_contents($temporary, $processed);
+            $stored = app(\App\Support\Storage\StorageService::class)->store(
+                new \Illuminate\Http\UploadedFile($temporary, 'logo.png', 'image/png', null, true),
+                'branding/logos', $request->user()->email, tenant(), 5 * 1024 * 1024);
+        } catch (\App\Support\Storage\StorageException $exception) {
+            throw ValidationException::withMessages(['logo' => [$exception->getMessage()]]);
+        } finally {
+            if (is_file($temporary)) unlink($temporary);
+        }
+        $previous = DatosInstitucionales::query()->first()?->logo_principal;
         DatosInstitucionales::query()->firstOrNew([])->fill([
-            'logo_principal' => TenantOnboarding::logoPath(),
+            'logo_principal' => $stored->path,
             'logo_version' => hash('sha256', $processed),
         ])->save();
+        if ($previous && $previous !== $stored->path) {
+            \App\Models\StoredFile::where('tenant_id', tenant()->getKey())->where('path', $previous)->delete();
+        }
         if (TenantOnboarding::institutionalComplete()) {
             ConfigurationGate::maybeActivate($request->user());
         }

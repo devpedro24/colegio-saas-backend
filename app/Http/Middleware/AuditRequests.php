@@ -21,7 +21,7 @@ class AuditRequests
             return $response;
         }
         $actor = $request->user();
-        if ($actor !== null || $request->is('api/login', 'api/forgot-password', 'api/reset-password')) {
+        if ($actor !== null || $request->is('api/login', 'api/forgot-password', 'api/forgot-password/otp', 'api/reset-password', 'api/reset-password/otp')) {
             $method = tenancy()->initialized ? 'tenant' : 'platform';
             $action = $response->getStatusCode() >= 400 ? 'REQUEST_DENIED' : ($request->isMethod('GET') ? 'READ' : 'REQUEST');
             AuditLogger::$method($actor, $action, 'http', null, null, [

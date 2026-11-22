@@ -14,6 +14,7 @@ El token **no es secreto ni reemplaza permisos**. El cifrado de un ID en el nave
 - Cuenta y tiempo real: identidad pública opaca, sesión de navegador con cookies HttpOnly y CSRF, canales privados por token de colegio y cierre de sesiones cuando se inactiva la cuenta.
 - Archivos: respuesta y descarga firmada con selector público; cabeceras de descarga `attachment` y `nosniff`; permiso `archivos.subir` y límite de cargas por usuario/colegio. La producción bloquea cargas sin analizador antivirus activo. ClamAV se conecta mediante INSTREAM a un daemon privado configurado con `STORAGE_SCANNER=clamav`.
 - Entorno local: Vite y Reverb enlazan por defecto a `127.0.0.1`, con orígenes y hosts limitados.
+- Selección del analizador (corrección del 20 de noviembre de 2026): Laravel interpreta `STORAGE_SCANNER=null` como un valor nulo de PHP. El binding reconoce ese valor y el texto `null` exclusivamente en `local` y `testing`, donde permite probar cargas sin antivirus real. En `production`, `staging` u otro entorno ambos valores bloquean las cargas; los nombres desconocidos también bloquean. `STORAGE_SCANNER=clamav` conserva el escaneo real y rechaza si el servicio falla. Las validaciones de tipo, tamaño y cuota siguen aplicándose en desarrollo.
 - Dependencias: se actualizaron versiones compatibles de Laravel, CommonMark, Flysystem, Axios, React Router y Vite; `composer audit` y `npm audit` no reportan avisos al cerrar este cambio.
 
 ## Pendiente para cerrar el contrato en toda la plataforma

@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ContactOptionsController;
 use App\Http\Controllers\Api\IngresoPublicController;
+use App\Http\Controllers\Api\LoginAppearanceController;
 use App\Http\Controllers\Api\MfaController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PasswordResetController;
@@ -74,6 +75,8 @@ Route::middleware([
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:account-security');
     Route::post('/forgot-password', [PasswordResetController::class, 'forgot'])->middleware('throttle:account-security');
     Route::post('/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:account-security');
+    Route::post('/forgot-password/otp', [PasswordResetController::class, 'forgotOtp'])->middleware('throttle:account-security');
+    Route::post('/reset-password/otp', [PasswordResetController::class, 'resetOtp'])->middleware('throttle:account-security');
 
     // Callback de Google (anclar cuenta): PUBLICO (lo llama Google tras el
     // consentimiento). No puede ir bajo auth:sanctum.
@@ -84,6 +87,8 @@ Route::middleware([
     // ningun colegio registrado).
     Route::get('/tenant-status', fn () => response()->json(['ok' => true]));
     Route::get('/branding/logo', [OnboardingController::class, 'logo']);
+    Route::get('/branding/login', [LoginAppearanceController::class, 'publicShow']);
+    Route::get('/branding/login/image', [LoginAppearanceController::class, 'publicImage']);
 
     Route::prefix('ingreso-publico')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoPublicController::class)->group(function () {
         Route::get('/catalogo', 'catalog')->middleware('throttle:60,1');
@@ -103,9 +108,16 @@ Route::middleware([
     });
 
     Route::middleware(['auth:sanctum', EnsureMfaReady::class, UseSchoolAccount::class])->group(function () {
+        Route::get('/support/tickets', [\App\Http\Controllers\Api\SupportTicketController::class, 'index']);
+        Route::post('/support/tickets', [\App\Http\Controllers\Api\SupportTicketController::class, 'store'])->middleware('throttle:support-create');
+        Route::get('/support/tickets/{token}', [\App\Http\Controllers\Api\SupportTicketController::class, 'show']);
+        Route::post('/support/tickets/{token}/messages', [\App\Http\Controllers\Api\SupportTicketController::class, 'reply'])->middleware('throttle:support-reply');
+        Route::put('/support/tickets/{token}/state', [\App\Http\Controllers\Api\SupportTicketController::class, 'state'])->middleware('throttle:support-state');
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/onboarding/status', [OnboardingController::class, 'status']);
+        Route::get('/account/photo', [\App\Http\Controllers\Api\AccountPhotoController::class, 'handle']);
+        Route::post('/account/photo', [\App\Http\Controllers\Api\AccountPhotoController::class, 'handle'])->middleware('throttle:school-uploads');
         Route::put('/onboarding/institution', [OnboardingController::class, 'institution']);
         Route::post('/onboarding/logo', [OnboardingController::class, 'uploadLogo'])->middleware('throttle:school-uploads');
         Route::post('/account/password', [AccountController::class, 'changePassword']);
