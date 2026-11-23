@@ -1,5 +1,9 @@
 # Emisión individual de boletines — incremento local (14-10-2026)
 
+## Rectificación de una equivalencia o valoración institucional
+
+Al generar el boletín después de rectificar una definitiva aprobada, se comparan los resultados reconocidos con la última emisión de la misma matrícula y contexto que ya tiene PDF. Si cambió una equivalencia o una valoración institucional rectificada, el nuevo documento registra la revisión anterior y la versión de la decisión. El historial ofrece al personal autorizado el enlace al PDF anterior. Se mantienen los permisos de emisión, archivo y publicación. La plantilla base identifica la rectificación en el cuerpo del PDF y los diseños personalizados la identifican en las propiedades del archivo.
+
 ## Flujo vigente desde el 23 de octubre de 2026
 
 - `POST /boletines/emisiones/{matriculaToken}/emitir` recibe la misma selección de período/final y plantilla, requiere `boletines.emisiones.preparar`, prepara el snapshot y genera directamente el PDF privado. No requiere aprobar previamente la observación ni una aprobación humana del PDF. Los estados internos históricos se conservan: `aprobado` significa PDF generado en la interfaz nueva.

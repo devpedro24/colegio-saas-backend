@@ -89,6 +89,9 @@ final class BulletinCanvasRenderer
         $pdf->render();
         abort_unless($pdf->getCanvas()->get_page_count() === count($pageSizes), 422,
             __('La paginación del PDF no coincide con el boletín.'));
+        if (isset($snapshot['rectificacion'])) {
+            $pdf->getCanvas()->add_info('Subject', 'Boletín rectificado de la revisión '.$snapshot['rectificacion']['revision_anterior']);
+        }
         $bytes = $pdf->output();
         abort_unless(str_starts_with($bytes, '%PDF-'), 500);
 

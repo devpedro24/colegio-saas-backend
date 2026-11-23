@@ -36,7 +36,10 @@ final class EscalaVisualService
     public function decorate(array $result, Collection $options, ?string $provisional = null): array
     {
         $exact = $result['exact_value'] ?? null;
-        if ($exact !== null) {
+        if (isset($result['categoria_reconocida'])) {
+            $choice = $options->firstWhere('nombre', $result['categoria_reconocida']);
+            $result['valoracion'] = $choice ? EscalaOpcionController::present($choice) : ['nombre' => $result['categoria_reconocida']];
+        } elseif ($exact !== null) {
             $choice = $this->nearestChoice((string) $exact, $options);
             $result['valoracion'] = EscalaOpcionController::present($choice);
             // La categoría describe el resultado; la aprobación ya fue resuelta

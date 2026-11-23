@@ -132,10 +132,16 @@ final class AulaArchivoController extends Controller
             $this->access->readResource($request->user(), $resource);
         } else {
             $submission = AulaEntrega::findOrFail($attachment->entrega_id);
-            $resource = $submission->recurso;
-            $this->access->view($request->user(), $resource->seccion->aula);
-            if ($this->access->enrollment($request->user(), $resource->seccion->aula)?->id !== $submission->matricula_id) {
-                $this->access->manages($request->user(), $resource->seccion->aula, 'aula.entregas.calificar');
+            $user = $request->user();
+            $aula = $submission->recurso?->seccion?->aula;
+            abort_unless($aula, 404);
+            if ($this->access->canView($user, $aula)) {
+                $this->access->view($user, $aula);
+                if ($this->access->enrollment($user, $aula)?->id !== $submission->matricula_id) {
+                    $this->access->manages($user, $aula, 'aula.entregas.calificar');
+                }
+            } else {
+                abort_unless($this->access->previousSubmissions($user)->whereKey($submission->id)->exists(), 403);
             }
         }
         $stored = StoredFilePublicToken::findForTenant((string) tenant()->id, $attachment->archivo_token);

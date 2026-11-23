@@ -49,16 +49,17 @@ final class AulaController extends Controller
         $assigned = $user->can('aula.ver_asignadas');
         $own = $user->can('aula.ver_propias');
         abort_unless($all || $assigned || $own, 403);
-        $years = AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado']);
+        $years = AnoLectivo::orderByDesc('fecha_inicio')->get(['id', 'nombre', 'estado', 'acceso_estudiantil']);
         $year = $request->filled('ano_token')
             ? Token::find('ano-lectivo', $request->query('ano_token'), AnoLectivo::query())
             : ($years->firstWhere('estado', 'en_curso') ?? $years->first());
         abort_if($request->filled('ano_token') && ! $year, 404);
+        $own = $own && $year && ($year->acceso_estudiantil || $year->estaCerrado());
         $cards = collect();
         $groups = collect();
         $selectedGroup = null;
         $requiresGroup = $all;
-        if ($year) {
+        if ($year && ($all || $assigned || $own)) {
             $groupQuery = DB::table('grupos as g')
                 ->join('grados as gr', 'gr.id', '=', 'g.grado_id')
                 ->where('g.ano_lectivo_id', $year->id)->whereNull('g.deleted_at')
@@ -143,7 +144,30 @@ final class AulaController extends Controller
             'grupo_seleccionado' => $selectedGroup ? Token::for('grupo', $selectedGroup) : null,
             'puede_gestionar' => $user->can('aula.recursos.gestionar'),
             'puede_configurar' => $user->hasRole('rector') && $user->can('aula.configurar'),
+            'tiene_entregas_anteriores' => $own && $year
+                && $this->access->previousSubmissions($user)->where('m.ano_lectivo_id', $year->id)->exists(),
         ]]);
+    }
+
+    public function historialEntregas(Request $request): JsonResponse
+    {
+        $history = $this->access->previousSubmissions($request->user());
+        $data = $request->validate(['ano_token' => ['required', 'string', 'size:24'], 'page' => ['sometimes', 'integer', 'min:1']]);
+        $year = Token::find('ano-lectivo', $data['ano_token'], AnoLectivo::query());
+        abort_unless($year, 404);
+        $page = $history->where('m.ano_lectivo_id', $year->id)
+            ->join('grupos as g', 'g.id', '=', 'a.grupo_id')->join('grados as gr', 'gr.id', '=', 'g.grado_id')
+            ->join('materias as materia', 'materia.id', '=', 'a.materia_id')
+            ->with('adjuntos:id,entrega_id,nombre')
+            ->orderByDesc('aula_entregas.entregada_at')->orderByDesc('aula_entregas.id')
+            ->simplePaginate(10, ['aula_entregas.*', 'r.titulo', 'g.nombre as grupo', 'gr.nombre as grado', 'materia.nombre as materia']);
+
+        return response()->json(['data' => $page->getCollection()->map(fn ($item) => [
+            'token' => Token::for('aula-entrega', $item->id), 'titulo' => $item->titulo,
+            'grado' => $item->grado, 'grupo' => $item->grupo, 'materia' => $item->materia,
+            'entregada_at' => $item->entregada_at, 'texto' => $item->texto, 'retroalimentacion' => $item->retroalimentacion,
+            'adjuntos' => $item->adjuntos->map(fn ($file) => ['token' => Token::for('aula-adjunto', $file->id), 'nombre' => $file->nombre]),
+        ]), 'hay_mas' => $page->hasMorePages()])->header('Cache-Control', 'private, no-store');
     }
 
     public function configuracion(Request $request): JsonResponse

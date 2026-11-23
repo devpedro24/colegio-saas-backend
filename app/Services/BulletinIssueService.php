@@ -10,8 +10,14 @@ use App\Models\Academico\DatosInstitucionales;
 use App\Models\Academico\Matricula;
 use App\Models\Academico\Periodo;
 use App\Models\Academico\PromocionAcademica;
+use App\Services\Ingreso\CertifiedExternalGrades;
+use App\Services\Ingreso\EntryAssessments;
+use App\Services\Ingreso\GradeSourceDecisions;
+use App\Support\AcademicDecimal;
 use App\Support\OpaqueUrlToken;
 use App\Support\StudentRosterName;
+use Brick\Math\BigRational;
+use Brick\Math\RoundingMode;
 use Dompdf\Dompdf;
 use Dompdf\Options;
 use Illuminate\Support\Facades\DB;
@@ -81,15 +87,30 @@ final class BulletinIssueService
 
         $report = $this->book->report($enrollment);
         abort_if($report['advertencias'] !== [], 422, 'El informe tiene asignaturas pendientes en el currículo.');
-        $subjects = collect($report['asignaturas']);
+        $subjects = collect($report['asignaturas'])->sortBy('nombre')->values();
         abort_if($subjects->isEmpty(), 422, 'No hay asignaturas evaluables para este estudiante.');
         $selectResult = static fn (array $row): array => $period
             ? (collect($row['periodos'])->firstWhere('periodo_id', $period->id) ?? ['estado' => 'pendiente'])
             : $row['anual'];
-        $subjectRows = $subjects->map(fn (array $row): array => [
-            'nombre' => $row['nombre'], 'peso_area' => $row['peso_area'],
-            'resultado' => $selectResult($row),
-        ])->sortBy('nombre')->values()->all();
+        $periodNames = collect($report['periodos'])->pluck('nombre', 'id');
+        $subjectRows = $subjects->map(function (array $row) use ($selectResult, $period, $periodNames): array {
+            $recognized = [];
+            foreach ($row['periodos'] as $result) {
+                $basis = $result['resultado_original'] ?? $result;
+                $sourceKey = match ($basis['origen'] ?? null) {
+                    'consolidacion' => 'consolidacion_token', 'traslado' => 'traslado_token', 'valoracion' => 'valoracion_token', default => 'equivalencia_token',
+                };
+                if (isset($basis[$sourceKey]) && (! $period || $result['periodo_id'] === $period->id)) {
+                    $recognized[] = ['periodo' => $periodNames->get($result['periodo_id']), $sourceKey => $basis[$sourceKey],
+                        'valor' => $basis['display_value'], 'categoria' => $basis['categoria_reconocida']];
+                }
+            }
+            $subject = ['nombre' => $row['nombre'], 'peso_area' => $row['peso_area'], 'resultado' => $selectResult($row)];
+            if ($recognized !== []) {
+                $subject['periodos_reconocidos'] = $recognized;
+            }
+            return $subject;
+        })->all();
         $areaRows = collect($report['areas'])->map(fn (array $row): array => [
             'nombre' => $row['nombre'], 'resultado' => $selectResult($row),
         ])->sortBy('nombre')->values()->all();
@@ -136,8 +157,201 @@ final class BulletinIssueService
             $snapshot['canvas_runtime'] = app(BulletinCanvasRuntime::class)->build($enrollment, $period, $report, $snapshot, $logo);
         }
 
-        return ['snapshot' => $snapshot,
-            'huella' => hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)), 'logo' => $logo];
+        // The audit reference is archival metadata. Adding it must not invalidate an unchanged, previously issued PDF.
+        $fingerprint = hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR));
+        $choices = DB::table(CertifiedExternalGrades::RESULTS.' as r')
+            ->join(GradeSourceDecisions::TABLE.' as d', 'd.resultado_id', '=', 'r.id')
+            ->where('r.matricula_id', $enrollment->id)
+            ->when($period, fn ($q) => $q->where('r.periodo_id', $period->id))
+            ->where('d.id', fn ($q) => $q->from(GradeSourceDecisions::TABLE.' as h')->select('h.id')
+                ->whereColumn('h.resultado_id', 'r.id')->orderByDesc('h.version')->limit(1))
+            ->get(['r.materia_id', 'r.periodo_id', 'r.token as resultado_token', 'd.fuente', 'd.version'])
+            ->keyBy(fn ($row) => $row->materia_id.':'.$row->periodo_id);
+        foreach ($subjects as $index => $subject) {
+            $subjectId = $subject['materia_id'];
+            if (!$period) {
+                $snapshot['asignaturas'][$index]['materia_ref'] = $subjectId;
+            }
+            foreach ($subject['periodos'] as $grade) {
+                $id = $grade['periodo_id'];
+                $decision = $choices->get($subjectId.':'.$id);
+                $choice = $decision ? ['resultado_token' => $decision->resultado_token,
+                    'fuente' => $decision->fuente, 'version' => $decision->version] : null;
+                if ($period) {
+                    if ($period->id === $id && $choice) {
+                        $snapshot['asignaturas'][$index]['eleccion_definitiva'] = $choice;
+                    }
+                    continue;
+                }
+                $basis = $grade['resultado_original'] ?? $grade;
+                $snapshot['asignaturas'][$index]['definitivas_periodo']['periodo:'.$id] = [
+                    'periodo' => $periodNames->get($id), 'valor' => $grade['categoria_reconocida'] ?? $grade['display_value'],
+                    'fuente' => $this->gradeSource($basis), 'resultado_token' => $basis['equivalencia_token'] ?? $choice['resultado_token'] ?? null,
+                    'eleccion' => $choice,
+                ];
+            }
+        }
+        return ['snapshot' => $snapshot, 'huella' => $fingerprint, 'logo' => $logo];
+    }
+
+    public function correctedGrades(Matricula $enrollment, array $previous, array $current): array
+    {
+        return [
+            ...$this->periodSourceChanges($previous, $current),
+            ...$this->annualSourceChanges($previous, $current),
+            ...$this->changesBySource($enrollment, $previous, $current, 'equivalencia_token', CertifiedExternalGrades::RESULTS),
+            ...$this->changesBySource($enrollment, $previous, $current, 'valoracion_token', EntryAssessments::TABLE),
+        ];
+    }
+
+    private function periodSourceChanges(array $previous, array $current): array
+    {
+        if ($current['tipo'] !== 'periodo' || $previous['contexto'] !== $current['contexto']) {
+            return [];
+        }
+        $oldSubjects = collect($previous['asignaturas']);
+        $byName = $oldSubjects->groupBy('nombre');
+        $byToken = $oldSubjects->keyBy(function ($subject) {
+            $result = $subject['resultado']['resultado_original'] ?? $subject['resultado'];
+            return $subject['eleccion_definitiva']['resultado_token'] ?? $result['equivalencia_token'] ?? '';
+        });
+        $nameCounts = array_count_values(array_column($current['asignaturas'], 'nombre'));
+        $changes = [];
+        foreach ($current['asignaturas'] as $subject) {
+            $grade = $subject['resultado'];
+            $choice = $subject['eleccion_definitiva'] ?? null;
+            if (!$choice) {
+                continue;
+            }
+            $name = $subject['nombre'];
+            $token = $choice['resultado_token'];
+            $old = $byToken->get($token);
+            // Older school-grade PDFs have no certificate token. Match only an unambiguous subject in this period.
+            if (!$old && $nameCounts[$name] === 1 && $byName->get($name)?->count() === 1) {
+                $old = $byName[$name]->first();
+            }
+            if (!$old) {
+                continue;
+            }
+            $prior = $old['resultado'];
+            $priorBasis = $prior['resultado_original'] ?? $prior;
+            $priorToken = $old['eleccion_definitiva']['resultado_token'] ?? $priorBasis['equivalencia_token'] ?? null;
+            $priorSource = $this->gradeSource($priorBasis);
+            if (($priorToken !== null && $priorToken !== $token) || !$priorSource || $priorSource === $choice['fuente']) {
+                continue;
+            }
+            $changes[] = ['materia' => $name, 'periodo' => $current['periodo']['nombre'],
+                'anterior' => $prior['categoria_reconocida'] ?? $prior['display_value'],
+                'vigente' => $grade['categoria_reconocida'] ?? $grade['display_value'],
+                'fuente_anterior' => $priorSource, 'fuente_vigente' => $choice['fuente'],
+                'eleccion_resultado_token' => $token, 'eleccion_version' => $choice['version']];
+        }
+        return $changes;
+    }
+
+    private function gradeSource(array $result): ?string
+    {
+        return match ($result['origen'] ?? null) {
+            'externa' => 'certificado',
+            'colegio', 'valoracion', 'manual', null => 'colegio',
+            default => null,
+        };
+    }
+
+    private function annualSourceChanges(array $previous, array $current): array
+    {
+        if ($current['contexto'] !== 'final' || $previous['contexto'] !== 'final') {
+            return [];
+        }
+        $old = collect($previous['asignaturas']);
+        $byId = $old->keyBy('materia_ref');
+        $byName = $old->groupBy('nombre');
+        $names = array_count_values(array_column($current['asignaturas'], 'nombre'));
+        $changes = [];
+        foreach ($current['asignaturas'] as $subject) {
+            $name = $subject['nombre'];
+            $prior = isset($subject['materia_ref']) ? $byId->get($subject['materia_ref']) : null;
+            if (!$prior && $names[$name] === 1 && $byName->get($name)?->count() === 1) {
+                $candidate = $byName[$name]->first();
+                $prior = isset($candidate['materia_ref']) ? null : $candidate;
+            }
+            if (!$prior) {
+                continue;
+            }
+            foreach ($subject['definitivas_periodo'] ?? [] as $ref => $term) {
+                $choice = $term['eleccion'];
+                if (!$choice || $term['fuente'] !== $choice['fuente']) {
+                    continue;
+                }
+                $before = isset($prior['definitivas_periodo']) ? ($prior['definitivas_periodo'][$ref] ?? null)
+                    : $this->archivedAnnualTerm($prior, $ref, $term['periodo'], $choice['resultado_token']);
+                if (empty($before['fuente']) || $before['fuente'] === $term['fuente']
+                    || (isset($before['resultado_token']) && $before['resultado_token'] !== $choice['resultado_token'])) {
+                    continue;
+                }
+                $changes[] = ['materia' => $name, 'periodo' => $term['periodo'],
+                    'anterior' => $before['valor'], 'vigente' => $term['valor'],
+                    'fuente_anterior' => $before['fuente'], 'fuente_vigente' => $term['fuente'],
+                    'anual_anterior' => $prior['resultado']['display_value'], 'anual_vigente' => $subject['resultado']['display_value'],
+                    'eleccion_resultado_token' => $choice['resultado_token'], 'eleccion_version' => $choice['version']];
+            }
+        }
+        return $changes;
+    }
+
+    /** Read the period evidence frozen inside a final issued before per-period sources were archived. */
+    private function archivedAnnualTerm(array $subject, string $reference, string $name, string $certificateToken): ?array
+    {
+        $annual = $subject['resultado']['resultado_original'] ?? $subject['resultado'];
+        $input = collect($annual['trace']['inputs'] ?? [])->firstWhere('reference', $reference);
+        if (!isset($input['value'])) {
+            return null;
+        }
+        $records = collect($subject['periodos_reconocidos'] ?? []);
+        $recognized = $records->firstWhere('equivalencia_token', $certificateToken) ?? $records->firstWhere('periodo', $name);
+        if ($recognized && !isset($recognized['equivalencia_token']) && !isset($recognized['valoracion_token'])) {
+            return null;
+        }
+        return ['fuente' => isset($recognized['equivalencia_token']) ? 'certificado' : 'colegio',
+            'resultado_token' => $recognized['equivalencia_token'] ?? null,
+            'valor' => $recognized['categoria'] ?? (string) BigRational::of($input['value'])
+                ->toScale(SieeConfiguration::RESULT_DECIMALS, RoundingMode::HalfDown)];
+    }
+
+    private function changesBySource(Matricula $enrollment, array $previous, array $current, string $sourceKey, string $table): array
+    {
+        $final = $current['contexto'] === 'final' && $previous['contexto'] === 'final';
+        $prior = [];
+        foreach ($previous['asignaturas'] as $subject) {
+            foreach ($subject['periodos_reconocidos'] ?? [] as $grade) {
+                if (isset($grade[$sourceKey])) {
+                    $prior[$grade[$sourceKey]] = [...$grade, 'anual' => $subject['resultado']['display_value'] ?? null];
+                }
+            }
+        }
+        $changes = [];
+        foreach ($current['asignaturas'] as $subject) {
+            foreach ($subject['periodos_reconocidos'] ?? [] as $grade) {
+                $token = $grade[$sourceKey] ?? null;
+                $old = $prior[$token] ?? null;
+                if ($old && (AcademicDecimal::normalize($old['valor']) !== AcademicDecimal::normalize($grade['valor'])
+                    || $old['categoria'] !== $grade['categoria'])) {
+                    $changes[$token] = ['materia' => $subject['nombre'], 'periodo' => $grade['periodo'],
+                        'anterior' => $old['categoria'] ?? $old['valor'], 'vigente' => $grade['categoria'] ?? $grade['valor']];
+                    if ($final && isset($old['anual'], $subject['resultado']['display_value'])) {
+                        $changes[$token]['anual_anterior'] = $old['anual'];
+                        $changes[$token]['anual_vigente'] = $subject['resultado']['display_value'];
+                    }
+                }
+            }
+        }
+        if (! $changes) {
+            return [];
+        }
+        // The result and version together identify the audited correction and its private evidence.
+        return DB::table($table)->where('matricula_id', $enrollment->id)
+            ->whereIn('token', array_keys($changes))->where('version', '>', 0)->orderBy('id')->get(['token','version'])
+            ->map(fn ($row) => [...$changes[$row->token], $sourceKey => $row->token, 'version' => $row->version])->all();
     }
 
     private function rosterName(Matricula $enrollment): string

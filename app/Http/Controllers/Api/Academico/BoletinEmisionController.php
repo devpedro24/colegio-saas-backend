@@ -39,7 +39,7 @@ final class BoletinEmisionController extends Controller
             ->when(! $staff, fn ($query) => $query->where('estado', 'publicado'))
             ->orderByDesc('id')->paginate(20);
 
-        return response()->json(['data' => $rows->getCollection()->map(fn (BoletinEmision $row) => $this->present($row)),
+        return response()->json(['data' => $rows->getCollection()->map(fn (BoletinEmision $row) => $this->present($row, $staff)),
             'pagina' => $rows->currentPage(), 'ultima_pagina' => $rows->lastPage(), 'total' => $rows->total()]);
     }
 
@@ -96,7 +96,7 @@ final class BoletinEmisionController extends Controller
             return $row;
         });
 
-        return response()->json(['data' => $this->present($issue)]);
+        return response()->json(['data' => $this->present($issue, $request->user()->can('boletines.emisiones.ver'))]);
     }
 
     public function approve(Request $request, BulletinIssueService $service, string $issueToken): JsonResponse
@@ -122,12 +122,22 @@ final class BoletinEmisionController extends Controller
                 $current = $this->rebuild($service, $locked);
                 abort_unless(hash_equals($locked->huella_insumos, $current['huella']), 409,
                     'Los insumos cambiaron. Prepara una nueva revisión antes de aprobar.');
-                $pdf = $service->render($locked->snapshot, $current['logo']);
+                $original = BoletinEmision::where('matricula_id', $enrollment->id)->where('contexto', $locked->contexto)
+                    ->whereNotNull('issued_at')->where('revision', '<', $locked->revision)->orderByDesc('revision')->first();
+                $snapshot = $current['snapshot'];
+                $changes = $original ? $service->correctedGrades($enrollment, $original->snapshot, $snapshot) : [];
+                if ($changes) {
+                    $snapshot['rectificacion'] = ['revision_anterior' => (int) $original->revision, 'cambios' => $changes];
+                    $locked->rectifica_id = $original->id;
+                }
+                $locked->snapshot = $snapshot;
+                $pdf = $service->render($snapshot, $current['logo']);
                 $path = BulletinArchive::write($locked, $pdf);
                 $locked->update(['estado' => 'aprobado', 'pdf_path' => $path, 'pdf_sha256' => hash('sha256', $pdf),
                     'approved_by' => $request->user()->id, 'issued_at' => now()]);
                 AuditLogger::tenant($request->user(), 'APPROVE', 'boletin_emision', (string) $locked->id,
-                    ['estado' => 'preparado'], ['estado' => 'aprobado', 'sha256' => $locked->pdf_sha256]);
+                    ['estado' => 'preparado'], ['estado' => 'aprobado', 'sha256' => $locked->pdf_sha256,
+                        'rectificacion' => $snapshot['rectificacion'] ?? null]);
 
                 return $locked;
             });
@@ -138,7 +148,7 @@ final class BoletinEmisionController extends Controller
             throw $error;
         }
 
-        return response()->json(['data' => $this->present($issue)]);
+        return response()->json(['data' => $this->present($issue, $request->user()->can('boletines.emisiones.ver'))]);
     }
 
     public function publish(Request $request, BulletinIssueService $service, string $issueToken): JsonResponse
@@ -171,7 +181,7 @@ final class BoletinEmisionController extends Controller
             return $locked;
         });
 
-        return response()->json(['data' => $this->present($issue)]);
+        return response()->json(['data' => $this->present($issue, $request->user()->can('boletines.emisiones.ver'))]);
     }
 
     public function pdf(Request $request, string $issueToken)
@@ -215,6 +225,9 @@ final class BoletinEmisionController extends Controller
 
     private function assertScope(Request $request, Matricula $enrollment): void
     {
+        if ($request->user()->role === 'estudiante') {
+            abort_unless(Matricula::conAccesoEstudiantil()->whereKey($enrollment->id)->exists(), 403);
+        }
         if (in_array($request->user()->role, ['docente', 'director_grupo'], true)) {
             abort_unless(app(GradebookService::class)->canReadAssignedReport($request->user(), $enrollment), 403);
         }
@@ -274,13 +287,20 @@ final class BoletinEmisionController extends Controller
         abort_unless($request->user()->can('boletines.emisiones.'.$action), 403);
     }
 
-    private function present(BoletinEmision $issue): array
+    private function present(BoletinEmision $issue, bool $canReadArchive): array
     {
         return ['token' => OpaqueUrlToken::for('boletin-emision', $issue->id),
             'matricula_token' => OpaqueUrlToken::for('matricula', $issue->matricula_id),
             'contexto' => $issue->periodo_id ? 'periodo' : 'final',
             'periodo_token' => $issue->periodo_id ? OpaqueUrlToken::for('periodo', $issue->periodo_id) : null,
             'revision' => (int) $issue->revision, 'estado' => $issue->estado,
+            'rectificacion' => $issue->rectifica_id ? [
+                'revision_anterior' => $issue->snapshot['rectificacion']['revision_anterior'],
+                'boletin_anterior_token' => $canReadArchive ? OpaqueUrlToken::for('boletin-emision', $issue->rectifica_id) : null,
+                'cambios' => $canReadArchive ? array_map(fn ($change) => array_intersect_key($change,
+                    array_flip(['materia','periodo','anterior','vigente','fuente_anterior','fuente_vigente',
+                        'anual_anterior','anual_vigente'])), $issue->snapshot['rectificacion']['cambios']) : [],
+            ] : null,
             'plantilla' => $issue->snapshot['plantilla']['nombre'] ?? null,
             'archivo' => BulletinArchive::filename($issue->snapshot),
             'preparado_en' => $issue->created_at?->toIso8601String(),

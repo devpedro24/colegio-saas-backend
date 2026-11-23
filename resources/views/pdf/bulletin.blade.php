@@ -39,6 +39,9 @@
     <h1>{{ $document['plantilla']['configuracion']['heading'] }}</h1>
     <p class="muted">{{ $document['plantilla']['configuracion']['subheading'] }}</p>
     <p><strong>{{ $document['tipo'] === 'final' ? 'Informe final' : $document['periodo']['nombre'] }}</strong> · Año lectivo {{ $document['ano'] }}</p>
+    @if(isset($document['rectificacion']))
+        <p><strong>Boletín rectificado</strong> · Rectifica la revisión {{ $document['rectificacion']['revision_anterior'] }} de este boletín.</p>
+    @endif
     @foreach($document['plantilla']['configuracion']['sections'] as $section)
         @if(!$section['visible']) @continue @endif
         @switch($section['key'])
@@ -55,7 +58,13 @@
                 @break
             @case('subjects')
                 <h2>Asignaturas</h2><table class="grid"><thead><tr><th>Asignatura</th><th>Desempeño</th></tr></thead><tbody>
-                @foreach($document['asignaturas'] as $row)<tr><td>{{ $row['nombre'] }}</td><td>{{ $row['resultado']['display_value'] ?? $row['resultado']['valoracion']['etiqueta'] ?? 'Calculado' }}</td></tr>@endforeach
+                @foreach($document['asignaturas'] as $row)
+                    <tr><td>{{ $row['nombre'] }}
+                        @foreach($row['periodos_reconocidos'] ?? [] as $external)
+                            <br><small>{{ match (true) { isset($external['consolidacion_token']) => 'Consolidación por cambio de grupo', isset($external['traslado_token']) => 'Definitiva del grado anterior', isset($external['valoracion_token']) => 'Valoración institucional', default => 'Equivalencia' } }} · {{ $external['periodo'] }} · {{ $external['categoria'] ?? $external['valor'] }}</small>
+                        @endforeach
+                    </td><td>{{ $row['resultado']['categoria_reconocida'] ?? $row['resultado']['display_value'] ?? $row['resultado']['valoracion']['etiqueta'] ?? 'Calculado' }}</td></tr>
+                @endforeach
                 </tbody></table>
                 @break
             @case('indicators')

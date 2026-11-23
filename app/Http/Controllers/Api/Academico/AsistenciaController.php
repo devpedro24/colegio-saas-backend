@@ -180,8 +180,7 @@ final class AsistenciaController extends Controller
             ->where('fecha', $data['fecha'])->get()->keyBy('sesion_horario_id');
         $ids = $sessions->pluck('id')->merge($records->keys())->unique();
         $allSessions = SesionHorario::withTrashed()->with('bloque')->whereIn('id', $ids)->get()->keyBy('id');
-        $roster = Matricula::with('estudiante:id,name')->where('grupo_id', $assignment->grupo_id)
-            ->where('ano_lectivo_id', $assignment->ano_lectivo_id)->where('estado', 'activa')->get();
+        $roster = Matricula::rosterOn($assignment->ano_lectivo_id, $assignment->grupo_id, $data['fecha'])->with('estudiante:id,name')->get();
         $marks = DB::table('asistencia_marcas')->whereIn('asistencia_clase_id', $records->pluck('id'))->get()
             ->groupBy('asistencia_clase_id');
         $policy = DB::table('asistencia_politicas')->where('ano_lectivo_id', $assignment->ano_lectivo_id)->first();
@@ -315,8 +314,8 @@ final class AsistenciaController extends Controller
             }
             $existing = $record ? DB::table('asistencia_marcas')->where('asistencia_clase_id', $record->id)
                 ->lockForUpdate()->get()->keyBy('matricula_id') : collect();
-            $rosterIds = $record ? $existing->keys()->all() : Matricula::where('grupo_id', $assignment->grupo_id)
-                ->where('ano_lectivo_id', $assignment->ano_lectivo_id)->where('estado', 'activa')->pluck('id')->all();
+            $rosterIds = $record ? $existing->keys()->all()
+                : Matricula::rosterOn($assignment->ano_lectivo_id, $assignment->grupo_id, $data['fecha'])->pluck('id')->all();
             $tokens = array_column($data['marcas'], 'matricula_token');
             $ids = OpaqueUrlToken::ids('matricula', $tokens, Matricula::whereIn('id', $rosterIds));
             abort_unless(count($ids) === count($rosterIds) && count($ids) === count($tokens), 422,

@@ -68,6 +68,7 @@ final class AsistenciaCorreccionController extends Controller
             ->join('matriculas as matricula', 'matricula.id', '=', 'm.matricula_id')
             ->join('materias as materia', 'materia.id', '=', 'c.materia_id')
             ->join('grupos as grupo', 'grupo.id', '=', 'c.grupo_id')
+            ->whereIn('matricula.ano_lectivo_id', AnoLectivo::accesiblesAlEstudiante()->select('id'))
             ->where('matricula.estudiante_id', $actor->id)->where('m.estado', 'ausente');
         if ($request->filled('ano_lectivo_token')) {
             $year = OpaqueUrlToken::find('ano-lectivo', $request->query('ano_lectivo_token'), AnoLectivo::query());
@@ -101,7 +102,7 @@ final class AsistenciaCorreccionController extends Controller
         $query = AsistenciaSolicitud::query();
         if ($data['scope'] === 'propias') {
             abort_unless($this->student($actor), 403);
-            $query->whereIn('matricula_id', Matricula::where('estudiante_id', $actor->id)->select('id'));
+            $query->whereIn('matricula_id', Matricula::conAccesoEstudiantil()->where('estudiante_id', $actor->id)->select('id'));
         } elseif ($data['scope'] === 'docente') {
             abort_unless($this->teacher($actor), 403);
             if (! ($actor->can('asistencia.consultar_grupo')
@@ -165,7 +166,7 @@ final class AsistenciaCorreccionController extends Controller
         $student = $this->student($actor);
         abort_unless($student || $this->teacher($actor), 403);
         $enrollment = OpaqueUrlToken::find('matricula', $data['matricula_token'],
-            Matricula::query()->when($student, fn ($q) => $q->where('estudiante_id', $actor->id)));
+            Matricula::query()->when($student, fn ($q) => $q->conAccesoEstudiantil()->where('estudiante_id', $actor->id)));
         abort_unless($enrollment, 404);
         $assignment = ! empty($data['asignacion_token'])
             ? OpaqueUrlToken::find('asignacion-docente', $data['asignacion_token'], AsignacionDocente::withTrashed()) : null;
@@ -195,9 +196,9 @@ final class AsistenciaCorreccionController extends Controller
                     ->lockForUpdate()->first();
                 abort_unless($mark && in_array($mark->estado, ['ausente', 'tarde'], true), 422,
                     'Solo se pueden justificar inasistencias o tardanzas registradas.');
-                abort_unless($mark->ano_lectivo_id === $enrollment->ano_lectivo_id
-                    && $mark->grupo_id === $enrollment->grupo_id, 422);
                 $assignment ??= AsignacionDocente::withTrashed()->findOrFail($mark->asignacion_id);
+                abort_unless($mark->ano_lectivo_id === $enrollment->ano_lectivo_id
+                    && $mark->grupo_id === $assignment->grupo_id, 422);
                 abort_unless($mark->asignacion_id === $assignment->id, 422,
                     'Las franjas de la solicitud deben corresponder a la misma asignatura.');
                 $marks[] = $mark;

@@ -33,11 +33,15 @@ final class AttendanceSheetService
             ->get()->keyBy('id');
         $marks = DB::table('asistencia_marcas')
             ->whereIn('asistencia_clase_id', $records->pluck('id'))->get()->groupBy('asistencia_clase_id');
-        $current = Matricula::where('ano_lectivo_id', $assignment->ano_lectivo_id)
-            ->where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')->pluck('id');
-        $activeIds = $current->all();
+        $opening = Matricula::rosterOn($assignment->ano_lectivo_id, $assignment->grupo_id, $start->toDateString())->pluck('id');
+        $movements = DB::table('matricula_movimientos as m')->join('matriculas as e', 'e.id', '=', 'm.matricula_id')
+            ->where('e.ano_lectivo_id', $assignment->ano_lectivo_id)->where('e.estado', 'activa')
+            ->where('m.fecha_efectiva', '>', $start->toDateString())->where('m.fecha_efectiva', '<=', $end->toDateString())
+            ->where(fn ($q) => $q->where('m.grupo_origen_id', $assignment->grupo_id)->orWhere('m.grupo_destino_id', $assignment->grupo_id))
+            ->orderBy('m.fecha_efectiva')->orderBy('m.version')->get(['m.fecha_efectiva', 'm.grupo_destino_id', 'm.matricula_id']);
+        $movesByDay = $movements->groupBy('fecha_efectiva');
         $enrollments = Matricula::with('estudiante:id,name')
-            ->whereIn('id', $current->merge($marks->flatten(1)->pluck('matricula_id'))->unique())
+            ->whereIn('id', $opening->merge($movements->pluck('matricula_id'))->merge($marks->flatten(1)->pluck('matricula_id'))->unique())
             ->get()->keyBy('id');
         $policy = DB::table('asistencia_politicas')
             ->where('ano_lectivo_id', $assignment->ano_lectivo_id)->first();
@@ -50,7 +54,7 @@ final class AttendanceSheetService
             ->selectRaw("m.matricula_id, count(*) as total, sum(case when m.estado = 'ausente' then 1 else 0 end) as faltas, sum(case when m.estado = 'tarde' then 1 else 0 end) as tardes, sum(case when m.estado = 'justificada' then 1 else 0 end) as justificadas")
             ->groupBy('m.matricula_id')->get()->keyBy('matricula_id');
 
-        $students = $enrollments->map(function (Matricula $row) use ($activeIds, $totals, $policy) {
+        $students = $enrollments->map(function (Matricula $row) use ($totals, $policy) {
             $total = $totals->get($row->id);
             $recorded = (int) ($total?->total ?? 0);
             $absent = (int) ($total?->faltas ?? 0);
@@ -67,7 +71,7 @@ final class AttendanceSheetService
                 'matricula_token' => OpaqueUrlToken::for('matricula', $row->id),
                 'nombre' => StudentRosterName::display($row->estudiante?->name ?? 'Estudiante no disponible'),
                 'orden' => StudentRosterName::sortKey($row->estudiante?->name ?? 'Estudiante no disponible'),
-                'activa' => in_array($row->id, $activeIds, true),
+                'activa' => $row->estado === 'activa',
                 'resumen' => [
                     'registradas' => $recorded, 'ausentes' => $absent, 'tardes' => $late,
                     'justificadas' => (int) ($total?->justificadas ?? 0),
@@ -82,10 +86,20 @@ final class AttendanceSheetService
         })->all();
 
         $columns = [];
+        $members = array_fill_keys($opening->all(), true);
+        $rosters = [];
         for ($date = $start; $date->lessThanOrEqualTo($end); $date = $date->addDay()) {
+            $dateText = $date->toDateString();
+            foreach ($movesByDay->get($dateText, []) as $move) {
+                if ($move->grupo_destino_id === $assignment->grupo_id) {
+                    $members[$move->matricula_id] = true;
+                } else {
+                    unset($members[$move->matricula_id]);
+                }
+            }
             $day = self::DAYS[$date->dayOfWeekIso];
             foreach ($byDay->get($day, collect()) as $session) {
-                $dateText = $date->toDateString();
+                $rosters[$dateText] ??= array_keys($members);
                 $columns[$dateText.':'.$session->id] = [$dateText, $session->id];
             }
         }
@@ -94,7 +108,7 @@ final class AttendanceSheetService
             $columns[$record->fecha.':'.$record->sesion_horario_id] = [$record->fecha, $record->sesion_horario_id];
         }
         $rows = collect($columns)->map(function (array $column) use (
-            $recordsByKey, $allSessions, $marks, $activeIds, $period, $assignment, $canWrite, $today
+            $recordsByKey, $allSessions, $marks, $rosters, $period, $assignment, $canWrite, $today
         ) {
             [$date, $sessionId] = $column;
             $record = $recordsByKey->get($date.':'.$sessionId);
@@ -102,7 +116,7 @@ final class AttendanceSheetService
             $startTime = $record?->hora_inicio ?? $session?->bloque?->hora_inicio ?? $session?->hora_inicio;
             $endTime = $record?->hora_fin ?? $session?->bloque?->hora_fin ?? $session?->hora_fin;
             $savedMarks = $record ? ($marks->get($record->id) ?? collect()) : collect();
-            $rosterIds = $record ? $savedMarks->pluck('matricula_id')->all() : $activeIds;
+            $rosterIds = $record ? $savedMarks->pluck('matricula_id')->all() : $rosters[$date];
             $historic = $record && (! $session || $session->trashed()
                 || $session->asignacion_id !== $assignment->id
                 || $session->dia !== self::DAYS[CarbonImmutable::parse($date)->dayOfWeekIso]

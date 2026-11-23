@@ -19,6 +19,8 @@ use App\Services\Ingreso\EnrollmentMailDeliveryException;
 use App\Services\Ingreso\EnrollmentSettings;
 use App\Services\Ingreso\EnrollmentWorkflow;
 use App\Services\SchoolMail;
+use App\Services\RecognizedPeriodGrades;
+use App\Support\AcademicTokenIndex;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use Carbon\CarbonImmutable;
@@ -372,8 +374,30 @@ final class IngresoController extends Controller
 
     public function studentStatus(Request $r)
     {
-        $s = Solicitud::where('estudiante_id', $r->user()->id)->where('estado', 'aprobada')->exists();
+        $this->intake->requirePlan();
+        $requests = app(\App\Services\Ingreso\EnrollmentRenewal::class)->forStudent($r->user())
+            ->whereHas('campana.anoLectivo', fn ($q) => $q->whereIn('estado', ['planificado', 'en_curso']))
+            ->with('campana:id,nombre,ano_lectivo_id', 'campana.anoLectivo:id,nombre,acceso_estudiantil')
+            ->latest('id')->get(['id', 'campana_id', 'matricula_id', 'estado']);
+        $enrollments = \App\Models\Academico\Matricula::with('grupo.grado')->where('estudiante_id', $r->user()->id)
+            ->whereIn('id', $requests->pluck('matricula_id')->filter())->get()->keyBy('id');
+        return response()->json(['grupo_pendiente' => $requests->contains('estado', 'aprobada'),
+            'tramites' => $requests->map(function ($s) use ($enrollments) {
+                $year = $s->campana->anoLectivo;
+                $enrollment = $enrollments->get($s->matricula_id);
+                return ['token' => OpaqueUrlToken::for('ingreso-solicitud', $s->id), 'convocatoria' => $s->campana->nombre,
+                    'ano' => $year->nombre, 'ano_token' => OpaqueUrlToken::for('ano-lectivo', $year->id), 'estado' => $s->estado,
+                    'grupo' => $enrollment ? $enrollment->grupo->grado->nombre.' / '.$enrollment->grupo->nombre : null,
+                    'clases_habilitadas' => $enrollment?->estado === 'activa' && $year->acceso_estudiantil];
+            })])->header('Cache-Control', 'private, no-store');
+    }
 
-        return response()->json(['grupo_pendiente' => $s]);
+    public function studentResults(Request $request)
+    {
+        $this->intake->requirePlan();
+        $student = $request->user();
+        abort_unless($student->hasRole('estudiante') && $student->can('notas.ver_propias'), 403);
+        return response()->json(['data' => RecognizedPeriodGrades::studentSummary($student)])
+            ->header('Cache-Control', 'private, no-store');
     }
 }

@@ -20,6 +20,7 @@ use App\Services\AcademicPlanAccess;
 use App\Services\EscalaVisualService;
 use App\Services\FlexibleGradingService;
 use App\Services\GradebookService;
+use App\Services\RecognizedPeriodGrades;
 use App\Services\SieeConfiguration;
 use App\Support\Audit\AuditLogger;
 use App\Support\EvaluationOpaquePresenter as PublicEval;
@@ -80,7 +81,7 @@ class EvaluacionController extends Controller
             ->when($view === 'planillas', fn ($q) => $q->whereRaw('1 = 0'))
             ->when(! $manage && ! ($enrollmentView && $canEnroll), fn ($q) => ($teacher || $reportReader)
                 ? $assignedGroups($q, 'grupo_id')
-                : $q->where('estudiante_id', $user->id))
+                : $q->conAccesoEstudiantil()->where('estudiante_id', $user->id))
             ->when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))
             ->when($groupId, fn ($q) => $q->where('grupo_id', $groupId))
             ->when($request->filled('estudiante_id'), fn ($q) => $q->where('estudiante_id', $request->integer('estudiante_id')))
@@ -234,6 +235,7 @@ class EvaluacionController extends Controller
         $grades = Calificacion::whereIn('matricula_id', $enrollments->pluck('id'))
             ->whereIn('actividad_id', $components->flatMap(fn ($c) => $c->actividades->pluck('id')))->get();
         if ($previewRows !== null) {
+            RecognizedPeriodGrades::requireLocalGrades($enrollments->pluck('id'), $assignment->materia_id, $periodo);
             $grades = $this->book->previewGrades($request->user(), $assignment,
                 $grades, $components, $enrollments, $previewRows, $config, $visualScale);
         }
@@ -244,9 +246,11 @@ class EvaluacionController extends Controller
                 ->where('periodo_id', $period->id)->whereIn('matricula_id', $enrollments->pluck('id'))
                 ->get()->keyBy('matricula_id') : collect();
         $periodConfig = $this->book->periodConfig($config, $period);
-        $results = $enrollments->mapWithKeys(fn (Matricula $enrollment) => [$enrollment->id => $this->book->resultFromLoaded($components,
-            $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $periodConfig,
-            $manualResults->get($enrollment->id), $componentManuals->get($enrollment->id, collect()))]);
+        $external = RecognizedPeriodGrades::forEnrollments($enrollments->pluck('id'), $assignment->materia_id, $periodo);
+        $results = $enrollments->mapWithKeys(fn (Matricula $enrollment) => [$enrollment->id =>
+            $external->get($enrollment->id, $assignment->materia_id, $periodo)
+                ?? $this->book->resultFromLoaded($components, $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'),
+                    $periodConfig, $manualResults->get($enrollment->id), $componentManuals->get($enrollment->id, collect()))]);
         $presentResult = function (array $raw, ?string $provisional = null) use ($visualScale, $visualService): array {
             $presentable = $visualScale ? $visualService->decorate($raw, $visualScale->opciones, $provisional) : $raw;
 
@@ -281,7 +285,10 @@ class EvaluacionController extends Controller
                     'matricula_token' => PublicEval::token('matricula', $enrollment->id),
                     ...$presentResult($results->get($enrollment->id),
                         $this->book->provisionalFromResult($results->get($enrollment->id), $config)),
-                    'secciones' => $components->map(function ($component) use ($gradesByEnrollment, $componentManuals, $enrollment, $config, $presentResult) {
+                    ...(($results[$enrollment->id]['origen'] ?? null) === 'pendiente_consolidacion' && $config['modo_asignatura'] === 'MANUAL'
+                        ? ['resultado_tramo' => $presentResult($this->book->manualSubjectResult($manualResults->get($enrollment->id), $config))] : []),
+                    'secciones' => $external->get($enrollment->id, $assignment->materia_id, $periodo) !== null
+                        && !isset($results[$enrollment->id]['intervalos_grupo']) ? [] : $components->map(function ($component) use ($gradesByEnrollment, $componentManuals, $enrollment, $config, $presentResult) {
                         $result = $this->book->componentResult($component,
                             $gradesByEnrollment->get($enrollment->id, collect())->keyBy('actividad_id'), $config,
                             $componentManuals->get($enrollment->id, collect())->get($component->id));
@@ -458,6 +465,7 @@ class EvaluacionController extends Controller
 
         DB::transaction(function () use ($request, $assignment, $periodo, $enrollment, $data, $reason): void {
             $this->book->writable($assignment, $periodo);
+            RecognizedPeriodGrades::requireLocalGrades([$enrollment->id], $assignment->materia_id, $periodo);
             $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));
             abort_unless($config['modo_asignatura'] === 'MANUAL', 422,
                 'El SIEE de este año no habilita la definitiva manual de materia.');
@@ -520,6 +528,7 @@ class EvaluacionController extends Controller
 
         DB::transaction(function () use ($request, $assignment, $periodo, $componente, $enrollment, $data, $reason): void {
             $period = $this->book->writable($assignment, $periodo);
+            RecognizedPeriodGrades::requireLocalGrades([$enrollment->id], $assignment->materia_id, $periodo);
             $component = ComponenteEvaluacion::where('asignacion_id', $assignment->id)
                 ->where('periodo_id', $period->id)->findOrFail($componente);
             abort_unless($component->modo === 'MANUAL', 422, 'Este componente no usa resultados manuales.');
@@ -570,7 +579,8 @@ class EvaluacionController extends Controller
     {
         $enrollment = Matricula::with(['estudiante:id,name', 'grupo.grado'])->findOrFail($id);
         abort_unless($this->book->manages($request->user()) || $this->book->canReadAssignedReport($request->user(), $enrollment)
-            || ($enrollment->estudiante_id == $request->user()->id && $request->user()->can('notas.ver_propias')), 403);
+            || ($enrollment->estudiante_id == $request->user()->id && $request->user()->can('notas.ver_propias')
+                && Matricula::conAccesoEstudiantil()->whereKey($enrollment->id)->exists()), 403);
         $report = $this->book->report($enrollment);
         AuditLogger::tenant($request->user(), 'READ', 'boletin_preliminar', (string) $id);
 

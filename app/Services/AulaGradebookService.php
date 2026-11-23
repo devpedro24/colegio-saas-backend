@@ -15,6 +15,7 @@ use App\Models\Academico\Matricula;
 use App\Models\Academico\AnoLectivo;
 use App\Models\Academico\AulaSeccion;
 use App\Models\User;
+use App\Services\Ingreso\SplitPeriodGrades;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use Illuminate\Support\Facades\DB;
@@ -140,6 +141,10 @@ final class AulaGradebookService
         if ($items->isEmpty()) return;
         $eligible = Matricula::where('grupo_id', $assignment->grupo_id)->where('ano_lectivo_id', $assignment->ano_lectivo_id)
             ->where('estado', 'activa')->whereIn('id', $items->pluck('matricula_id'))->pluck('id')->all();
+        $recognized = RecognizedPeriodGrades::protectedEnrollments($eligible, $assignment->materia_id, $resource->seccion->periodo_id);
+        $rows = array_map(fn ($id) => ['actividad_id' => $activity->id, 'matricula_id' => $id], $eligible);
+        $outside = SplitPeriodGrades::outsideDates($assignment, $resource->seccion->periodo_id, [$activity->id => $activity->fecha], $rows);
+        $eligible = array_diff($eligible, $recognized->all(), $outside);
         $existing = Calificacion::where('actividad_id', $activity->id)->pluck('matricula_id')->all();
         $scale = app(EscalaVisualService::class)->forGroup($resource->seccion->aula->grupo);
         $rows = [];
@@ -189,6 +194,12 @@ final class AulaGradebookService
         abort_unless($assignment, 422, 'La asignación docente ya no existe.');
         return DB::transaction(function () use ($resource, $student, $enrollment, $assignment, $value, $aula) {
             $this->book->writable($assignment, $resource->seccion->periodo_id);
+            if (RecognizedPeriodGrades::protectedEnrollments([$enrollment->id], $assignment->materia_id, $resource->seccion->periodo_id)->isNotEmpty()) {
+                return false;
+            }
+            $activity = ActividadEvaluacion::findOrFail($resource->actividad_id);
+            if (SplitPeriodGrades::outsideDates($assignment, $resource->seccion->periodo_id, [$activity->id => $activity->fecha],
+                [['actividad_id' => $activity->id, 'matricula_id' => $enrollment->id]]) !== []) return false;
             $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($aula->ano_lectivo_id));
             abort_if(BigDecimal::of($value)->isLessThan((string) $config['valor_min'])
                 || BigDecimal::of($value)->isGreaterThan((string) $config['valor_max']), 422);

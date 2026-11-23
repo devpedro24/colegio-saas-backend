@@ -102,6 +102,8 @@ final class PlanillaActividadesController extends Controller
             abort_unless(($activity->exists ? $activity->version : 0) === $data['version'], 409, 'La actividad cambió en otra sesión. Recarga antes de guardar.');
             $before = $activity->exists ? $activity->toArray() : null;
             if ($data['operacion'] === 'eliminar') {
+                abort_if(DB::table(\App\Services\Ingreso\SplitPeriodSupports::TABLE)->where('actividad_id', $activity->id)->exists(),
+                    422, 'La actividad está asignada como apoyo individual. Su historial debe conservarse.');
                 abort_if(Calificacion::where('actividad_id', $activity->id)->exists(), 422, 'La actividad tiene calificaciones registradas. Su historial debe conservarse.');
                 AuditLogger::tenant($request->user(), 'DELETE', 'actividad_evaluacion', (string) $activity->id, $before, null);
                 $activity->delete();

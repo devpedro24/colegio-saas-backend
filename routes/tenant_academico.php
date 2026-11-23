@@ -148,6 +148,7 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
     ]);
     Route::prefix('aula')->controller(AulaController::class)->group(function () {
         Route::get('/catalogo', 'catalogo');
+        Route::get('/historial/entregas', 'historialEntregas');
         Route::get('/configuracion', 'configuracion')->middleware('can:aula.configurar');
         Route::put('/configuracion', 'guardarConfiguracion')->middleware('can:aula.configurar');
         Route::get('/{aulaToken}', 'ver');
@@ -496,6 +497,40 @@ Route::prefix('matriculas')->middleware(RequireOpaqueAcademicContract::class)->c
     Route::post('/', 'store');
     Route::get('/geografia', 'geography');
     Route::get('/{token}', 'show');
+    Route::post('/{token}/correcciones', 'correctPlacement');
+    Route::post('/{token}/promociones-anticipadas', 'recommendPromotion');
+    Route::post('/{token}/promociones-anticipadas/{case}/decision', 'decidePromotion');
+    Route::post('/{token}/promociones-anticipadas/{case}/constancia', 'issuePromotionCertificate');
+    Route::get('/{token}/promociones-anticipadas/{case}/constancia/{format}', 'downloadPromotionCertificate')
+        ->whereIn('format', ['pdf', 'pdf-verificable']);
+    Route::get('/{token}/promociones-anticipadas/{case}/soportes/{kind}', 'promotionEvidence');
+    Route::post('/{token}/soportes', 'addEvidence');
+    Route::get('/{token}/soportes/{document}', 'downloadEvidence');
+    Route::get('/{token}/consolidaciones', 'consolidations');
+    Route::post('/{token}/consolidaciones/{result}/propuesta', 'previewConsolidation');
+    Route::post('/{token}/consolidaciones/{result}/apoyos', 'assignSupport');
+    Route::post('/{token}/consolidaciones/{result}/aprobar', 'approveConsolidation');
+    Route::get('/{token}/valoraciones-ingreso', 'entryAssessments');
+    Route::get('/{token}/autorizaciones-cierre', 'closedAuthorizations');
+    Route::post('/{token}/autorizaciones-cierre', 'authorizeClosedGrade');
+    Route::post('/{token}/autorizaciones-cierre/{grant}/registrar', 'registerClosedGrade')->where('grant', '[A-Za-z0-9]{24}');
+    Route::post('/{token}/autorizaciones-cierre/{grant}/revocar', 'revokeClosedAuthorization')->where('grant', '[A-Za-z0-9]{24}');
+    Route::get('/{token}/autorizaciones-cierre/soportes/{document}', 'downloadClosedGradeSupport')->where('document', '[A-Za-z0-9_-]{24}');
+    Route::post('/{token}/valoraciones-ingreso', 'registerAssessment');
+    Route::post('/{token}/valoraciones-ingreso/{result}/aprobar', 'approveAssessment');
+    Route::post('/{token}/valoraciones-ingreso/{result}/rectificaciones', 'rectifyAssessment')->where('result', '[A-Za-z0-9]{24}');
+    Route::get('/{token}/valoraciones-ingreso/{result}/rectificaciones/{document}', 'downloadAssessmentRectification')->where(['result' => '[A-Za-z0-9]{24}', 'document' => '[A-Za-z0-9_-]{24}']);
+    Route::get('/{token}/valoraciones-ingreso/soportes/{document}', 'downloadAssessmentEvidence');
+    Route::get('/{token}/definitivas-externas', 'externalGrades');
+    Route::post('/{token}/definitivas-externas/pendientes', 'registerPendingCertificate');
+    Route::post('/{token}/definitivas-externas', 'registerExternalGrades');
+    Route::post('/{token}/definitivas-externas/{result}/eleccion', 'choosePeriodGrade')->where('result', '[A-Za-z0-9]{24}');
+    Route::post('/{token}/definitivas-externas/{result}/rectificaciones', 'rectifyExternalGrade')->where('result', '[A-Za-z0-9]{24}');
+    Route::get('/{token}/definitivas-externas/{result}/rectificaciones/{document}', 'downloadExternalRectification')->where(['result' => '[A-Za-z0-9]{24}', 'document' => '[A-Za-z0-9_-]{24}']);
+    Route::post('/{token}/definitivas-externas/{result}/aprobar', 'approveExternalGrade');
+    Route::post('/{token}/definitivas-externas/certificados/{document}/sin-equivalencia', 'markWithoutEquivalence');
+    Route::get('/{token}/definitivas-externas/certificados/{document}', 'downloadCertificate');
+    Route::get('/{token}/notas-de-actividades', 'activityGrades');
     Route::get('/{token}/documentos/{document}', 'download');
 });
 
@@ -513,6 +548,7 @@ Route::prefix('mi-renovacion/{renewalToken}')->where(['renewalToken' => '[A-Za-z
 Route::prefix('ingreso')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoController::class)->group(function () {
     Route::get('/catalogo', 'catalog');
     Route::get('/mi-estado', 'studentStatus');
+    Route::get('/mis-resultados', 'studentResults');
     Route::get('/solicitudes', 'applications');
     Route::get('/notificaciones', 'notifications');
     Route::post('/campanas', 'saveCampaign');

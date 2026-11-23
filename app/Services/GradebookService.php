@@ -15,6 +15,7 @@ use App\Models\Academico\Periodo;
 use App\Models\Academico\Preinforme;
 use App\Models\Academico\RecuperacionAcademica;
 use App\Models\User;
+use App\Services\Ingreso\SplitPeriodGrades;
 use App\Support\AcademicDecimal;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
@@ -101,6 +102,7 @@ final class GradebookService
         $this->authorizeAssignment($actor, $assignment, write: true);
         DB::transaction(function () use ($actor, $assignment, $periodId, $rows) {
             $period = $this->writable($assignment, $periodId);
+
             $config = app(SieeConfiguration::class)->resolve(AnoLectivo::findOrFail($assignment->ano_lectivo_id));
             abort_if($config['modo_asignatura'] === 'MANUAL',
                 422, 'Esta asignatura usa una definitiva manual; registra el resultado en la columna de definitiva.');
@@ -112,17 +114,20 @@ final class GradebookService
                 OpaqueUrlToken::for('escala-opcion', $choice->id) => $choice,
             ]);
             $activities = DB::table('actividades_evaluacion as a')->join('componentes_evaluacion as c', 'c.id', '=', 'a.componente_id')
-                ->where('c.asignacion_id', $assignment->id)->where('c.periodo_id', $periodId)->pluck('a.id')->all();
+                ->where('c.asignacion_id', $assignment->id)->where('c.periodo_id', $periodId)->pluck('a.fecha', 'a.id')->all();
+            abort_if(SplitPeriodGrades::outsideDates($assignment, $periodId, $activities, $rows) !== [], 422,
+                'La fecha de la actividad está fuera del tramo cursado en este grupo.');
             $manualActivityIds = DB::table('actividades_evaluacion as a')->join('componentes_evaluacion as c', 'c.id', '=', 'a.componente_id')
                 ->where('c.asignacion_id', $assignment->id)->where('c.periodo_id', $periodId)
                 ->where('c.modo', 'MANUAL')->pluck('a.id')->all();
             $enrollments = Matricula::where('grupo_id', $assignment->grupo_id)->where('estado', 'activa')->pluck('id')->all();
+            RecognizedPeriodGrades::requireLocalGrades(array_intersect($enrollments, array_column($rows, 'matricula_id')), $assignment->materia_id, $periodId);
             $seen = [];
             foreach ($rows as $row) {
                 $key = $row['actividad_id'].':'.$row['matricula_id'];
                 abort_if(isset($seen[$key]), 422, 'La misma nota aparece más de una vez.');
                 $seen[$key] = true;
-                abort_unless(in_array($row['actividad_id'], $activities) && in_array($row['matricula_id'], $enrollments), 422, 'La actividad y el estudiante deben pertenecer a esta asignación.');
+                abort_unless(array_key_exists($row['actividad_id'], $activities) && in_array($row['matricula_id'], $enrollments), 422, 'La actividad y el estudiante deben pertenecer a esta asignación.');
                 abort_if(in_array($row['actividad_id'], $manualActivityIds), 422, 'Este componente usa resultado manual; no admite notas de actividades.');
                 $choiceToken = $row['escala_opcion_token'] ?? null;
                 if ($visualScale) {
@@ -161,6 +166,9 @@ final class GradebookService
             ->mapWithKeys(fn ($activity) => [$activity->id => $components->firstWhere('id', $activity->componente_id)->modo]);
         $choices = $visualScale?->opciones->keyBy(fn ($choice) => OpaqueUrlToken::for('escala-opcion', $choice->id));
         $preview = $grades->keyBy(fn ($grade) => $grade->actividad_id.':'.$grade->matricula_id);
+        abort_if(SplitPeriodGrades::outsideDates($assignment, $components->first()?->periodo_id ?? 0,
+            $components->flatMap->actividades->pluck('fecha', 'id')->all(), $rows) !== [], 422,
+            'La fecha de la actividad está fuera del tramo cursado en este grupo.');
         $seen = [];
         foreach ($rows as $row) {
             $key = $row['actividad_id'].':'.$row['matricula_id'];
@@ -191,6 +199,17 @@ final class GradebookService
     }
 
     public function subjectResult(AsignacionDocente $assignment, Matricula $enrollment, Periodo $period, array $config): array
+    {
+        $external = RecognizedPeriodGrades::forEnrollments([$enrollment->id], $assignment->materia_id, $period->id)
+            ->get($enrollment->id, $assignment->materia_id, $period->id);
+        if ($external !== null) {
+            return $external;
+        }
+
+        return $this->localSubjectResult($assignment, $enrollment, $period, $config);
+    }
+
+    public function localSubjectResult(AsignacionDocente $assignment, Matricula $enrollment, Periodo $period, array $config): array
     {
         if ($config['modo_asignatura'] === 'MANUAL') {
             $manual = DB::table('resultados_manuales_materia')->where('matricula_id', $enrollment->id)
@@ -342,10 +361,12 @@ final class GradebookService
             ->whereIn('estado', ['aprobada', 'no_aprobada'])->get()
             ->keyBy(fn ($item) => $item->asignacion_id.':'.$item->alcance);
         $periodConfigs = $periods->mapWithKeys(fn ($period) => [$period->id => $this->periodConfig($config, $period)]);
-        $rows = $subjects->map(function ($assignment) use ($periods, $periodConfigs, $config, $curriculum, $year, $componentsByPeriod, $grades, $manualResults, $annualManuals, $componentManuals, $recoveries, $applyAnnualRecoveries) {
-            $results = $periods->map(function ($period) use ($assignment, $componentsByPeriod, $grades, $periodConfigs, $manualResults, $componentManuals, $config, $recoveries) {
-                $original = $this->resultFromLoaded($componentsByPeriod->get($assignment->id.':'.$period->id, collect()), $grades,
-                    $periodConfigs[$period->id], $manualResults->get($assignment->id.':'.$period->id), $componentManuals);
+        $external = RecognizedPeriodGrades::forEnrollments([$enrollment->id], group: $enrollment->grupo_id);
+        $rows = $subjects->map(function ($assignment) use ($enrollment, $external, $periods, $periodConfigs, $config, $curriculum, $year, $componentsByPeriod, $grades, $manualResults, $annualManuals, $componentManuals, $recoveries, $applyAnnualRecoveries) {
+            $results = $periods->map(function ($period) use ($enrollment, $external, $assignment, $componentsByPeriod, $grades, $periodConfigs, $manualResults, $componentManuals, $config, $recoveries) {
+                $original = $external->get($enrollment->id, $assignment->materia_id, $period->id)
+                    ?? $this->resultFromLoaded($componentsByPeriod->get($assignment->id.':'.$period->id, collect()), $grades,
+                        $periodConfigs[$period->id], $manualResults->get($assignment->id.':'.$period->id), $componentManuals);
                 $recovery = $recoveries->get($assignment->id.':periodo:'.$period->id);
 
                 return ['periodo_id' => $period->id, ...$this->applyRecovery($original, $recovery, $config)];
@@ -366,11 +387,13 @@ final class GradebookService
         $subjectNames = DB::table('materias')->whereIn('id', $missingSubjects->keys())->pluck('nombre', 'id');
         foreach ($missingSubjects as $entry) {
             $pending = ['estado' => 'pendiente', 'motivo' => 'La asignatura aún no tiene asignación para este grupo.'];
+            $previousPeriods = $periods->map(fn ($p) => ['periodo_id' => $p->id,
+                ...($external->get($enrollment->id, $entry->materia_id, $p->id) ?? $pending)])->all();
             $rows->push([
                 'materia_id' => $entry->materia_id,
                 'nombre' => $subjectNames->get($entry->materia_id),
                 'area_id' => $entry->area_id, 'peso_area' => $entry->peso_area,
-                'periodos' => $periods->map(fn ($period) => ['periodo_id' => $period->id, ...$pending])->all(),
+                'periodos' => $previousPeriods,
                 'anual' => $pending,
             ]);
         }
@@ -511,6 +534,7 @@ final class GradebookService
             $visualScale = app(EscalaVisualService::class)->forGroup($first->grupo);
             $visual = app(EscalaVisualService::class);
 
+            $external = RecognizedPeriodGrades::forEnrollments($groupRows->pluck('id'));
             foreach ($groupRows as $enrollment) {
                 $studentGrades = ($grades->get($enrollment->id) ?? collect())->keyBy('actividad_id');
                 $studentComponentManuals = $componentManuals->get($enrollment->id, collect());
@@ -519,12 +543,10 @@ final class GradebookService
                 foreach ($assignments as $assignment) {
                     $results = [];
                     foreach ($periods as $period) {
-                        $original = $this->resultFromLoaded(
-                            $components->get($assignment->id.':'.$period->id, collect()),
-                            $studentGrades, $periodConfigs[$period->id],
-                            $manualResults->get($enrollment->id.':'.$assignment->id.':'.$period->id),
-                            $studentComponentManuals,
-                        );
+                        $original = $external->get($enrollment->id, $assignment->materia_id, $period->id)
+                            ?? $this->resultFromLoaded($components->get($assignment->id.':'.$period->id, collect()),
+                                $studentGrades, $periodConfigs[$period->id],
+                                $manualResults->get($enrollment->id.':'.$assignment->id.':'.$period->id), $studentComponentManuals);
                         $result = $this->applyRecovery($original,
                             $studentRecoveries->get($assignment->id.':periodo:'.$period->id), $config);
                         $results[] = ['periodo_id' => $period->id, ...$result];

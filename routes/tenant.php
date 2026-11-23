@@ -84,6 +84,11 @@ Route::middleware([
     // ningun colegio registrado).
     Route::get('/tenant-status', fn () => response()->json(['ok' => true]));
     Route::get('/branding/logo', [OnboardingController::class, 'logo']);
+    Route::post('/constancias/verificar', function (Request $request) {
+        $code = $request->input('codigo');
+        $record = is_string($code) && strlen($code) <= 64 ? \App\Services\Ingreso\CertificateVerification::lookup($code) : null;
+        return response()->json(['data' => $record], $record ? 200 : 404, ['Cache-Control' => 'private, no-store']);
+    })->middleware('throttle:20,1');
 
     Route::prefix('ingreso-publico')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoPublicController::class)->group(function () {
         Route::get('/catalogo', 'catalog')->middleware('throttle:60,1');

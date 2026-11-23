@@ -22,14 +22,15 @@ final class BulletinArchive
 
         $parts = array_map(fn ($part) => ReadableStorageName::segment((string) $part, 'Boletin', 110),
             [$name, $period, $student['grado'], $student['grupo'], $snapshot['ano']]);
+        $suffix = isset($snapshot['rectificacion']) ? '_Rectificado_de_R'.$snapshot['rectificacion']['revision_anterior'].'.pdf' : '.pdf';
         // Leave room for the extension on filesystems with a 255-byte component limit.
-        while (strlen(implode('_', $parts).'.pdf') > 240) {
+        while (strlen(implode('_', $parts).$suffix) > 240) {
             $lengths = array_map('strlen', $parts);
             $index = array_search(max($lengths), $lengths, true);
             $parts[$index] = rtrim(mb_strcut($parts[$index], 0, $lengths[$index] - 1, 'UTF-8'), '._-');
         }
 
-        return implode('_', $parts).'.pdf';
+        return implode('_', $parts).$suffix;
     }
 
     public static function path(BoletinEmision $issue): string

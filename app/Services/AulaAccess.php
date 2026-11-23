@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\Academico\Aula;
+use App\Models\Academico\AulaEntrega;
 use App\Models\Academico\AulaRecurso;
 use App\Models\Academico\AsignacionDocente;
 use App\Models\Academico\Matricula;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 
 final class AulaAccess
@@ -64,6 +66,28 @@ final class AulaAccess
     {
         return Matricula::conAccesoEstudiantil()->where('estudiante_id', $user->id)->where('ano_lectivo_id', $aula->ano_lectivo_id)
             ->where('grupo_id', $aula->grupo_id)->where('estado', 'activa')->first();
+    }
+
+    /** Only evidence the student actually submitted in a former classroom. */
+    public function previousSubmissions(User $user): Builder
+    {
+        $this->plan->requireAula();
+        abort_unless($user->can('aula.ver_propias'), 403);
+
+        return AulaEntrega::query()
+            ->join('matriculas as m', 'm.id', '=', 'aula_entregas.matricula_id')
+            ->join('aula_recursos as r', 'r.id', '=', 'aula_entregas.recurso_id')
+            ->join('aula_secciones as s', 's.id', '=', 'r.seccion_id')
+            ->join('aulas as a', 'a.id', '=', 's.aula_id')
+            ->where('m.estudiante_id', $user->id)->where('m.estado', 'activa')
+            ->whereIn('m.ano_lectivo_id', \App\Models\Academico\AnoLectivo::accesiblesAlEstudiante()->select('id'))
+            ->whereColumn('a.ano_lectivo_id', 'm.ano_lectivo_id')->whereColumn('a.grupo_id', '<>', 'm.grupo_id')
+            ->whereIn('aula_entregas.estado', ['entregada', 'revisada', 'calificada'])
+            ->whereNull('s.deleted_at')->whereNull('r.deleted_at')
+            ->where('s.visible_estudiantes', true)->where('r.visible_estudiantes', true)
+            ->whereIn('r.estado', ['programado', 'publicado', 'cerrado'])
+            ->where(fn ($q) => $q->where('r.disponible_desde', '<=', now('UTC'))
+                ->orWhere(fn ($q) => $q->whereNull('r.disponible_desde')->where('r.estado', '<>', 'programado')));
     }
 
     public function assignment(Aula $aula): ?AsignacionDocente
