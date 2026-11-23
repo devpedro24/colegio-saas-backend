@@ -1,6 +1,10 @@
 <?php
 
 return [
+    'invalidName' => 'Enter a valid name without numbers or unrelated symbols.',
+    'numericIdentity' => 'This document type accepts only 3 to 40 digits.',
+    'invalidIdentity' => 'Enter a valid identification using 3 to 40 alphanumeric characters.',
+    'invalidText' => 'Enter valid text without HTML tags or control characters.',
     'ocrUnavailable' => 'The document could not be read. Try a clear file; if this continues, contact the school to check its document reader. Nothing was saved or submitted.',
     'identityPages' => 'The identity document can contain up to 4 pages.',
     'identityFormat' => 'The identity document must be PDF, JPG or PNG, as configured.',
@@ -12,7 +16,7 @@ return [
     'invalidPhone' => 'Enter a valid Colombian mobile number: +57 and 10 digits starting with 3.',
     'specifyRelationship' => 'Specify the relationship when selecting Other.',
     'invalidMunicipality' => 'Select a municipality belonging to the selected department.',
-    'invalidBirth' => 'Check the date of birth: it cannot be in the current year or in the future.',
+    'invalidBirth' => 'The date of birth must be today or earlier in the school’s time zone.',
     'ageOutsideGrade' => 'The student is currently :age years old. This grade accepts ages :min to :max. Check the grade or contact the school.',
     'batchTooLarge' => 'Files exceed this server’s total submission size limit. Reduce their size or contact the school.',
     'fileTooLarge' => 'The file exceeds the allowed size. Reduce its size or contact the school.',

@@ -13,7 +13,9 @@ use App\Models\Ingreso\Documento;
 use App\Models\Ingreso\Notificacion;
 use App\Models\Ingreso\Solicitud;
 use App\Models\StoredFile;
+use App\Services\Ingreso\EnrollmentInput;
 use App\Services\Ingreso\EnrollmentIntake;
+use App\Services\Ingreso\EnrollmentMailDeliveryException;
 use App\Services\Ingreso\EnrollmentSettings;
 use App\Services\Ingreso\EnrollmentWorkflow;
 use App\Services\SchoolMail;
@@ -62,7 +64,9 @@ final class IngresoController extends Controller
             'grados' => Grado::where('estado', 'activo')->get()->map(fn ($g) => ['token' => OpaqueUrlToken::for('grado', $g->id),
                 'regla_token' => $g->ingreso_grado_id ? OpaqueUrlToken::for('ingreso-grado', $g->ingreso_grado_id) : null,
                 'ano_token' => OpaqueUrlToken::for('ano-lectivo', $g->ano_lectivo_id), 'nombre' => $g->nombre]),
-            'campanas' => Campana::orderByDesc('id')->limit(100)->get()->map(fn ($campaign) => $this->intake->campaign($campaign))]);
+            'campanas' => Campana::with('anoLectivo:id,nombre')->orderByDesc('id')->limit(100)->get()->map(fn ($campaign) => [
+                ...$this->intake->campaign($campaign), 'ano_nombre' => $campaign->anoLectivo->nombre,
+            ])]);
     }
 
     public function saveCampaign(Request $r, ?string $campaign = null)
@@ -73,15 +77,16 @@ final class IngresoController extends Controller
             'cierre_en' => ['nullable', 'date_format:Y-m-d\TH:i', Rule::when($r->filled('apertura_en'), 'after_or_equal:apertura_en')],
             'correcciones_hasta' => ['nullable', 'date_format:Y-m-d\TH:i', Rule::when($r->filled('cierre_en'), 'after_or_equal:cierre_en')],
             'abierta' => 'required|boolean', 'desde' => 'required|date_format:Y-m-d', 'hasta' => 'present|nullable|date_format:Y-m-d|after_or_equal:desde',
-            'configuracion' => 'required|array:grados,documentos,campos,privacidad,pin_expira_en,documento_identidad,pin_manual',
+            'configuracion' => 'required|array:grados,documentos,campos,privacidad,pin_expira_en,documento_identidad,pin_manual,verificar_identidad_automaticamente',
             'configuracion.pin_manual' => 'sometimes|boolean',
+            'configuracion.verificar_identidad_automaticamente' => 'sometimes|boolean',
             'configuracion.documento_identidad' => 'sometimes|nullable|string|max:50',
             'configuracion.privacidad' => 'sometimes|nullable|string|min:20|max:5000',
             'configuracion.pin_expira_en' => 'present|nullable|date_format:Y-m-d\TH:i',
             'configuracion.grados' => 'required|array|min:1|max:100',
             'configuracion.grados.*' => 'array:token,nombre,cupo,edad_min,edad_max', 'configuracion.grados.*.token' => 'required|string|size:24|distinct',
-            'configuracion.grados.*.edad_min' => 'sometimes|nullable|integer|min:1|max:120',
-            'configuracion.grados.*.edad_max' => 'sometimes|nullable|integer|min:1|max:120',
+            'configuracion.grados.*.edad_min' => 'sometimes|nullable|integer|min:1|max:'.EnrollmentSettings::MAX_SCHOOL_AGE,
+            'configuracion.grados.*.edad_max' => 'sometimes|nullable|integer|min:1|max:'.EnrollmentSettings::MAX_SCHOOL_AGE,
             'configuracion.grados.*.nombre' => 'required|string|max:120', 'configuracion.grados.*.cupo' => 'present|nullable|integer|min:1|max:10000',
             'configuracion.documentos' => 'present|array|max:30',
             'configuracion.documentos.*' => 'array:key,nombre,instrucciones,vigencia,obligatorio,formatos,grados',
@@ -95,7 +100,7 @@ final class IngresoController extends Controller
             'configuracion.documentos.*.grados' => 'present|array', 'configuracion.documentos.*.grados.*' => 'string|size:24',
             'configuracion.campos' => 'present|array|max:20', 'configuracion.campos.*' => 'array:key,nombre,obligatorio,tipo,opciones',
             'configuracion.campos.*.key' => 'required|string|regex:/^[a-z][a-z0-9_]{0,49}$/|distinct',
-            'configuracion.campos.*.nombre' => 'required|string|max:120', 'configuracion.campos.*.obligatorio' => 'required|boolean',
+            'configuracion.campos.*.nombre' => ['required', 'string', 'max:120', EnrollmentInput::plain()], 'configuracion.campos.*.obligatorio' => 'required|boolean',
             'configuracion.campos.*.opciones' => 'sometimes|array|max:30', 'configuracion.campos.*.opciones.*' => 'required|string|max:120|distinct',
             'configuracion.campos.*.tipo' => ['required', Rule::in(['texto', 'fecha', 'numero', 'telefono', 'email', 'seleccion'])]]);
         foreach ($d['configuracion']['campos'] as $field) {
@@ -126,6 +131,8 @@ final class IngresoController extends Controller
         $c = DB::transaction(function () use ($campaign, $d, $year, $r) {
             $c = $campaign ? $this->intake->resolve('ingreso-campana', $campaign, Campana::lockForUpdate()) : new Campana;
             $institution = app(EnrollmentSettings::class)->record();
+            $d['configuracion']['verificar_identidad_automaticamente'] ??= $c->exists
+                ? ($c->configuracion['verificar_identidad_automaticamente'] ?? true) : false;
             // Ranges are school settings. Never write displayed effective ranges back to a campaign.
             $d['configuracion']['grados'] = array_map(function ($grade) use ($c) {
                 unset($grade['edad_min'], $grade['edad_max']);
@@ -174,7 +181,7 @@ final class IngresoController extends Controller
             $query->where(function ($query) use ($term) {
                 $query->whereRaw('lower(email) like ?', ['%'.$term.'%'])
                     ->orWhereIn('id', function ($tokens) use ($term) {
-                        $tokens->select('record_id')->from(\App\Support\AcademicTokenIndex::TABLE)
+                        $tokens->select('record_id')->from(AcademicTokenIndex::TABLE)
                             ->where('resource', 'ingreso-solicitud')
                             ->whereRaw('lower(substr(token, 1, 10)) like ?', ['%'.preg_replace('/^mat-/', '', $term).'%']);
                     })
@@ -201,7 +208,7 @@ final class IngresoController extends Controller
 
         return response()->json(['data' => $this->intake->present($solicitud),
             'grupos' => Grupo::with('grado')->where('ano_lectivo_id', $solicitud->campana->ano_lectivo_id)
-                ->where('grado_id', $solicitud->grado_id)->where('estado', 'activo')->get()->map(fn ($grupo) => [
+                ->where('grado_id', $solicitud->grado_aprobado_id ?? $solicitud->grado_id)->where('estado', 'activo')->get()->map(fn ($grupo) => [
                     'token' => OpaqueUrlToken::for('grupo', $grupo->id),
                     'grado_token' => OpaqueUrlToken::for('grado', $grupo->grado_id),
                     'nombre' => $grupo->grado->nombre.' / '.$grupo->nombre, 'cupo' => $grupo->cupo_maximo,
@@ -212,9 +219,13 @@ final class IngresoController extends Controller
     {
         $this->permit($request, 'ver');
         abort_unless($request->user()->can('ingreso.revisar') || $request->user()->can('ingreso.configurar'), 403);
-        $data = $request->validate(['expira_en' => 'present|nullable|date_format:Y-m-d\TH:i']);
+        try {
+            $result = $workflow->activate($this->application($application), $request->user());
+        } catch (EnrollmentMailDeliveryException) {
+            abort(503, __('El PIN se activó, pero no se pudo enviar el correo. Revisa el correo institucional y vuelve a activar el PIN.'));
+        }
 
-        return response()->json($workflow->activate($this->application($application), $request->user(), $data['expira_en']))
+        return response()->json($result)
             ->header('Cache-Control', 'private, no-store');
     }
 
@@ -308,16 +319,35 @@ final class IngresoController extends Controller
     {
         $this->permit($r, 'cambiar_grado');
         $this->permit($r, 'ver');
-        $d = $r->validate(['grado_token' => 'required|string|size:24', 'observacion' => 'required|string|min:3|max:2000']);
-        $s = DB::transaction(function () use ($r, $application, $d) {
+        $d = $r->validate(['grado_token' => 'bail|required|string|size:24',
+            'observacion' => ['bail', 'required', 'string', 'min:3', 'max:2000', EnrollmentInput::plain()]]);
+        $candidate = $this->application($application);
+        $s = DB::transaction(function () use ($r, $application, $d, $candidate) {
+            $year = AnoLectivo::lockForUpdate()->findOrFail($candidate->campana->ano_lectivo_id);
+            Campana::lockForUpdate()->findOrFail($candidate->campana_id);
             $s = $this->intake->resolve('ingreso-solicitud', $application, Solicitud::lockForUpdate());
-            abort_unless(in_array($s->estado, EnrollmentIntake::REVIEWABLE, true), 422, __('La solicitud no admite cambiar de grado.'));
-            $this->intake->open($s->campana);
+            abort_unless(in_array($s->estado, [...EnrollmentIntake::REVIEWABLE, 'aprobada'], true) && ! $s->matricula_id,
+                422, __('La solicitud no admite cambiar de grado.'));
+            abort_unless(in_array($year->estado, ['planificado', 'en_curso'], true), 422, __('El año lectivo está cerrado.'));
             abort_unless(collect($s->campana->configuracion['grados'])->contains('token', $d['grado_token']), 404);
             $grade = $this->intake->resolve('grado', $d['grado_token'], Grado::where('ano_lectivo_id', $s->campana->ano_lectivo_id)->where('estado', 'activo'));
-            $s->update(['grado_aprobado_id' => $grade->id, 'estado' => 'correcciones', 'observacion' => $d['observacion']]);
+            abort_if($grade->id === ($s->grado_aprobado_id ?? $s->grado_id), 422, __('Selecciona un grado diferente al actual.'));
+            $s->grado_aprobado_id = $grade->id;
+            $s->validacion_edad = app(EnrollmentSettings::class)->ageValidation($s, $s->datos, $grade->id);
+            $requirements = array_column($this->intake->requirements($s), 'key');
+            $corrections = array_map(function ($entry) use ($requirements) {
+                if (str_starts_with($entry['campo'], 'documentos.') && ! in_array(substr($entry['campo'], 11), $requirements, true)) {
+                    $entry['resuelta'] = true;
+                }
+
+                return $entry;
+            }, $s->correcciones ?? []);
+            $pending = collect($corrections)->contains(fn ($entry) => ! $entry['resuelta']);
+            $s->fill(['estado' => $pending ? 'correcciones' : 'revision', 'validada_en' => null,
+                'correcciones' => $corrections, 'observacion' => $d['observacion']])->save();
             $this->intake->event($s, 'cambio_grado', $grade->nombre.': '.$d['observacion'], $r->user());
-            $this->intake->notify($s, 'grado:'.Str::uuid(), 'Revisa el grado de tu solicitud', 'El colegio propone '.$grade->nombre.'. '.$d['observacion']);
+            $this->intake->notify($s, 'grado:'.Str::uuid(), 'El colegio actualizó el grado de tu inscripción',
+                'Grado definido por el colegio: '.$grade->nombre.'. '.$d['observacion']);
 
             return $s;
         });

@@ -13,6 +13,8 @@ use App\Models\Ingreso\Notificacion;
 use App\Models\Ingreso\Solicitud;
 use App\Models\StoredFile;
 use App\Models\Tenant;
+use App\Services\ContactNumbers;
+use App\Services\Ingreso\EnrollmentInput;
 use App\Services\Ingreso\EnrollmentIntake;
 use App\Services\Ingreso\EnrollmentRenewal;
 use App\Services\Ingreso\EnrollmentSubmission;
@@ -30,6 +32,13 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 final class IngresoPublicController extends Controller
 {
     public function __construct(private EnrollmentIntake $intake) {}
+
+    public function contactOptions()
+    {
+        $this->available();
+
+        return response()->json(['countries' => ContactNumbers::countries()]);
+    }
 
     private function available(): void
     {
@@ -78,7 +87,7 @@ final class IngresoPublicController extends Controller
         $this->available();
 
         return response()->json(['colegio' => tenant()->name, 'limites_envio' => EnrollmentSubmission::limits(),
-            'campanas' => Campana::where('abierta', true)->orderByDesc('id')->limit(100)->get()->map(fn ($campaign) => $this->intake->campaign($campaign)),
+            'campanas' => [],
             'zona_horaria' => tenant()->zonaHorariaInstitucional()]);
     }
 
@@ -92,16 +101,17 @@ final class IngresoPublicController extends Controller
         $c = $this->campaign($campaign);
         $this->intake->open($c);
         if ($c->configuracion['pin_manual'] ?? true) {
-            $data = $r->validate(['email' => 'required|email|max:255', 'grado_token' => 'required|string|size:24',
-                'primer_nombre' => 'required|string|max:80', 'primer_apellido' => 'required|string|max:80',
+            $data = $r->validate(['email' => 'bail|required|string|max:255|email:rfc', 'grado_token' => 'nullable|string|size:24',
+                'primer_nombre' => ['bail', 'required', 'string', 'max:80', EnrollmentInput::name()],
+                'primer_apellido' => ['bail', 'required', 'string', 'max:80', EnrollmentInput::name()],
                 'tipo_documento' => ['required', Rule::in(EnrollmentIntake::DOCUMENT_TYPES)],
-                'numero_documento' => 'required|string|regex:/^[a-zA-Z0-9-]{3,40}$/']);
+                'numero_documento' => ['required', 'string', 'max:40', EnrollmentInput::identification($r->input('tipo_documento'))]]);
             $application = app(EnrollmentWorkflow::class)->requestPin($c, $data);
 
             return response()->json(['radicado' => $this->intake->present($application, false)['radicado'],
                 'message' => __('Solicitud recibida. El colegio debe activar y entregar el PIN.')], 202);
         }
-        $d = $r->validate(['email' => 'required|email|max:255', 'grado_token' => 'required|string|size:24']);
+        $d = $r->validate(['email' => 'bail|required|string|max:255|email:rfc', 'grado_token' => 'required|string|size:24']);
         abort_unless(collect($c->configuracion['grados'])->contains('token', $d['grado_token']), 404);
         $grade = $this->intake->resolve('grado', $d['grado_token'], Grado::where('ano_lectivo_id', $c->ano_lectivo_id)->where('estado', 'activo'));
         try {
@@ -136,7 +146,7 @@ final class IngresoPublicController extends Controller
         $this->available();
         $d = $r->validate(['pin' => ['required', 'string', 'regex:/\A(?:[0-9]{4}|[0-9]{8})\z/'],
             'tipo_documento' => ['required_with:numero_documento', Rule::in(EnrollmentIntake::DOCUMENT_TYPES)],
-            'numero_documento' => [Rule::requiredIf(strlen((string) $r->input('pin')) === 8), 'nullable', 'string', 'regex:/^[a-zA-Z0-9-]{3,40}$/'],
+            'numero_documento' => [Rule::requiredIf(is_string($r->input('pin')) && strlen($r->input('pin')) === 8), 'nullable', 'string', 'max:40', EnrollmentInput::identification($r->input('tipo_documento'))],
             'campana_token' => 'nullable|string|size:24',
             'access' => ['nullable', 'string', 'regex:/\A[a-f0-9]{64}\z/']]);
         if (isset($d['numero_documento'])) {
@@ -205,7 +215,7 @@ final class IngresoPublicController extends Controller
     public function renewal(Request $r, EnrollmentRenewal $renewal)
     {
         $d = $r->validate(['tipo_documento' => 'required|string|in:RC,TI,CC,CE,PASAPORTE,OTRO',
-            'numero_documento' => 'required|string|regex:/^[a-zA-Z0-9-]{3,40}$/']);
+            'numero_documento' => ['required', 'string', 'max:40', EnrollmentInput::identification($r->input('tipo_documento'))]]);
 
         return response()->json(['data' => DB::transaction(function () use ($r, $d, $renewal) {
             $s = $this->session($r, true);
@@ -259,8 +269,9 @@ final class IngresoPublicController extends Controller
         return response()->json(['data' => $this->intake->present($application)]);
     }
 
-    public function upload(Request $r, string $requirement)
+    public function upload(Request $r)
     {
+        $requirement = $r->route('requirement');
         $created = null;
         try {
             $application = DB::transaction(function () use ($r, $requirement, &$created) {
@@ -288,8 +299,9 @@ final class IngresoPublicController extends Controller
         abort(410, __('intake.finalSubmissionOnly'));
     }
 
-    public function download(Request $r, string $document)
+    public function download(Request $r)
     {
+        $document = $r->route('document');
         $s = $this->session($r);
         $d = $this->intake->resolve('ingreso-documento', $document, Documento::where('solicitud_id', $s->id));
         $file = StoredFile::where('tenant_id', tenant()->getTenantKey())->findOrFail($d->archivo_id);

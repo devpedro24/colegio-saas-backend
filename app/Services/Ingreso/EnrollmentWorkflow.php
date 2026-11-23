@@ -29,8 +29,11 @@ final class EnrollmentWorkflow
         return DB::transaction(function () use ($campaign, $data) {
             $campaign = Campana::lockForUpdate()->findOrFail($campaign->id);
             $this->intake->open($campaign);
-            abort_unless(collect($campaign->configuracion['grados'])->contains('token', $data['grado_token']), 404);
-            $grade = $this->intake->resolve('grado', $data['grado_token'], Grado::where('ano_lectivo_id', $campaign->ano_lectivo_id)->where('estado', 'activo'));
+            $grade = null;
+            if (! empty($data['grado_token'])) {
+                abort_unless(collect($campaign->configuracion['grados'])->contains('token', $data['grado_token']), 404);
+                $grade = $this->intake->resolve('grado', $data['grado_token'], Grado::where('ano_lectivo_id', $campaign->ano_lectivo_id)->where('estado', 'activo'));
+            }
             $email = Str::lower(trim($data['email']));
             $lookup = $this->identityLookup($data['tipo_documento'], $data['numero_documento']);
             // A public request never reveals or overwrites an existing person's data.
@@ -44,7 +47,7 @@ final class EnrollmentWorkflow
                 abort_unless($profile && $this->identityLookup($profile->tipo_documento, $profile->numero_documento) === $lookup,
                     422, __('El correo ya está registrado. Utiliza el correo individual del estudiante o consulta al colegio.'));
             }
-            $application = Solicitud::create(['campana_id' => $campaign->id, 'grado_id' => $grade->id, 'email' => $email,
+            $application = Solicitud::create(['campana_id' => $campaign->id, 'grado_id' => $grade?->id, 'email' => $email,
                 'estado' => 'pin_pendiente', 'pin_manual' => true, 'identidad_lookup' => $lookup,
                 'pin_hash' => Hash::make(Str::random(40)), 'pin_expira' => now(), 'sesion_version' => Str::random(64),
                 'requisitos_snapshot' => $campaign->configuracion, 'correcciones' => [],
@@ -56,13 +59,17 @@ final class EnrollmentWorkflow
         });
     }
 
-    public function activate(Solicitud $candidate, User $actor, ?string $expires): array
+    public function activate(Solicitud $candidate, User $actor): array
     {
-        return DB::transaction(function () use ($candidate, $actor, $expires) {
+        return DB::transaction(function () use ($candidate, $actor) {
             AnoLectivo::lockForUpdate()->findOrFail($candidate->campana->ano_lectivo_id);
+            $campaign = Campana::lockForUpdate()->findOrFail($candidate->campana_id);
             $application = Solicitud::lockForUpdate()->findOrFail($candidate->id);
             abort_unless($application->pin_manual, 422, __('Esta solicitud utiliza su enlace privado anterior.'));
+            abort_unless(in_array($application->estado, ['pin_pendiente', 'borrador'], true) && ! $application->enviada_en,
+                422, __('La inscripción ya fue enviada. Continúa la revisión con el PIN existente.'));
             abort_if(in_array($application->estado, ['anulada', 'rechazada'], true), 422, __('La solicitud ya está cerrada.'));
+            $expires = $campaign->configuracion['pin_expira_en'] ?? null;
             $deadline = $expires ? CarbonImmutable::parse($expires, tenant()->zonaHorariaInstitucional()) : null;
             abort_if($deadline && ! $deadline->isFuture(), 422, __('La vigencia del PIN debe estar en el futuro.'));
             if ($application->estado === 'pin_pendiente') {
@@ -75,7 +82,9 @@ final class EnrollmentWorkflow
                 'pin_intentos' => 0, 'pin_activado_en' => now(), 'sesion_version' => Str::random(64)])->save();
             $this->intake->event($application, 'pin_activado', null, $actor);
             $this->intake->notify($application, 'pin-manual:'.Str::uuid(), __('Tu PIN de inscripción está activo'),
-                'Tu PIN es '.$pin.'. '.__('Ingresa con la identificación del estudiante para continuar.')."\n".$this->intake->baseUrl().'/ingreso');
+                'Tu PIN es '.$pin.'. '.__('Ingresa con la identificación del estudiante para continuar.')."\n"
+                .($deadline ? 'Vence el '.$deadline->format('d/m/Y H:i').' ('.tenant()->zonaHorariaInstitucional().').'."\n" : '')
+                .$this->intake->baseUrl().'/ingreso', true);
 
             return ['data' => $this->intake->present($application), 'pin' => $pin];
         });
@@ -139,9 +148,8 @@ final class EnrollmentWorkflow
             $version = null;
             if (str_starts_with($data['campo'], 'documentos.')) {
                 $document = $application->documentos()->where('requisito', substr($data['campo'], 11))->orderByDesc('version')->first();
-                abort_unless($document && $document->estado !== 'retirado', 422, __('El documento todavía no fue adjuntado.'));
-                $version = $document->version;
-                $document->update(['estado' => 'rechazado', 'observacion' => $data['motivo'], 'revisor_id' => $actor->id]);
+                $version = $document?->version ?? 0;
+                $document?->update(['estado' => 'rechazado', 'observacion' => $data['motivo'], 'revisor_id' => $actor->id]);
             }
             $corrections[] = ['key' => (string) Str::uuid(), 'campo' => $data['campo'], 'motivo' => $data['motivo'],
                 'hasta' => $deadline->utc()->toIso8601String(), 'version' => $version, 'resuelta' => false];

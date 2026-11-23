@@ -88,6 +88,7 @@ Route::middleware([
     Route::prefix('ingreso-publico')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoPublicController::class)->group(function () {
         Route::get('/catalogo', 'catalog')->middleware('throttle:60,1');
         Route::get('/ubicaciones', 'geography')->middleware('throttle:60,1');
+        Route::get('/indicativos', 'contactOptions')->middleware('throttle:60,1');
         Route::get('/campanas/{campaign}', 'campaignDetail')->middleware('throttle:60,1');
         Route::post('/consultar', 'consult')->middleware('throttle:ingreso-access');
         Route::post('/{campaign}/iniciar', 'start')->middleware('throttle:ingreso-access');

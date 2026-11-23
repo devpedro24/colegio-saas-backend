@@ -2,11 +2,20 @@
 
 declare(strict_types=1);
 
+use App\Models\Tenant;
+use App\Support\Storage\TenantFilesystemBootstrapper;
+use App\Tenancy\PrefixedCacheTenancyBootstrapper;
+use App\Tenancy\ShortTenantIdGenerator;
+use Stancl\Tenancy\Bootstrappers\DatabaseTenancyBootstrapper;
+use Stancl\Tenancy\Bootstrappers\QueueTenancyBootstrapper;
 use Stancl\Tenancy\Database\Models\Domain;
+use Stancl\Tenancy\TenantDatabaseManagers\MySQLDatabaseManager;
+use Stancl\Tenancy\TenantDatabaseManagers\PostgreSQLDatabaseManager;
+use Stancl\Tenancy\TenantDatabaseManagers\SQLiteDatabaseManager;
 
 return [
-    'tenant_model' => \App\Models\Tenant::class,
-    'id_generator' => App\Tenancy\ShortTenantIdGenerator::class,
+    'tenant_model' => Tenant::class,
+    'id_generator' => ShortTenantIdGenerator::class,
 
     'domain_model' => Domain::class,
 
@@ -25,10 +34,10 @@ return [
      * To configure their behavior, see the config keys below.
      */
     'bootstrappers' => [
-        Stancl\Tenancy\Bootstrappers\DatabaseTenancyBootstrapper::class,
-        App\Tenancy\PrefixedCacheTenancyBootstrapper::class,
-        Stancl\Tenancy\Bootstrappers\FilesystemTenancyBootstrapper::class,
-        Stancl\Tenancy\Bootstrappers\QueueTenancyBootstrapper::class,
+        DatabaseTenancyBootstrapper::class,
+        PrefixedCacheTenancyBootstrapper::class,
+        TenantFilesystemBootstrapper::class,
+        QueueTenancyBootstrapper::class,
         // Stancl\Tenancy\Bootstrappers\RedisTenancyBootstrapper::class, // Note: phpredis is needed
     ],
 
@@ -55,10 +64,10 @@ return [
          * TenantDatabaseManagers are classes that handle the creation & deletion of tenant databases.
          */
         'managers' => [
-            'sqlite' => Stancl\Tenancy\TenantDatabaseManagers\SQLiteDatabaseManager::class,
-            'mysql' => Stancl\Tenancy\TenantDatabaseManagers\MySQLDatabaseManager::class,
-            'mariadb' => Stancl\Tenancy\TenantDatabaseManagers\MySQLDatabaseManager::class,
-            'pgsql' => Stancl\Tenancy\TenantDatabaseManagers\PostgreSQLDatabaseManager::class,
+            'sqlite' => SQLiteDatabaseManager::class,
+            'mysql' => MySQLDatabaseManager::class,
+            'mariadb' => MySQLDatabaseManager::class,
+            'pgsql' => PostgreSQLDatabaseManager::class,
 
         /**
          * Use this database manager for MySQL to have a DB user created for each tenant database.
@@ -124,7 +133,7 @@ return [
          * edge cases, it can cause issues (like using Passport with Vapor - see #196), so
          * you may want to disable this if you are experiencing these edge case issues.
          */
-        'suffix_storage_path' => true,
+        'suffix_storage_path' => false,
 
         /**
          * By default, asset() calls are made multi-tenant too. You can use global_asset() and mix()

@@ -79,10 +79,15 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('account-security', function (Request $request) {
             return Limit::perMinute(5)->by($request->getHost().'|'.$request->ip());
         });
-        RateLimiter::for('ingreso-access', fn (Request $r) => [
-            Limit::perMinute(5)->by('ingreso-ip|'.$r->getHost().'|'.$r->ip()),
-            Limit::perHour(5)->by('ingreso-secret|'.$r->getHost().'|'.hash('sha256', strtolower((string) ($r->input('email') ?: $r->input('numero_documento') ?: $r->input('access') ?: $r->cookie('ingreso_challenge') ?: $r->input('pin'))))),
-        ]);
+        RateLimiter::for('ingreso-access', function (Request $r) {
+            $identifier = $r->input('email') ?: $r->input('numero_documento') ?: $r->input('access') ?: $r->cookie('ingreso_challenge') ?: $r->input('pin');
+            $identifier = is_string($identifier) ? strtolower(substr($identifier, 0, 1024)) : 'invalid-input';
+
+            return [
+                Limit::perMinute(5)->by('ingreso-ip|'.$r->getHost().'|'.$r->ip()),
+                Limit::perHour(5)->by('ingreso-secret|'.$r->getHost().'|'.hash('sha256', $identifier)),
+            ];
+        });
         RateLimiter::for('ingreso-upload', fn (Request $r) => [
             Limit::perMinute(5)->by($r->getHost().'|'.$r->ip()),
             Limit::perDay(100)->by($r->getHost().'|'.$r->ip()),

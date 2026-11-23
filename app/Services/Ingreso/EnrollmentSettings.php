@@ -15,6 +15,16 @@ use Illuminate\Validation\ValidationException;
 
 final class EnrollmentSettings
 {
+    public const MAX_SCHOOL_AGE = 20;
+
+    /** Include the complete policy in the evidence without invalidating legacy hashes. */
+    public static function privacyVersion(array $configuration): string
+    {
+        $policy = $configuration['politica_datos'] ?? '';
+
+        return hash('sha256', $configuration['privacidad'].($policy !== '' ? "\n\n".$policy : ''));
+    }
+
     public function record(): object
     {
         return DB::table('ingreso_configuracion')->find(1);
@@ -25,6 +35,7 @@ final class EnrollmentSettings
         $settings = $this->record();
 
         return ['version' => (int) $settings->version, 'privacidad' => $settings->privacidad ?? '',
+            'politica_datos' => $settings->politica_datos ?? '', 'edad_limite' => self::MAX_SCHOOL_AGE,
             'requiere_revision' => (bool) $settings->requiere_revision,
             'zona_horaria' => tenant()->zonaHorariaInstitucional(),
             'grados' => GradoInstitucional::orderBy('nivel')->orderBy('id')->get()->map(fn ($g) => [
@@ -40,6 +51,7 @@ final class EnrollmentSettings
         $config = $campaign->configuracion;
         $config['documentos'] = array_map(fn ($document) => array_diff_key($document, ['max_mb' => true]), $config['documentos']);
         $config['privacidad'] = $settings->version > 0 ? $settings->privacidad : ($config['privacidad'] ?? $settings->privacidad ?? '');
+        $config['politica_datos'] = $settings->politica_datos ?? '';
         $grades = Grado::with('ingresoGrado')->where('ano_lectivo_id', $campaign->ano_lectivo_id)->get()
             ->keyBy(fn ($g) => OpaqueUrlToken::for('grado', $g->id));
         $config['grados'] = array_map(function ($g) use ($grades, $settings) {
@@ -55,17 +67,24 @@ final class EnrollmentSettings
         return $config;
     }
 
+    public static function today(): CarbonImmutable
+    {
+        return CarbonImmutable::today(tenant()->zonaHorariaInstitucional());
+    }
+
     public function ageValidation(Solicitud $application, array $data, ?int $gradeId = null): array
     {
+        $today = self::today();
+        $birth = CarbonImmutable::parse($data['nacimiento'], $today->timezone)->startOfDay();
+        if ($birth->greaterThan($today)) {
+            throw ValidationException::withMessages(['datos.nacimiento' => __('intake.invalidBirth')]);
+        }
         $gradeId ??= $application->grado_aprobado_id ?? $application->grado_id;
         $previous = $application->validacion_edad;
         // A birthday or a new school policy must not revoke an already accepted submission.
         if ($previous && $previous['nacimiento'] === $data['nacimiento'] && (int) $previous['grado_id'] === $gradeId) {
             return $previous;
         }
-        $timezone = tenant()->zonaHorariaInstitucional();
-        $today = CarbonImmutable::now($timezone)->startOfDay();
-        $birth = CarbonImmutable::parse($data['nacimiento'], $timezone)->startOfDay();
         $age = (int) $birth->diffInYears($today, false);
         $rule = collect($this->configuration($application->campana)['grados'])->firstWhere('token', OpaqueUrlToken::for('grado', $gradeId));
         $min = $rule['edad_min'] ?? null;

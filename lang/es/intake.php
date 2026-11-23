@@ -1,6 +1,10 @@
 <?php
 
 return [
+    'invalidName' => 'Ingresa un nombre válido, sin números ni símbolos ajenos al nombre.',
+    'numericIdentity' => 'Este tipo de documento solo admite números, de 3 a 40 dígitos.',
+    'invalidIdentity' => 'Ingresa una identificación válida, de 3 a 40 caracteres alfanuméricos.',
+    'invalidText' => 'Ingresa texto válido, sin etiquetas HTML ni caracteres de control.',
     'ocrUnavailable' => 'No se pudo leer el documento. Prueba con un archivo legible; si continúa, contacta al colegio para revisar el servicio de lectura. No se guardó ni envió la solicitud.',
     'identityPages' => 'El documento de identidad admite un máximo de 4 páginas.',
     'identityFormat' => 'El documento de identidad debe ser PDF, JPG o PNG, según los formatos configurados.',
@@ -12,7 +16,7 @@ return [
     'invalidPhone' => 'Ingresa un celular colombiano válido: +57 y 10 dígitos que comiencen por 3.',
     'specifyRelationship' => 'Especifica el parentesco cuando seleccionas Otro.',
     'invalidMunicipality' => 'Selecciona un municipio que pertenezca al departamento indicado.',
-    'invalidBirth' => 'Revisa la fecha de nacimiento: no puede corresponder al año actual ni a una fecha futura.',
+    'invalidBirth' => 'La fecha de nacimiento debe ser hoy o anterior, según la fecha del colegio.',
     'ageOutsideGrade' => 'La edad actual del estudiante es :age años. El grado admite entre :min y :max años. Revisa el grado o contacta al colegio.',
     'batchTooLarge' => 'Los archivos superan el tamaño total que admite este servidor. Reduce su tamaño o contacta al colegio.',
     'fileTooLarge' => 'El archivo supera el tamaño máximo admitido. Reduce su tamaño o contacta al colegio.',

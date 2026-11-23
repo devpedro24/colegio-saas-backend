@@ -34,13 +34,15 @@ final class EnrollmentSettingsController extends Controller
         $this->authorizeSettings($request);
         $data = $request->validate([
             'version' => 'required|integer|min:0', 'privacidad' => 'required|string|min:20|max:5000',
+            'politica_datos' => 'sometimes|nullable|string|min:20|max:20000',
             'grados' => 'present|array|max:500', 'grados.*' => 'array:url_token,edad_min,edad_max',
             'grados.*.url_token' => 'required|string|size:24|distinct',
-            'grados.*.edad_min' => 'present|nullable|integer|min:1|max:120',
-            'grados.*.edad_max' => 'present|nullable|integer|min:1|max:120',
+            'grados.*.edad_min' => 'present|nullable|integer|min:1|max:'.EnrollmentSettings::MAX_SCHOOL_AGE,
+            'grados.*.edad_max' => 'present|nullable|integer|min:1|max:'.EnrollmentSettings::MAX_SCHOOL_AGE,
         ]);
         DB::transaction(function () use ($data, $request) {
             $current = DB::table('ingreso_configuracion')->lockForUpdate()->find(1);
+            $policy = array_key_exists('politica_datos', $data) ? $data['politica_datos'] : $current->politica_datos;
             abort_if((int) $current->version !== $data['version'], 409, __('intake.settingsChanged'));
             $ids = OpaqueUrlToken::ids('ingreso-grado', array_column($data['grados'], 'url_token'), GradoInstitucional::query());
             abort_unless(count($ids) === count($data['grados']), 404);
@@ -56,11 +58,14 @@ final class EnrollmentSettingsController extends Controller
             }
             DB::table('ingreso_configuracion')->where('id', 1)->update([
                 'version' => $data['version'] + 1, 'privacidad' => $data['privacidad'],
+                'politica_datos' => $policy,
                 'requiere_revision' => false, 'updated_at' => now(),
             ]);
             AuditLogger::tenant($request->user(), 'UPDATE', 'ingreso-configuracion', '1',
                 ['version' => (int) $current->version], ['version' => $data['version'] + 1, 'grados' => $data['grados'],
-                    'privacidad_hash' => hash('sha256', $data['privacidad'])]);
+                    'privacidad_hash' => EnrollmentSettings::privacyVersion([
+                        'privacidad' => $data['privacidad'], 'politica_datos' => $policy ?? '',
+                    ])]);
         });
 
         return response()->json(['data' => $settings->present()]);
