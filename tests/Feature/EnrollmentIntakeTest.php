@@ -518,7 +518,7 @@ class EnrollmentIntakeTest extends TestCase
             Notificacion::latest('id')->firstOrFail()->contenido);
         $notice = Notificacion::latest('id')->firstOrFail();
         $rendered = app(EnrollmentMail::class)->data($notice->asunto, $notice->contenido, $notice->clave);
-        $this->assertStringContainsString('Vence el '.$firstDeadline->format('d/m/Y H:i'), implode(' ', $rendered['lines']));
+        $this->assertStringContainsString('Válido hasta el '.$firstDeadline->format('d/m/Y').' a las '.$firstDeadline->format('H:i'), $rendered['pinValidity']);
 
         $this->staff();
         $secondDeadline = now('America/Bogota')->addDays(2)->startOfMinute();

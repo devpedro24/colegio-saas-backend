@@ -31,6 +31,15 @@ try {
         if ($argument === '--browser-auth') {
             $files = ['tests/Feature/BrowserCookieAuthTest.php'];
         }
+        if ($argument === '--enrollment') {
+            $files = ['tests/Feature/EnrollmentAccessTest.php'];
+        }
+        if ($argument === '--users') {
+            $files = ['tests/Feature/UserInputValidationTest.php'];
+        }
+        if ($argument === '--onboarding') {
+            $files = ['tests/Feature/TenantOnboardingTest.php'];
+        }
         if (str_starts_with($argument, '--filter=')) {
             $options[] = $argument;
         }
