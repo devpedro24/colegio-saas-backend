@@ -17,7 +17,7 @@ use App\Support\Realtime\RealtimeChanges;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
-/** All state and recipients live on the current tenant connection. No mail channel. */
+/** Publication and its optional mail outbox share a tenant transaction. */
 final class AulaNotifications
 {
     private array $contexts = [];
@@ -158,6 +158,8 @@ final class AulaNotifications
         return DB::table('user_notification_updates')->insertOrIgnore([
             'url_token' => Str::random(24), 'user_id' => $recipient->id, 'recurso_id' => $resource->id,
             'event' => $event, 'deduplication_key' => $key, 'created_at' => now('UTC'),
+            ...(($resource->configuracion['enviar_correo'] ?? false) && $this->enrolledStudent($recipient, $resource->seccion->aula)
+                ? ['correo_estado' => 'pendiente', 'correo_disponible_en' => now()] : []),
         ]) > 0;
     }
 
@@ -170,6 +172,7 @@ final class AulaNotifications
     {
         $fields = $resource->only(['seccion_id', 'tipo', 'titulo', 'contenido', 'configuracion', 'estado',
             'calificable', 'llevar_planilla', 'peso', 'disponible_desde', 'disponible_hasta', 'fecha_limite', 'orden']);
+        unset($fields['configuracion']['enviar_correo']);
         $fields['attachments'] = DB::table('aula_adjuntos')->where('recurso_id', $resource->id)->orderBy('id')
             ->get(['archivo_token', 'nombre'])->toArray();
         $fields['questions'] = $resource->preguntas()->with('medios')->get()->map(fn ($question) => [

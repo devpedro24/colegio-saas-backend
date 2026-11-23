@@ -20,7 +20,7 @@ final class DispatchEventMail extends Command
             ->when($this->option('tenant'), fn ($q, $slug) => $q->where('slug', $slug))->cursor() as $school) {
             try {
                 $school->run(function () use ($school) {
-                    if (Schema::hasTable('evento_correos') && app(EventMailOutbox::class)->due()->exists()) {
+                    if (Schema::hasTable('evento_correos') && app(EventMailOutbox::class)->hasDue()) {
                         SendEventMailBatch::dispatch((string) $school->getKey());
                     }
                 });

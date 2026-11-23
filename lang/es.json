@@ -49,7 +49,7 @@
   "El grupo no corresponde al grado aprobado.": "El grupo no corresponde al grado aprobado.",
   "La solicitud ya tiene otro grupo.": "La solicitud ya tiene otro grupo.",
   "La solicitud no está aprobada.": "La solicitud no está aprobada.",
-  "El grupo alcanzó su cupo. Genera otra propuesta.": "El grupo alcanzó su cupo. Genera otra propuesta.",
+  "El grupo alcanzó su cupo. La solicitud sigue aprobada y pendiente de grupo.": "El grupo alcanzó su cupo. La solicitud sigue aprobada y pendiente de grupo.",
   "La cuenta del estudiante no está activa.": "La cuenta del estudiante no está activa.",
   "El estudiante ya tiene matrícula este año.": "El estudiante ya tiene matrícula este año.",
   "No se pudo enviar el correo. Revisa la configuración institucional y vuelve a probar.": "No se pudo enviar el correo. Revisa la configuración institucional y vuelve a probar.",

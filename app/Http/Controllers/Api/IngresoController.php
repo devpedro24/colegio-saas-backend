@@ -253,7 +253,8 @@ final class IngresoController extends Controller
         $this->permit($request, 'ver');
 
         return response()->json(['data' => Notificacion::orderByDesc('id')->limit(200)->get()->map(fn ($notice) => [
-            'key' => hash('sha256', $notice->clave), 'email' => $notice->email, 'asunto' => $notice->asunto,
+            'key' => hash('sha256', $notice->clave), 'estado' => $notice->enviada_en ? 'enviado' : $notice->estado,
+            'solicitud_token' => $notice->solicitud_id ? OpaqueUrlToken::for('ingreso-solicitud', $notice->solicitud_id) : null, 'email' => $notice->email, 'asunto' => $notice->asunto,
             'enviada_en' => $notice->enviada_en?->toIso8601String(), 'creada_en' => $notice->created_at?->toIso8601String(),
             'contenido' => preg_match('/pin|credenciales/', $notice->clave) ? null : $notice->contenido,
         ])]);

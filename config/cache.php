@@ -47,6 +47,15 @@ return [
             'lock_table' => env('DB_CACHE_LOCK_TABLE'),
         ],
 
+        // All tenants authenticating with the same SMTP account share one budget.
+        'school_mail' => [
+            'driver' => 'database',
+            'connection' => env('DB_CACHE_CONNECTION', env('DB_CONNECTION', 'sqlite')),
+            'table' => env('DB_CACHE_TABLE', 'cache'),
+            'lock_table' => env('DB_CACHE_LOCK_TABLE', 'cache_locks'),
+            'prefix' => env('CACHE_PREFIX', 'school').'_smtp_',
+        ],
+
         'file' => [
             'driver' => 'file',
             'path' => storage_path('framework/cache/data'),

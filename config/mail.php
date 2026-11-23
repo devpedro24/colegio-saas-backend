@@ -108,6 +108,9 @@ return [
     |
     */
 
+    'school_per_minute' => (int) env('SCHOOL_MAIL_PER_MINUTE', 10),
+    'school_per_day' => (int) env('SCHOOL_MAIL_PER_DAY', 400),
+
     'from' => [
         'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
         'name' => env('MAIL_FROM_NAME', 'Example'),

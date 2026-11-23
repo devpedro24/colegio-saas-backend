@@ -508,7 +508,7 @@ final class AulaController extends Controller
         $this->access->content($request->user(), $section->aula, 'crear', $request->input('tipo') === 'cuestionario');
         app(AulaContentPolicy::class)->assertEditable($section->periodo);
         $data = $this->resourceInput($request);
-        if ($data['visible_estudiantes']) {
+        if ($data['visible_estudiantes'] || ($data['configuracion']['enviar_correo'] ?? false)) {
             $this->access->content($request->user(), $section->aula, 'publicar');
         }
         if ($data['llevar_planilla']) {
@@ -543,7 +543,9 @@ final class AulaController extends Controller
         app(AulaContentPolicy::class)->assertEditable($resource->seccion->periodo);
         $data = $this->resourceInput($request);
         $request->attributes->set('aula.visibility_changed', $data['visible_estudiantes'] !== $resource->visible_estudiantes);
-        if ($data['visible_estudiantes'] !== $resource->visible_estudiantes || $data['visible_estudiantes']) {
+        $mailChanged = isset($data['configuracion']['enviar_correo'])
+            && (bool) $data['configuracion']['enviar_correo'] !== (bool) ($resource->configuracion['enviar_correo'] ?? false);
+        if ($data['visible_estudiantes'] !== $resource->visible_estudiantes || $data['visible_estudiantes'] || $mailChanged) {
             $this->access->content($request->user(), $resource->seccion->aula, 'publicar');
         }
         if ($data['llevar_planilla'] && ! $resource->llevar_planilla) {
@@ -662,6 +664,11 @@ final class AulaController extends Controller
             && $contentEditable
             && (! $resource->visible_estudiantes || $this->access->canContent($request->user(),
                 $resource->seccion->aula, 'publicar'));
+        if (! $student && $this->access->canContent($request->user(), $resource->seccion->aula, 'publicar')) {
+            $data['puede_revisar_correos'] = $request->user()->can('aula.correos.revisar');
+            $data['correos_en_revision'] = DB::table('user_notification_updates')->where('recurso_id', $resource->id)
+                ->where('correo_estado', 'en_revision')->count();
+        }
         $data['puede_adjuntar'] = $data['puede_gestionar'] && $this->access->canManage($request->user(),
             $resource->seccion->aula, 'aula.archivos.gestionar');
         $data['puede_planilla'] = ! $student && $this->access->canManage($request->user(),
@@ -918,6 +925,7 @@ final class AulaController extends Controller
             'disponible_desde' => ['nullable', 'date_format:Y-m-d\TH:i'],
             'disponible_hasta' => ['nullable', 'date_format:Y-m-d\TH:i'],
             'configuracion' => ['nullable', 'array'],
+            'configuracion.enviar_correo' => ['sometimes', 'boolean'],
             'configuracion.reenvios' => ['sometimes', 'boolean'],
             'configuracion.completar_al' => ['sometimes', Rule::in(['abrir', 'entregar', 'revisar', 'finalizar'])],
             'configuracion.intentos' => ['sometimes', 'integer', 'min:1', 'max:10'],
@@ -943,7 +951,15 @@ final class AulaController extends Controller
 
     private function resourceFields(array $data, ?AulaRecurso $existing = null): array
     {
-        $completion = $data['configuracion']['completar_al'] ?? null;
+        $config = $data['configuracion'] ?? [];
+        if (! array_key_exists('enviar_correo', $config) && isset($existing?->configuracion['enviar_correo'])) {
+            $config['enviar_correo'] = $existing->configuracion['enviar_correo'];
+        }
+        if (($config['enviar_correo'] ?? false) && ! ($existing?->configuracion['enviar_correo'] ?? false)) {
+            abort_unless(app(\App\Services\SchoolMail::class)->readyForDelivery(), 422,
+                __('Configura el correo institucional antes de activar los avisos de Aula por correo.'));
+        }
+        $completion = $config['completar_al'] ?? null;
         abort_if(($data['configuracion']['duracion_minima_minutos'] ?? 0)
             > ($data['configuracion']['duracion_minutos'] ?? 60), 422,
             'El tiempo mínimo no puede superar la duración máxima del cuestionario.');
@@ -965,7 +981,7 @@ final class AulaController extends Controller
             'contenido' => ['bloques' => $data['contenido']['bloques'] ?? [],
                 'html' => isset($data['contenido']['html'])
                     ? app(AulaHtmlSanitizer::class)->sanitize($data['contenido']['html']) : null],
-            'configuracion' => $data['configuracion'] ?? [],
+            'configuracion' => $config,
             'estado' => $data['visible_estudiantes'] ? 'publicado'
                 : ($existing?->estado === 'archivado' ? 'archivado' : 'borrador'),
             'visible_estudiantes' => $data['visible_estudiantes'], 'calificable' => $data['calificable'],

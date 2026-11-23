@@ -72,6 +72,48 @@ class EventNotificationTest extends TestCase
             ->assertOk()->assertHeader('X-Notification-Record');
     }
 
+    public function test_school_wide_email_spike_stays_durable_and_resumes_in_batches(): void
+    {
+        $f = $this->gradebookFixture();
+        $capture = new \Illuminate\Mail\Transport\ArrayTransport;
+        config(['mail.default' => 'spike', 'mail.mailers.spike' => ['transport' => 'smtp'],
+            'mail.from.address' => 'colegio@example.test']);
+        \Illuminate\Support\Facades\Mail::extend('smtp', fn () => $capture);
+        $f['school']->run(function () {
+            $group = Grupo::firstOrFail();
+            $password = bcrypt('SyntheticPassword123!');
+            // The fixture already has one enrolled student in this group.
+            for ($i = 1; $i < 1000; $i++) {
+                $id = DB::table('users')->insertGetId(['name' => 'Estudiante de prueba', 'email' => "alumno-{$i}@example.test",
+                    'role' => 'estudiante', 'status' => 'active', 'password' => $password, 'created_at' => now(), 'updated_at' => now()]);
+                DB::table('matriculas')->insert(['estudiante_id' => $id, 'grupo_id' => $group->id, 'estado' => 'activa',
+                    'ano_lectivo_id' => $group->ano_lectivo_id, 'created_at' => now(), 'updated_at' => now()]);
+            }
+        });
+        $event = $this->createEvent($f, 'docente', ['enviar_correo' => true]);
+        $this->publish($f, $event);
+        $f['school']->run(function () use ($capture) {
+            $rows = \App\Models\Academico\EventoCorreo::query();
+            $this->assertSame(1000, (clone $rows)->where('estado', 'pendiente')->count());
+            $outbox = app(\App\Services\EventMailOutbox::class);
+            $outbox->deliverBatch();
+            $outbox->deliverBatch();
+            $this->assertCount(9, $capture->messages());
+            $this->assertSame(991, (clone $rows)->where('estado', 'pendiente')->where('intentos', 0)->count());
+            Carbon::setTestNow(now()->addMinute());
+            $outbox->deliverBatch();
+            $this->assertCount(18, $capture->messages());
+            $this->assertSame(982, (clone $rows)->where('estado', 'pendiente')->count());
+            for ($minute = 0; $minute < 3 * 1440 && $capture->messages()->count() < 1000; $minute++) {
+                Carbon::setTestNow(now()->addMinute());
+                $outbox->deliverBatch();
+            }
+            $this->assertSame(1000, (clone $rows)->where('estado', 'enviado')->where('intentos', 1)->count());
+            $this->assertCount(1000, $capture->messages());
+            $this->assertCount(1000, $capture->messages()->map(fn ($m) => $m->getEnvelope()->getRecipients()[0]->getAddress())->unique());
+        });
+    }
+
     public function test_drafts_records_publication_retries_edits_and_deletion_are_consistent(): void
     {
         $f = $this->gradebookFixture();

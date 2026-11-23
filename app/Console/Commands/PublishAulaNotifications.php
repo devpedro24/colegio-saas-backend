@@ -24,7 +24,13 @@ final class PublishAulaNotifications extends Command
         }
         foreach ($query->cursor() as $tenant) {
             try {
-                $tenant->run(fn () => app(AulaNotifications::class)->reconcileDue());
+                $tenant->run(function () use ($tenant) {
+                    app(AulaNotifications::class)->reconcileDue();
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('user_notification_updates', 'correo_estado')
+                        && \App\Jobs\SendAulaMailBatch::hasDue()) {
+                        \App\Jobs\SendAulaMailBatch::dispatch((string) $tenant->getKey());
+                    }
+                });
             } catch (Throwable $error) {
                 report($error);
                 $this->error("{$tenant->slug}: no se pudieron publicar los avisos.");

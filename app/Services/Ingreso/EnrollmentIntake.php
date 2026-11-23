@@ -137,9 +137,11 @@ final class EnrollmentIntake
 
     public function notify(Solicitud $s, string $key, string $subject, string $text, bool $immediate = false): void
     {
+        $type = Notificacion::reviewType($key);
         $notice = Notificacion::firstOrCreate(['clave' => $s->id.':'.$key], ['email' => $s->email,
+            'solicitud_id' => $type ? $s->id : null, 'tipo' => $type,
             'asunto' => $subject, 'contenido' => $text."\n\nSeguimiento: ".$this->baseUrl().'/ingreso']);
-        if (! $notice->enviada_en) {
+        if (! $notice->enviada_en && ($notice->estado ?? 'pendiente') === 'pendiente') {
             $school = (string) tenant()->getTenantKey();
             DB::afterCommit(function () use ($school, $notice, $immediate) {
                 if ($immediate) {

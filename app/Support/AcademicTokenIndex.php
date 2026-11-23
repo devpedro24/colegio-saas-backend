@@ -15,7 +15,7 @@ final class AcademicTokenIndex
     public const RESOURCES = [
         'ingreso_grados' => ['ingreso-grado'],
         'ingreso_campanas' => ['ingreso-campana'], 'ingreso_solicitudes' => ['ingreso-solicitud'],
-        'ingreso_documentos' => ['ingreso-documento'],
+        'ingreso_documentos' => ['ingreso-documento'], 'ingreso_notificaciones' => ['ingreso-aviso'],
         'anos_lectivos' => ['ano-lectivo'], 'periodos' => ['periodo'],
         'sedes' => ['sede'], 'jornadas' => ['jornada'], 'niveles' => ['nivel'],
         'grados' => ['grado'], 'grupos' => ['grupo'], 'bloques_horarios' => ['bloque-horario'],

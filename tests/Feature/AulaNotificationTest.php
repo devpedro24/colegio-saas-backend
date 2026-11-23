@@ -46,6 +46,8 @@ use Tests\TestCase;
 
 final class AulaNotificationTest extends TestCase
 {
+    use \Tests\Support\MixedSchoolMailLoad;
+
     private ?Tenant $gradebookSchool = null;
 
     private string $gradebookActor = 'rector';
@@ -128,6 +130,74 @@ final class AulaNotificationTest extends TestCase
             ->assertJsonPath('meta.total', $total);
     }
 
+    public function test_transfer_to_primero_b_preserves_only_own_submitted_work_from_a(): void
+    {
+        $f = $this->fixture();
+        Storage::fake('tenant');
+        config()->set('storage.scanner', 'null');
+        [$groupB, $sectionB] = $f['school']->run(function () {
+            $origin = AsignacionDocente::firstOrFail();
+            $b = Grupo::where('nombre', '01B')->firstOrFail();
+            $b->update(['sede_id' => $origin->grupo->sede_id, 'jornada_id' => $origin->grupo->jornada_id]);
+            $keys = ['ano_lectivo_id' => $origin->ano_lectivo_id, 'grupo_id' => $b->id, 'materia_id' => $origin->materia_id];
+            AsignacionDocente::create([...$keys, 'docente_id' => $origin->docente_id]);
+            $class = Aula::firstOrCreate($keys);
+            $section = AulaSeccion::create(['aula_id' => $class->id, 'periodo_id' => Periodo::firstOrFail()->id,
+                'titulo' => 'Primero B', 'orden' => 1, 'visible_estudiantes' => true, 'autor_id' => $origin->docente_id]);
+            return [OpaqueUrlToken::for('grupo', $b->id), OpaqueUrlToken::for('aula-seccion', $section->id)];
+        });
+        $task = $this->createResource($f, true, ['tipo' => 'tarea', 'titulo' => 'Taller de Primero A']);
+        $draft = $this->createResource($f, true, ['tipo' => 'tarea', 'titulo' => 'Taller sin enviar']);
+        $base = $f['base'].'/aula';
+        $submit = $base.'/recursos/'.$task.'/entregas';
+        $this->gradebookAuthenticate($f, 'peer');
+        $this->postJson($submit, ['texto' => 'Entrega privada de otro estudiante'])->assertCreated();
+        $this->gradebookAuthenticate($f, 'estudiante');
+        $year = $this->getJson($base.'/catalogo')->assertOk()->assertJsonPath('data.tiene_entregas_anteriores', false)->json('data.ano_token');
+        $this->postJson($base.'/recursos/'.$draft.'/entregas/borrador')->assertCreated();
+        $delivery = $this->postJson($submit.'/borrador')->assertCreated()->json('data.token');
+        $file = $this->post($base.'/entregas/'.$delivery.'/adjuntos', ['archivo' =>
+            UploadedFile::fake()->createWithContent('mi-trabajo.pdf', '%PDF-1.4 evidencia')])->assertCreated()->json('data.token');
+        $version = $this->postJson($submit, ['texto' => 'Mi trabajo en A'])->assertCreated()->json('data.version');
+        $this->gradebookAuthenticate($f, 'docente');
+        $this->putJson($base.'/entregas/'.$delivery.'/revisar', ['version' => $version,
+            'retroalimentacion' => 'Explicaste bien tu respuesta.'])->assertOk();
+        $this->gradebookAuthenticate($f, 'rector');
+        $this->postJson($f['base'].'/matriculas/'.$f['enrollmentToken'].'/correcciones', [
+            'grupo_token' => $groupB, 'fecha_efectiva' => '2028-02-01', 'motivo' => 'Traslado de Primero A a Primero B', 'version' => 0,
+        ])->assertNoContent();
+        $newA = $this->createResource($f, true, ['titulo' => 'Actividad nueva de A']);
+        $newB = $this->createResource([...$f, 'sectionToken' => $sectionB], true, ['titulo' => 'Actividad nueva de B']);
+        $f['school']->run(function () use ($newA, $newB, $f) {
+            $student = OpaqueUrlToken::find('matricula', $f['enrollmentToken'], Matricula::query())->estudiante_id;
+            $notices = DB::table('user_notification_updates')->where('user_id', $student);
+            $this->assertFalse((clone $notices)->where('recurso_id', OpaqueUrlToken::find('aula-recurso', $newA, AulaRecurso::query())->id)->exists());
+            $this->assertSame(1, $notices->where('recurso_id', OpaqueUrlToken::find('aula-recurso', $newB, AulaRecurso::query())->id)->count());
+        });
+        $this->news($f, 'estudiante', 1)->assertJsonPath('data.0.url', '/evaluacion/aula/recursos/'.$newB);
+        $this->getJson($base.'/catalogo')->assertOk()->assertJsonPath('data.tiene_entregas_anteriores', true)
+            ->assertJsonCount(1, 'data.aulas')->assertJsonPath('data.aulas.0.grupo_token', $groupB);
+        $history = $base.'/historial/entregas?ano_token='.$year;
+        $this->getJson($history)->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.grupo', '01A')
+            ->assertJsonPath('data.0.texto', 'Mi trabajo en A')->assertJsonPath('data.0.titulo', 'Taller de Primero A')
+            ->assertJsonPath('data.0.retroalimentacion', 'Explicaste bien tu respuesta.')
+            ->assertJsonPath('data.0.adjuntos.0.token', $file)->assertJsonMissingPath('data.0.matricula_id');
+        $this->get($base.'/adjuntos/'.$file)->assertDownload('mi-trabajo.pdf');
+        $this->getJson($base.'/recursos/'.$newA)->assertForbidden();
+        $this->getJson($base.'/recursos/'.$newB)->assertOk();
+        $this->postJson($submit, ['texto' => 'Cambio posterior'])->assertForbidden();
+        $this->gradebookAuthenticate($f, 'other-group');
+        $this->getJson($history)->assertOk()->assertJsonCount(0, 'data');
+        $this->get($base.'/adjuntos/'.$file)->assertForbidden();
+        $this->gradebookAuthenticate($f, 'no-access');
+        $this->getJson($history)->assertForbidden();
+        $otherSchool = $this->fixture();
+        $this->gradebookAuthenticate($otherSchool, 'estudiante');
+        $this->getJson($otherSchool['base'].'/aula/historial/entregas?ano_token='.$year)->assertNotFound();
+        $this->getJson($otherSchool['base'].'/aula/historial/entregas?ano_token=1')->assertUnprocessable();
+        $this->get($otherSchool['base'].'/aula/adjuntos/'.$file)->assertNotFound();
+    }
+
     public static function visibility(): array
     {
         return ['visible-visible' => [true, true], 'hidden-visible' => [false, true],
@@ -161,6 +231,418 @@ final class AulaNotificationTest extends TestCase
             $this->assertSame($expected * 5, DB::table('user_notification_updates')->count());
             $this->assertSame(1, DB::table('user_notification_records')->count());
             $this->assertSame(User::where('role', 'rector')->value('id'), DB::table('user_notification_records')->value('user_id'));
+        });
+    }
+
+    public static function groupMailOptions(): array
+    {
+        return ['correo activado' => [true], 'correo desmarcado' => [false]];
+    }
+
+    #[DataProvider('groupMailOptions')]
+    public function test_ana_receives_the_group_resource_and_event_in_news_with_optional_email(bool $sendMail): void
+    {
+        $f = $this->gradebookFixture();
+        $inbox = 'ana@example.test';
+        $reference = 'ANA-AULA-EVENTO';
+        $resourceTitle = 'Guía de biología · '.$reference;
+        $eventTitle = 'Taller de biología · '.$reference;
+        $capture = new \Illuminate\Mail\Transport\ArrayTransport;
+        config(['mail.default' => 'test-outbox', 'mail.mailers.test-outbox' => ['transport' => 'smtp'],
+            'mail.from.address' => 'colegio@example.test']);
+        \Illuminate\Support\Facades\Mail::extend('smtp', fn () => $capture);
+        [$resource, $event] = $this->publishGroupMailNotices($f, $inbox, $resourceTitle, $eventTitle, $sendMail);
+
+        $feed = $this->news($f, 'estudiante', 2)->json('data');
+        $entries = collect($feed)->keyBy('event');
+        $this->assertSame($resourceTitle, $entries['aula.resource.published']['resource_title']);
+        $this->assertSame($eventTitle, $entries['calendar.event.published']['resource_title']);
+        $this->assertSame('/evaluacion/aula/recursos/'.$resource, $entries['aula.resource.published']['url']);
+        $this->assertSame('/comunicacion/eventos?evento='.$event['url_token'], $entries['calendar.event.published']['url']);
+        $this->getJson($f['base'].'/aula/recursos/'.$resource)->assertOk()->assertJsonPath('data.titulo', $resourceTitle);
+        $this->getJson($f['base'].'/eventos/'.$event['url_token'].'?opaque=1')->assertOk()->assertJsonPath('data.titulo', $eventTitle);
+
+        $jobs = DB::connection('pgsql')->table('jobs')->where('queue', 'event-mail');
+        $batch = function () {
+            $this->artisan('queue:work', ['connection' => 'event_mail', '--queue' => 'event-mail',
+                '--stop-when-empty' => true, '--sleep' => 0])->assertExitCode(0);
+        };
+        foreach (['aula:publicar-novedades', 'eventos:enviar-correos'] as $command) {
+            $this->artisan($command, ['--tenant' => $f['school']->slug])->assertExitCode(0);
+        }
+        $this->assertSame($sendMail ? 2 : 0, $jobs->count());
+        $batch();
+        $this->assertSame(0, $jobs->count());
+        Carbon::setTestNow(now()->addMinutes(2));
+        $f['school']->run(function () use ($f) {
+            $id = (string) $f['school']->getKey();
+            \App\Jobs\SendAulaMailBatch::dispatch($id);
+            \App\Jobs\SendEventMailBatch::dispatch($id);
+        });
+        $this->assertSame(2, $jobs->count());
+        $batch();
+        $this->assertSame(0, $jobs->count());
+        $this->news($f, 'estudiante', 2);
+        $subjects = [];
+        foreach ($capture->messages() as $message) {
+            $this->assertSame([$inbox], array_map(fn ($to) => $to->getAddress(), $message->getEnvelope()->getRecipients()));
+            $subjects[] = $message->getOriginalMessage()->getSubject();
+        }
+        $expectedSubjects = $sendMail ? ['Nuevo recurso en Aula', 'Nuevo evento del colegio: '.$eventTitle] : [];
+        $this->assertEqualsCanonicalizing($expectedSubjects, $subjects);
+        $f['school']->run(function () use ($sendMail) {
+            $this->assertSame($sendMail, AulaRecurso::sole()->configuracion['enviar_correo'] ?? false);
+            $this->assertSame($sendMail, \App\Models\Academico\Evento::sole()->enviar_correo);
+            if (! $sendMail) {
+                $this->assertDatabaseCount('evento_correos', 0);
+                $this->assertSame(0, DB::table('user_notification_updates')->whereNotNull('correo_estado')->count());
+                $this->assertSame(0, (int) DB::table('user_notification_updates')->sum('correo_intentos'));
+
+                return;
+            }
+            $this->assertDatabaseHas('user_notification_updates', ['event' => 'aula.resource.published',
+                'correo_estado' => 'enviado', 'correo_intentos' => 1]);
+            $this->assertDatabaseHas('evento_correos', ['estado' => 'enviado', 'intentos' => 1]);
+        });
+    }
+
+    public function test_accepted_aula_and_event_messages_survive_worker_death_without_resending(): void
+    {
+        config(['cache.default' => 'database']);
+        $f = $this->gradebookFixture();
+        $smtp = new \Symfony\Component\Process\Process([PHP_BINARY, base_path('tests/Support/admission-smtp-mailbox.php')]);
+        $smtp->setTimeout(90)->start();
+        try {
+            $this->assertTrue($smtp->waitUntil(fn ($type, $out) => str_contains($out, 'ready 127.0.0.1:')));
+            $this->assertSame(1, preg_match('/ready 127\.0\.0\.1:(\d+)/', $smtp->getOutput(), $port));
+            config(['mail.default' => 'local-crash-test', 'mail.from.address' => 'school@example.test',
+                'mail.mailers.local-crash-test' => ['transport' => 'smtp', 'host' => '127.0.0.1', 'port' => (int) $port[1], 'timeout' => 5]]);
+            $f['school']->run(fn () => $this->assertNull(app(\App\Services\SchoolMail::class)->settings()));
+            [$resource, $event] = $this->publishGroupMailNotices($f, 'ana@example.test', 'Guía de Ana', 'Feria de Ana', true);
+            $commands = ['aula:publicar-novedades', 'eventos:enviar-correos'];
+            foreach ($commands as $command) {
+                $this->artisan($command, ['--tenant' => $f['school']->slug])->assertExitCode(0);
+            }
+            $jobs = DB::connection('pgsql')->table('jobs')->where('queue', 'event-mail');
+            $this->assertSame(2, $jobs->count());
+            foreach ([1, 2] as $count) {
+                $worker = new \Symfony\Component\Process\Process([PHP_BINARY, base_path('tests/Support/mixed-mail-worker.php'),
+                    '--crash-after-acceptance', $port[1], (string) now()->timestamp], base_path());
+                $this->assertSame(75, $worker->setTimeout(25)->run(), $worker->getErrorOutput().$worker->getOutput());
+                $this->assertSame($count, (clone $jobs)->whereNotNull('reserved_at')->count());
+            }
+            $accepted = fn () => preg_grep('/^delivered /', explode("\n", $smtp->getOutput()));
+            $this->assertCount(2, $accepted());
+            $subjects = [];
+            foreach ($accepted() as $line) {
+                $mime = base64_decode(substr($line, 10), true);
+                $this->assertStringContainsString('To: ana@example.test', $mime);
+                $subjects[] = preg_match('/^Subject: (.*)$/m', $mime, $match) ? trim($match[1]) : '';
+            }
+            $this->assertEqualsCanonicalizing(['Nuevo recurso en Aula', 'Nuevo evento del colegio: Feria de Ana'], $subjects);
+            $state = function (string $state) use ($f) {
+                $f['school']->run(function () use ($state) {
+                    $this->assertDatabaseHas('user_notification_updates', ['event' => 'aula.resource.published',
+                        'correo_estado' => $state, 'correo_intentos' => 1]);
+                    $this->assertDatabaseHas('evento_correos', ['estado' => $state, 'intentos' => 1, 'enviado_en' => null]);
+                });
+            };
+            $state('enviando');
+            $drain = function () {
+                $this->artisan('queue:work', ['connection' => 'event_mail', '--queue' => 'event-mail',
+                    '--stop-when-empty' => true, '--sleep' => 0])->assertExitCode(0);
+            };
+            Carbon::setTestNow(now()->addMinutes(4));
+            $drain();
+            $state('enviando');
+            Carbon::setTestNow(now()->addMinutes(2));
+            foreach ($commands as $command) {
+                $this->artisan($command, ['--tenant' => $f['school']->slug])->assertExitCode(0);
+            }
+            $drain();
+            $state('en_revision');
+            $eventUrl = $f['base'].'/eventos/'.$event['url_token'];
+            $resourceUrl = $f['base'].'/aula/recursos/'.$resource;
+            $this->gradebookAuthenticate($f, 'docente');
+            $this->getJson($eventUrl.'?opaque=1')->assertOk()->assertJsonPath('data.correos.en_revision', 1)
+                ->assertJsonPath('data.correos.fallido', 0);
+            $this->getJson($resourceUrl)->assertOk()->assertJsonPath('data.correos_en_revision', 1);
+            $this->postJson($eventUrl.'/correos/reintentar?opaque=1')->assertOk();
+            $this->news($f, 'estudiante', 2);
+            $this->getJson($resourceUrl)->assertOk()->assertJsonMissingPath('data.correos_en_revision');
+            $this->getJson($eventUrl.'?opaque=1')->assertOk()->assertJsonMissingPath('data.correos');
+
+            Carbon::setTestNow(now()->addDay());
+            $f['school']->run(function () use ($f) {
+                \App\Jobs\SendAulaMailBatch::dispatch((string) $f['school']->getKey());
+                \App\Jobs\SendEventMailBatch::dispatch((string) $f['school']->getKey());
+            });
+            $drain();
+            $state('en_revision');
+            $this->assertCount(2, $accepted());
+            $this->assertSame(0, $jobs->count());
+            $this->assertSame(0, DB::connection('pgsql')->table('failed_jobs')->where('queue', 'event-mail')->count());
+        } finally {
+            $smtp->stop(1);
+        }
+    }
+
+    public static function reviewCases(): array
+    {
+        return ['reenvío de Evento' => ['eventos', false], 'reenvío de Aula interrumpido' => ['aula', true]];
+    }
+
+    #[DataProvider('reviewCases')]
+    public function test_ana_manual_mail_review(string $resendModule, bool $crashAgain): void
+    {
+        config(['cache.default' => 'database']);
+        $f = $this->gradebookFixture();
+        $smtp = new \Symfony\Component\Process\Process([PHP_BINARY, base_path('tests/Support/admission-smtp-mailbox.php')]);
+        $smtp->setTimeout(120)->start();
+        try {
+            $this->assertTrue($smtp->waitUntil(fn ($type, $out) => str_contains($out, 'ready 127.0.0.1:')));
+            preg_match('/ready 127\.0\.0\.1:(\d+)/', $smtp->getOutput(), $port);
+            config(['mail.default' => 'review-test', 'mail.from.address' => 'school@example.test',
+                'mail.mailers.review-test' => ['transport' => 'smtp', 'host' => '127.0.0.1', 'port' => (int) $port[1]]]);
+            $f['school']->run(fn () => $this->assertNull(app(\App\Services\SchoolMail::class)->settings()));
+            [$resource, $event] = $this->publishGroupMailNotices($f, 'ana@example.test', 'Guía de Ana', 'Feria de Ana', true);
+            $paths = ['aula' => $f['base'].'/aula/recursos/'.$resource.'/revision-correos',
+                'eventos' => $f['base'].'/eventos/'.$event['url_token'].'/revision-correos'];
+            $commands = ['aula' => 'aula:publicar-novedades', 'eventos' => 'eventos:enviar-correos'];
+            $dispatch = fn ($module) => $this->artisan($commands[$module], ['--tenant' => $f['school']->slug])->assertExitCode(0);
+            $crash = function (string $mode) use ($port) {
+                $worker = new \Symfony\Component\Process\Process([PHP_BINARY, base_path('tests/Support/mixed-mail-worker.php'),
+                    $mode, $port[1], (string) now()->timestamp], base_path());
+                $this->assertSame(75, $worker->setTimeout(25)->run(), $worker->getErrorOutput().$worker->getOutput());
+            };
+            $drain = fn () => $this->artisan('queue:work', ['connection' => 'event_mail', '--queue' => 'event-mail',
+                '--stop-when-empty' => true, '--sleep' => 0])->assertExitCode(0);
+            $tick = function () use ($commands, $dispatch, $drain) {
+                Carbon::setTestNow(now()->addMinutes(6));
+                foreach (array_keys($commands) as $module) {
+                    $dispatch($module);
+                }
+                $drain();
+            };
+            foreach (array_keys($paths) as $module) {
+                $dispatch($module);
+                $crash($module === $resendModule ? '--crash-before-smtp' : '--crash-after-acceptance');
+            }
+            $tick();
+            $receipts = fn () => preg_grep('/^delivered /', explode("\n", $smtp->getOutput()));
+            $this->assertCount(1, $receipts());
+            foreach ($paths as $module => $path) {
+                $this->gradebookAuthenticate($f, 'rector');
+                $item = $this->getJson($path)->assertOk()->assertJsonCount(1, 'pendientes')
+                    ->assertJsonPath('pendientes.0.destinatario', 'Ana')->assertJsonPath('pendientes.0.puede_reenviar', true)->json('pendientes.0');
+                $url = $path.'/'.$item['selector'];
+                $body = ['intento' => 1, 'decision' => $module === $resendModule ? 'reenviar' : 'confirmar',
+                    'motivo' => $module === $resendModule ? 'Ana verificó que no recibió este aviso.' : 'Ana confirmó la recepción del aviso.'];
+                foreach (['estudiante', 'docente'] as $role) {
+                    $this->gradebookAuthenticate($f, $role);
+                    $this->getJson($path)->assertForbidden();
+                    $this->postJson($url, $body)->assertForbidden();
+                }
+                $this->gradebookAuthenticate($f, 'rector');
+                $this->postJson($url, [...$body, 'motivo' => '  '])->assertUnprocessable();
+                $this->postJson($url, [...$body, 'intento' => 2])->assertConflict();
+                if ($module === $resendModule) {
+                    $this->raceMailReviewers($f, $module, $url, $body);
+                    $resendUrl = $url;
+                } else {
+                    $this->postJson($url, $body)->assertOk();
+                }
+                $this->postJson($url, $body)->assertConflict();
+                $entry = $this->getJson($path)->assertOk()->assertJsonCount(0, 'pendientes')->assertJsonCount(1, 'historial')
+                    ->assertJsonPath('historial.0.motivo', $body['motivo'])->assertJsonPath('historial.0.destinatario', 'Ana')
+                    ->assertJsonPath('historial.0.decision', $body['decision'])->json('historial.0');
+                $this->assertNotEmpty($entry['responsable']);
+                $this->assertNotEmpty($entry['fecha']);
+            }
+            Carbon::setTestNow(now()->addMinutes(6));
+            $dispatch($resendModule);
+            if ($crashAgain) {
+                $crash('--crash-after-acceptance');
+                $tick();
+                $this->getJson($paths[$resendModule])->assertOk()->assertJsonPath('pendientes.0.puede_reenviar', false)
+                    ->assertJsonPath('pendientes.0.intento', 2);
+                $second = ['intento' => 2, 'decision' => 'reenviar', 'motivo' => 'Revisión del segundo intento.'];
+                $this->postJson($resendUrl, $second)->assertConflict();
+                $this->postJson($resendUrl, [...$second, 'decision' => 'confirmar'])->assertOk();
+                $this->getJson($paths[$resendModule])->assertOk()->assertJsonCount(2, 'historial');
+            } else {
+                $drain();
+            }
+            $tick();
+            $tick();
+            $subjects = [];
+            foreach ($receipts() as $line) {
+                $mime = base64_decode(substr($line, 10), true);
+                $this->assertStringContainsString('To: ana@example.test', $mime);
+                preg_match('/^Subject: (.*)$/m', $mime, $subject);
+                $subjects[] = trim($subject[1]);
+            }
+            $this->assertEqualsCanonicalizing(['Nuevo recurso en Aula', 'Nuevo evento del colegio: Feria de Ana'], $subjects);
+            $f['school']->run(function () use ($resendModule, $crashAgain) {
+                $this->assertDatabaseHas('user_notification_updates', ['event' => 'aula.resource.published',
+                    'correo_estado' => 'confirmado', 'correo_intentos' => $resendModule === 'aula' ? 2 : 1]);
+                $this->assertDatabaseHas('evento_correos', ['estado' => $resendModule === 'eventos' ? 'enviado' : 'confirmado',
+                    'intentos' => $resendModule === 'eventos' ? 2 : 1]);
+                $this->assertSame(1, DB::table('audit_logs')->where('accion', 'AUTHORIZE_RESEND')->count());
+                $this->assertSame($crashAgain ? 2 : 1, DB::table('audit_logs')->where('accion', 'CONFIRM_MAIL')->count());
+            });
+        } finally {
+            $smtp->stop(1);
+        }
+    }
+
+    private function raceMailReviewers(array $f, string $module, string $url, array $body): void
+    {
+        $processes = [];
+        $f['school']->run(function () use ($f, $module, $url, $body, &$processes) {
+            User::where('role', 'docente')->firstOrFail()->givePermissionTo($module.'.correos.revisar');
+            DB::transaction(function () use ($f, $module, $url, $body, &$processes) {
+                $row = $module === 'aula' ? DB::table('user_notification_updates')->where('correo_estado', 'en_revision')
+                    : DB::table('evento_correos')->where('estado', 'en_revision');
+                $this->assertNotNull($row->lockForUpdate()->first());
+                foreach (['rector', 'docente'] as $role) {
+                    $process = new \Symfony\Component\Process\Process([PHP_BINARY, base_path('tests/Support/mail-review-request.php')], base_path());
+                    $process->setTimeout(25)->setInput(json_encode(['url' => $url, 'body' => $body,
+                        'time' => now()->timestamp, 'token' => $f['bearers'][$role]], JSON_THROW_ON_ERROR))->start();
+                    $processes[] = $process;
+                }
+                $deadline = microtime(true) + 20;
+                $table = $module === 'aula' ? 'user_notification_updates' : 'evento_correos';
+                do {
+                    foreach ($processes as $process) {
+                        $this->assertTrue($process->isRunning(), $process->getErrorOutput().$process->getOutput());
+                    }
+                    $waiting = DB::connection('pgsql')->table('pg_stat_activity')->where('datname', DB::connection()->getDatabaseName())
+                        ->where('wait_event_type', 'Lock')->where('query', 'ilike', '%"'.$table.'"%for update%')->count();
+                    if ($waiting === 2) {
+                        return;
+                    }
+                    usleep(50000);
+                } while (microtime(true) < $deadline);
+                $this->fail('Both reviewers must be waiting on the outbox row.');
+            });
+        });
+        $codes = [];
+        foreach ($processes as $process) {
+            $this->assertSame(0, $process->wait(), $process->getErrorOutput());
+            $codes[] = (int) trim($process->getOutput());
+        }
+        $this->assertEqualsCanonicalizing([200, 409], $codes);
+    }
+
+    private function publishGroupMailNotices(array $f, string $inbox, string $resourceTitle, string $eventTitle, bool $sendMail): array
+    {
+        $section = $f['school']->run(function () use ($inbox) {
+            $ana = User::where('role', 'estudiante')->sole();
+            $ana->update(['name' => 'Ana', 'email' => $inbox]);
+            $assignment = AsignacionDocente::sole();
+            $aula = Aula::firstOrCreate(['ano_lectivo_id' => $assignment->ano_lectivo_id,
+                'grupo_id' => $assignment->grupo_id, 'materia_id' => $assignment->materia_id]);
+            $section = AulaSeccion::create(['aula_id' => $aula->id, 'periodo_id' => Periodo::sole()->id,
+                'titulo' => 'Biología', 'orden' => 1, 'visible_estudiantes' => true, 'autor_id' => $assignment->docente_id]);
+
+            return OpaqueUrlToken::for('aula-seccion', $section->id);
+        });
+        $this->gradebookAuthenticate($f, 'docente');
+        $input = $this->input(true, ['titulo' => $resourceTitle, 'configuracion' => $sendMail ? ['enviar_correo' => true] : [],
+            'contenido' => ['html' => '<p>Identifica las partes de la célula.</p>']]);
+        $resource = $this->postJson($f['base'].'/aula/secciones/'.$section.'/recursos', $input)
+            ->assertCreated()->json('data.token');
+        $event = $this->postJson($f['base'].'/eventos?opaque=1', [
+            'titulo' => $eventTitle, 'descripcion' => 'Observación de células del grupo 01A.',
+            'categoria' => 'actividad', 'fecha' => '2028-02-15', 'hora_inicio' => '09:00', 'hora_fin' => '10:00',
+            'institucional' => false, 'grupo_tokens' => [$f['groupToken']], 'materia_token' => $f['subjectToken'],
+            'enviar_correo' => $sendMail,
+        ])->assertCreated()->json('data');
+        $publish = $f['base'].'/eventos/'.$event['url_token'].'/publicar?opaque=1';
+        $this->postJson($publish, ['version' => $event['version']])->assertOk();
+        $this->postJson($publish, ['version' => $event['version']])->assertOk();
+        $this->putJson($f['base'].'/aula/recursos/'.$resource, [...$input, 'version' => 1])->assertOk();
+
+        return [$resource, $event];
+    }
+
+    public function test_optional_aula_mail_waits_for_quota_rechecks_enrollment_and_sends_once(): void
+    {
+        $f = $this->fixture();
+        $this->createResource($f); // Internal news only.
+        $mail = $this->mock(\App\Services\SchoolMail::class);
+        $mail->shouldReceive('readyForDelivery')->andReturn(true);
+        $option = ['configuracion' => ['enviar_correo' => true]];
+        $this->createResource($f, false, $option);
+        $token = $this->createResource($f, true, $option);
+        $this->news($f, 'peer', 2);
+
+        $f['school']->run(function () use ($f, $token, $mail) {
+            $queue = fn () => DB::table('user_notification_updates');
+            $this->assertSame(2, $queue()->where('correo_estado', 'pendiente')->count());
+            $peer = User::where('email', 'peer@aula.test')->firstOrFail();
+            Matricula::where('estudiante_id', $peer->id)->update(['estado' => 'retirada']);
+            $mail->shouldReceive('sendAula')->once()->ordered()->andThrow(new \App\Services\SchoolMailDeferred(60));
+            $mail->shouldReceive('sendAula')->once()->ordered()->withArgs(fn ($to, $subject, $body) =>
+                $to !== $peer->email && $subject === 'Nuevo recurso en Aula' && str_contains($body, '/recursos/'.$token));
+            \Illuminate\Support\Facades\Queue::fake([\App\Jobs\SendAulaMailBatch::class]);
+            $this->artisan('aula:publicar-novedades', ['--tenant' => $f['school']->slug])->assertExitCode(0);
+            \Illuminate\Support\Facades\Queue::assertPushedOn('event-mail', \App\Jobs\SendAulaMailBatch::class);
+            $job = \Illuminate\Support\Facades\Queue::pushed(\App\Jobs\SendAulaMailBatch::class)->sole();
+            $job->handle();
+            $this->assertSame(0, (int) $queue()->sum('correo_intentos'));
+            Carbon::setTestNow(now()->addMinute());
+            $job->handle();
+            $job->handle();
+            $this->assertSame(1, $queue()->where('correo_estado', 'enviado')->count());
+            $this->assertSame(1, $queue()->where('correo_estado', 'cancelado')->where('user_id', $peer->id)->count());
+        });
+    }
+
+    public function test_one_thousand_mixed_school_messages_share_rolling_limits_and_reach_the_capture_once(): void
+    {
+        $f = $this->fixture();
+        $f['school']->run(function () {
+            // Exercise all three real mail methods, intercepting SMTP before any network I/O.
+            $capture = new \Illuminate\Mail\Transport\ArrayTransport;
+            config(['mail.default' => 'spike', 'mail.mailers.spike' => ['transport' => 'smtp'],
+                'mail.from.address' => 'colegio@example.test']);
+            \Illuminate\Support\Facades\Mail::extend('smtp', fn () => $capture);
+            $mail = app(\App\Services\SchoolMail::class);
+            $event = ['school' => 'Colegio', 'title' => 'Encuentro', 'description' => 'Prueba',
+                'date' => '2028-02-10', 'time' => '09:00', 'zone' => 'America/Bogota', 'url' => 'https://example.test/evento'];
+            $times = [];
+            $deferrals = 0;
+            for ($i = 0; $i < 1000; $i++) {
+                $to = "alumno-{$i}@example.test";
+                do {
+                    try {
+                        match ($i % 3) {
+                            0 => $mail->sendEvent($to, $event, 'es'),
+                            1 => $mail->sendAula($to, 'Recurso de prueba', 'Disponible en Aula'),
+                            2 => $mail->sendEnrollment($to, 'Admisión', 'Inscripción admitida.', $i.':admision'),
+                        };
+                        break;
+                    } catch (\App\Services\SchoolMailDeferred $wait) {
+                        $deferrals++;
+                        $this->assertGreaterThan(0, $wait->seconds);
+                        $this->assertLessThan(500, $deferrals);
+                        Carbon::setTestNow(now()->addSeconds($wait->seconds));
+                    }
+                } while (true);
+                $times[] = now()->timestamp;
+                if ($i >= 10) {
+                    $this->assertGreaterThanOrEqual(60, $times[$i] - $times[$i - 10]);
+                }
+                if ($i >= 400) {
+                    $this->assertGreaterThanOrEqual(86400, $times[$i] - $times[$i - 400]);
+                }
+            }
+            $recipients = $capture->messages()->map(fn ($message) => $message->getEnvelope()->getRecipients()[0]->getAddress());
+            $this->assertCount(1000, $recipients);
+            $this->assertCount(1000, $recipients->unique());
+            $this->assertGreaterThanOrEqual(2 * 86400, end($times) - $times[0]);
         });
     }
 

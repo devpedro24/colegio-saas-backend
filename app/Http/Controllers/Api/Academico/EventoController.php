@@ -221,6 +221,7 @@ class EventoController extends Controller
 
         if ($request->boolean('opaque')) {
             return response()->json(['data' => [...EventOpaquePresenter::present($event, $files->all(), $canEdit),
+                'puede_revisar_correos' => $canEdit && $request->user()->can('eventos.correos.revisar'),
                 ...($canEdit ? ['correos' => app(EventMailOutbox::class)->summary($event)] : [])]]);
         }
 
@@ -352,7 +353,7 @@ class EventoController extends Controller
             AuditLogger::tenant($request->user(), 'DELETE', 'evento', (string) $id, $event->toArray());
             app(EventNotifications::class)->changed($event, 'deleted');
             $event->delete();
-            EventoCorreo::where('evento_id', $id)->whereIn('estado', ['pendiente', 'fallido'])
+            EventoCorreo::where('evento_id', $id)->whereIn('estado', ['pendiente', 'reenvio', 'fallido'])
                 ->update(['estado' => 'cancelado']);
         });
 

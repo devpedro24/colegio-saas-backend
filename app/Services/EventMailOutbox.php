@@ -51,7 +51,9 @@ final class EventMailOutbox
     public function summary(Evento $event): array
     {
         $counts = EventoCorreo::where('evento_id', $event->id)->selectRaw('estado, COUNT(*) AS total')->groupBy('estado')->pluck('total', 'estado');
-        return collect(['pendiente', 'enviando', 'enviado', 'fallido', 'cancelado'])->mapWithKeys(fn ($s) => [$s => (int) ($counts[$s] ?? 0)])->all();
+        $counts['pendiente'] = ($counts['pendiente'] ?? 0) + ($counts['reenvio'] ?? 0);
+        $counts['enviando'] = ($counts['enviando'] ?? 0) + ($counts['reenviando'] ?? 0);
+        return collect(['pendiente', 'enviando', 'en_revision', 'enviado', 'confirmado', 'fallido', 'cancelado'])->mapWithKeys(fn ($s) => [$s => (int) ($counts[$s] ?? 0)])->all();
     }
 
     public function retry(Evento $event): void
@@ -63,9 +65,17 @@ final class EventMailOutbox
 
     public function due()
     {
-        return EventoCorreo::where(fn ($q) => $q
-            ->where(fn ($q) => $q->where('estado', 'pendiente')->where('disponible_en', '<=', now()))
-            ->orWhere(fn ($q) => $q->where('estado', 'enviando')->where('updated_at', '<=', now()->subMinutes(5))));
+        return EventoCorreo::whereIn('estado', ['pendiente', 'reenvio'])->where('disponible_en', '<=', now());
+    }
+
+    private function interrupted()
+    {
+        return EventoCorreo::whereIn('estado', ['enviando', 'reenviando'])->where('updated_at', '<=', now()->subMinutes(SchoolMail::REVIEW_AFTER_MINUTES));
+    }
+
+    public function hasDue(): bool
+    {
+        return $this->interrupted()->exists() || (! Cache::has('event-mail:'.tenant()->getTenantKey().':cooldown') && $this->due()->exists());
     }
 
     public function deliverBatch(): void
@@ -73,35 +83,48 @@ final class EventMailOutbox
         $key = 'event-mail:'.tenant()->getTenantKey();
         // A shared cache and a dedicated long retry_after prevent overlapping SMTP batches.
         Cache::lock($key.':lock', 240)->get(function () use ($key) {
-            if (Cache::has($key.':cooldown')) return;
-            Cache::put($key.':cooldown', true, max(60, (int) config('events.batch_interval', 60)));
+            $this->interrupted()->update(['estado' => 'en_revision', 'ultimo_error' => 'delivery_unconfirmed']);
+            $interval = max(60, (int) config('events.batch_interval', 60));
+            if (! Cache::add($key.':cooldown', true, $interval)) return;
             $deadline = microtime(true) + 120;
             foreach ($this->due()->orderBy('id')->limit(min(10, max(1, (int) config('events.batch_size', 10))))->get() as $notice) {
                 if (microtime(true) >= $deadline) break;
                 $event = Evento::find($notice->evento_id);
-                if (! $event || $event->estado !== 'publicado' || ! $event->enviar_correo
-                    || ! $this->students($event)->whereKey($notice->estudiante_id)->exists()) {
-                    $notice->update(['estado' => 'cancelado', 'ultimo_error' => 'out_of_scope']);
+                $resend = $notice->estado === 'reenvio';
+                $inFlight = $resend ? 'reenviando' : 'enviando';
+                $pending = $this->due()->whereKey($notice->id)->where('estado', $notice->estado)->where('intentos', $notice->intentos);
+                $student = $event && $event->estado === 'publicado' && $event->enviar_correo
+                    ? $this->students($event)->find($notice->estudiante_id) : null;
+                if (! $student) {
+                    $pending->update(['estado' => 'cancelado', 'ultimo_error' => 'out_of_scope']);
                     continue;
                 }
-                $notice->update(['estado' => 'enviando', 'intentos' => $notice->intentos + 1]);
+                if (! filter_var($student->email, FILTER_VALIDATE_EMAIL)) {
+                    $pending->update(['estado' => $resend ? 'en_revision' : 'fallido', 'ultimo_error' => 'invalid_recipient']);
+                    continue;
+                }
+                $attempt = $notice->intentos + 1;
+                // Apply the encrypted cast before the conditional database update.
+                $notice->email = $student->email;
+                if (! $pending->update(['estado' => $inFlight, 'intentos' => $attempt, 'email' => $notice->getAttributes()['email']])) {
+                    continue;
+                }
+                $sending = EventoCorreo::whereKey($notice->id)->where('estado', $inFlight)->where('intentos', $attempt);
                 try {
-                    $student = $this->students($event)->find($notice->estudiante_id);
-                    if (! $student || ! filter_var($student->email, FILTER_VALIDATE_EMAIL)) {
-                        $notice->update(['estado' => 'fallido', 'ultimo_error' => 'invalid_recipient']);
-                        continue;
-                    }
-                    $notice->email = $student->email;
-                    $notice->save();
-                    app(SchoolMail::class)->sendEvent($notice->email, $event->correo_contenido, $notice->idioma);
-                    $notice->update(['estado' => 'enviado', 'enviado_en' => now(), 'ultimo_error' => null]);
+                    app(SchoolMail::class)->sendEvent($student->email, $event->correo_contenido, $notice->idioma);
+                } catch (SchoolMailDeferred $deferred) {
+                    $sending->update(['estado' => $notice->estado, 'intentos' => $notice->intentos,
+                        'disponible_en' => now()->addSeconds($deferred->seconds)]);
+                    Cache::put($key.':cooldown', true, max($interval, $deferred->seconds));
+                    break;
                 } catch (\Throwable) {
                     // No SMTP transcript, credentials or recipient data in logs/failed payloads.
-                    $attempt = $notice->intentos;
                     $delay = config('events.backoff')[$attempt - 1] ?? 21600;
-                    $notice->update(['estado' => $attempt >= config('events.max_attempts', 5) ? 'fallido' : 'pendiente',
+                    $sending->update(['estado' => $resend ? 'en_revision' : ($attempt >= config('events.max_attempts', 5) ? 'fallido' : 'pendiente'),
                         'disponible_en' => now()->addSeconds($delay), 'ultimo_error' => 'transport_failed']);
+                    continue;
                 }
+                $sending->update(['estado' => 'enviado', 'enviado_en' => now(), 'ultimo_error' => null]);
             }
         });
     }

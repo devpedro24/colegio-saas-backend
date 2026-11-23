@@ -20,6 +20,7 @@ use App\Http\Controllers\Api\Academico\EscalaOpcionController;
 use App\Http\Controllers\Api\Academico\EscalaValorativaController;
 use App\Http\Controllers\Api\Academico\EspacioFisicoController;
 use App\Http\Controllers\Api\Academico\EvaluacionController;
+use App\Http\Controllers\Api\Academico\SchoolMailReviewController;
 use App\Http\Controllers\Api\Academico\EventoController;
 use App\Http\Controllers\Api\Academico\GradoController;
 use App\Http\Controllers\Api\Academico\GrupoController;
@@ -146,6 +147,10 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
         ResolveAcademicRouteIdentifier::class.':asignacion,asignacion-docente',
         ResolveAcademicRouteIdentifier::class.':periodo,periodo',
     ]);
+    Route::prefix('aula/recursos/{publicacion}/revision-correos')->middleware('can:aula.correos.revisar')->group(function () {
+        Route::get('/', [SchoolMailReviewController::class, 'index'])->defaults('modulo', 'aula');
+        Route::post('/{selector}', [SchoolMailReviewController::class, 'decide'])->defaults('modulo', 'aula');
+    });
     Route::prefix('aula')->controller(AulaController::class)->group(function () {
         Route::get('/catalogo', 'catalogo');
         Route::get('/historial/entregas', 'historialEntregas');
@@ -434,6 +439,10 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
         Route::post('/siee/{id}/preparacion/aplicar', [PreparacionEvaluacionController::class, 'apply']);
     });
     Route::middleware(ResolveAcademicInputIdentifiers::class)->group(function () {
+        Route::prefix('eventos/{publicacion}/revision-correos')->middleware('can:eventos.correos.revisar')->group(function () {
+            Route::get('/', [SchoolMailReviewController::class, 'index'])->defaults('modulo', 'eventos');
+            Route::post('/{selector}', [SchoolMailReviewController::class, 'decide'])->defaults('modulo', 'eventos');
+        });
         Route::get('/eventos/catalogo', [EventoController::class, 'catalogo']);
         Route::get('/eventos/resumen', [EventoController::class, 'resumen']);
         Route::get('/eventos/flujo', [EventoController::class, 'flujo']);
@@ -555,6 +564,10 @@ Route::prefix('ingreso')->middleware(RequireOpaqueAcademicContract::class)->cont
     Route::put('/campanas/{campaign}', 'saveCampaign');
     Route::get('/campanas/{campaign}/solicitudes', 'applications');
     Route::post('/campanas/{campaign}/distribuir', 'distribute');
+    Route::prefix('solicitudes/{publicacion}/revision-correos')->middleware('can:ingreso.correos.revisar')->group(function () {
+        Route::get('/', [SchoolMailReviewController::class, 'index'])->defaults('modulo', 'ingreso');
+        Route::post('/{selector}', [SchoolMailReviewController::class, 'decide'])->defaults('modulo', 'ingreso');
+    });
     Route::get('/solicitudes/{application}', 'show');
     Route::post('/solicitudes/{application}/pin', 'activatePin');
     Route::post('/solicitudes/{application}/correcciones', 'correction');

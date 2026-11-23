@@ -1,10 +1,18 @@
 # Ingreso estudiantil — operación y verificación
 
-Implementación local del 7 de octubre de 2026. Regla funcional vigente en `documentacion-girgit/educativo-saas/Logica del negocio/04-procesos-academicos/matriculas.md`.
+## Operación vigente para convocatorias con activación manual del PIN
 
-## Qué incluye
+La familia solicita el PIN desde el enlace de la convocatoria. El colegio activa y envía un PIN de ocho dígitos con la vigencia de esa convocatoria. En `/ingreso` se utiliza el tipo de documento, el número y el PIN para completar el borrador persistente o consultar el estado. El grado es opcional al pedir el PIN y obligatorio al enviar la inscripción.
 
-Convocatorias por año/grados/cupos, requisitos/documentos, portal público por subdominio, correo con enlace privado y PIN de cuatro dígitos, envío único de datos/archivos, revisión con motivos, espera/rechazo/aprobación, cuenta de estudiante y confirmación de grupos. La renovación de un estudiante existente verifica correo, documento, matrícula previa y promoción aprobada antes de reutilizar la cuenta. Sin cuentas de acudiente ni pagos; admisiones con selección/entrevistas siguen pendientes.
+En el expediente, **Aprobar documento** registra la revisión del archivo. **Validar documentación** comprueba el conjunto y genera el aviso **Tu documentación fue validada**. **Admitir estudiante** comunica la decisión y deja pendiente el grupo. **Confirmar matrícula** registra el grupo y la matrícula del año. En un alta nueva también crea la cuenta y genera el correo de credenciales.
+
+El recorrido del 17 de noviembre de 2026 verificó la entrega del aviso de validación a un buzón SMTP local a través de la cola de PostgreSQL. En la comprobación del mismo día, Gmail rechazó la autenticación institucional de Inmaculada con código `535`. Queda pendiente verificar la recepción en un buzón real después de restablecer esa conexión.
+
+La guía funcional completa y el enlace al plan posterior a la matrícula se encuentran en el repositorio `documentacion-girgit`, en `educativo-saas/Logica del negocio/04-procesos-academicos/matriculas.md`.
+
+## Antecedentes técnicos de octubre de 2026
+
+Los apartados siguientes documentan la implementación y las pruebas de octubre. Las instrucciones de acceso con PIN de cuatro dígitos, selección de archivos en la pestaña y creación de la cuenta al aprobar describen la modalidad anterior. Para expedientes actuales con PIN manual se aplica el recorrido de noviembre.
 
 ## Configuración institucional permanente — 14 de octubre de 2026
 
@@ -54,7 +62,7 @@ Estos resultados son una **evaluación con bloqueos abiertos**, no una certifica
 
 - No hay acción de guardar borrador ni subida automática. La solicitud mínima para emitir/verificar el PIN permanece; el formulario y los archivos nuevos quedan únicamente en memoria del navegador hasta **Enviar a revisión**.
 - `POST /api/ingreso-publico/solicitud` recibe multipart: `datos` JSON, `documentos[clave]`, `retirar[]`, `consentimiento=1`, `privacidad_version`, `enviar=1` y `envio_token` UUID. Un reintento con el mismo token no repite archivos ni avisos. PUT solo admite un envío final validado; las antiguas mutaciones individuales de documentos responden 410.
-- Validación obligatoria también en servidor: nombres mínimos, nacimiento anterior al año actual, tipo/número de identidad, celular, dirección, país, departamento/municipio y campos configurados. Espacios no satisfacen campos obligatorios. Requisitos, extensiones reales, MIME, tamaño, cuota y escáner se comprueban sin confiar en el cliente.
+- El servidor valida nombres, fecha de nacimiento, tipo y número de identidad, celular, dirección, país, departamento, municipio y campos configurados. El borrador y el envío admiten como fecha máxima el día del colegio. Con el rango de edad desactivado, el envío acepta nacimientos del año en curso, incluido hoy. Con el rango activo se comprueba la edad en años cumplidos y ambos extremos son inclusivos. Los campos obligatorios exigen contenido. El servidor comprueba también los requisitos documentales, extensiones, MIME, tamaño, cuota y escáner.
 - `GET /ingreso-publico/ubicaciones` sirve una copia local de [DIVIPOLA del DANE](https://www.datos.gov.co/Mapas-Nacionales/DIVIPOLA-C-digos-municipios/gdxc-w37w), consultada el 10 de octubre: 33 agrupaciones (departamentos y Bogotá D.C.), 1122 municipios/áreas. El backend valida pertenencia por códigos; no consulta servicios externos con datos personales. Para domicilio extranjero se capturan país/región/ciudad como texto.
 - Cada grado puede definir `edad_min` y `edad_max` en la configuración institucional permanente (actualización del 14 de octubre). Se usa la edad actual; la antigua `edad_corte` solo se conserva en el historial migrado. `documento_identidad` sigue siendo configurable por convocatoria.
 - El requisito señalado en `configuracion.documento_identidad` debe ser obligatorio, común a todos los grados y solo PDF/JPG/PNG. Como compatibilidad de las convocatorias anteriores se identifica por clave/nombre de identidad; si no es inequívocamente configurable se bloquea el envío y se solicita configuración al colegio. Otros requisitos conservan los formatos elegidos, incluido DOCX.
@@ -169,9 +177,19 @@ Requisitos de infraestructura: salida TLS al puerto 465, cola supervisada, `FRON
 
 Referencias: [Contraseñas de aplicación de Google](https://support.google.com/accounts/answer/185833?hl=es), [SMTP de Gmail/Workspace](https://support.google.com/a/answer/176600?hl=en). Requieren verificación en dos pasos y pueden estar restringidas por la organización/Protección Avanzada; no desactivar protecciones para forzarlas. Gmail tiene cuotas y antispam; evaluar capacidad antes de campañas masivas. OAuth y proveedor transaccional no están implementados en esta entrega.
 
-Mantener worker existente supervisado (configuración local `QUEUE_CONNECTION=database`). Los avisos posteriores siguen en cola: `SendEnrollmentNotice` se despacha después del commit, con cinco intentos y esperas progresivas. La excepción es el PIN inicial: se entrega mediante conexión `sync` después del commit, antes de responder `202`; si el transporte falla se devuelve `503` y el portal no afirma que el correo fue enviado. El registro cifrado queda pendiente para diagnóstico/reintento, pero un PIN vencido debe reemitirse desde el enlace original. El job contiene colegio e ID interno de notificación, no contraseña. Locks evitan dos workers normales enviando el mismo aviso ya marcado; SMTP no garantiza exactamente una entrega si cae entre envío y marcado.
+Mantener worker existente supervisado (configuración local `QUEUE_CONNECTION=database`). Los avisos posteriores siguen en cola: `SendEnrollmentNotice` se despacha después del commit, con cinco intentos y esperas progresivas. La excepción es el PIN inicial: se entrega mediante conexión `sync` después del commit, antes de responder `202`; si el transporte falla se devuelve `503` y el portal no afirma que el correo fue enviado. El registro cifrado queda pendiente para diagnóstico/reintento, pero un PIN vencido debe reemitirse desde el enlace original. El job contiene colegio e ID interno de notificación, no contraseña. Los trabajadores comprueban el registro antes de intentar un envío. Los tres avisos académicos que se detallan a continuación tienen además un registro persistente del intento.
 
-Recuperación operativa, sin scheduler adicional:
+### Revisión de los correos de matrícula
+
+Documentación validada, admisión y confirmación del grupo tienen seguimiento por aviso y expediente. Cada trabajador registra el intento antes de contactar al transporte. Una respuesta de entrega incierta pasa a revisión. Si el trabajador se interrumpe, el programador detecta el intento sin acuse a partir de cinco minutos. Los avisos anteriores a este seguimiento que carezcan de acuse también quedan para revisión.
+
+En **Matrículas → Notificaciones** se puede identificar el aviso y abrir su expediente. En **Revisar correos**, el colegio comprueba con la familia qué aviso recibió. Rectoría tiene el permiso por defecto. Para delegarlo, el operador requiere acceso al expediente y el permiso `ingreso.correos.revisar`.
+
+- **Confirmar que llegó** cierra el aviso y descarta el cuerpo cifrado. La fecha de verificación queda en el registro de decisiones.
+- **Autorizar un reenvío** habilita un solo envío adicional del mismo aviso y destinatario. El programador `ingreso:procesar-revisiones` lo encola y el trabajador respeta la cuota del remitente. Si este envío también queda en duda, el colegio puede confirmar la recepción cuando la compruebe.
+- La decisión requiere motivo. El historial conserva tipo de aviso, destinatario, operador, fecha e intento. La revisión solo actúa sobre el correo.
+
+Recuperación de pendientes ordinarios:
 
 ```sh
 php artisan ingreso:reenviar-notificaciones --tenant=inmaculada

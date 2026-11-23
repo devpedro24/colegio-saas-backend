@@ -12,6 +12,7 @@ Schedule::command('academico:sincronizar-periodos')->hourly()->withoutOverlappin
 Schedule::command('aula:expirar-intentos')->everyMinute()->withoutOverlapping();
 Schedule::command('aula:publicar-novedades')->everyMinute()->withoutOverlapping();
 Schedule::command('eventos:enviar-correos')->everyMinute()->withoutOverlapping();
+Schedule::command('ingreso:procesar-revisiones')->everyMinute()->withoutOverlapping();
 Schedule::command('drafts:prune')->hourly()->withoutOverlapping();
 
 Schedule::command('ingreso:organizar-archivos --apply')->dailyAt('03:40')->withoutOverlapping();

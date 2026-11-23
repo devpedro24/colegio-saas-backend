@@ -4,12 +4,17 @@ namespace App\Services;
 
 use App\Models\CorreoConfiguracion;
 use App\Services\Ingreso\EnrollmentMail;
+use App\Services\Ingreso\EnrollmentMailDeliveryException;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
+use Symfony\Component\Mailer\Transport\Smtp\SmtpTransport;
+use Symfony\Component\Mailer\Transport\Smtp\Stream\SocketStream;
 
 /** Fresh transport per send: never cache another school's credentials in a worker. */
 class SchoolMail
 {
+    public const REVIEW_AFTER_MINUTES = 5;
+
     public function settings(): ?CorreoConfiguracion
     {
         if (! tenancy()->initialized || ! Schema::hasTable('correo_configuracion')) {
@@ -58,26 +63,48 @@ class SchoolMail
         }
     }
 
+    private function paced(?CorreoConfiguracion $settings, bool $bulk, callable $send): mixed
+    {
+        $default = config('mail.default');
+        $sender = $settings?->email ?: (config("mail.mailers.{$default}.username") ?: config('mail.from.address'));
+        $quota = app(SchoolMailQuota::class);
+        $quota->reserve((string) $sender, $bulk);
+        try {
+            return $send();
+        } catch (\Throwable $error) {
+            $quota->handleProviderLimit((string) $sender, $error);
+            throw $error;
+        }
+    }
+
     /** Multipart email: branded HTML for modern clients, readable plain text elsewhere. */
     public function sendEnrollment(#[\SensitiveParameter] string $recipient, string $subject,
         #[\SensitiveParameter] string $body, string $noticeKey): void
     {
+        $started = false;
         try {
             $settings = $this->settings();
-            if (! $settings && app()->environment('production') && ! $this->ready()) {
+            if (! $this->readyForDelivery()) {
                 throw new \RuntimeException;
             }
             $data = app(EnrollmentMail::class)->data($subject, $body, $noticeKey);
-            $sent = $this->mailer($settings)->send(
-                ['html' => 'mail.enrollment', 'text' => 'mail.enrollment-text'],
-                $data,
-                fn ($mail) => $mail->to($recipient)->subject($subject)
-            );
+            $mailer = $this->mailer($settings);
+            $sent = $this->paced($settings, false, function () use ($mailer, $data, $recipient, $subject, &$started) {
+                $started = true;
+                return $mailer->send(['html' => 'mail.enrollment', 'text' => 'mail.enrollment-text'],
+                    $data, fn ($mail) => $mail->to($recipient)->subject($subject));
+            });
             if (! $sent) {
                 throw new \RuntimeException;
             }
-        } catch (\Throwable) {
-            throw new \RuntimeException(__('No se pudo enviar el correo. Revisa la configuración institucional y vuelve a probar.'));
+        } catch (SchoolMailDeferred $deferred) {
+            throw $deferred;
+        } catch (\Throwable $error) {
+            // A missing SMTP reply can follow acceptance; only an explicit rejection proves non-delivery.
+            $rejected = $error instanceof \Symfony\Component\Mailer\Exception\UnexpectedResponseException
+                && $error->getCode() >= 400 && $error->getCode() < 600;
+            throw new EnrollmentMailDeliveryException(__('No se pudo enviar el correo. Revisa la configuración institucional y vuelve a probar.'),
+                uncertain: $started && ! $rejected);
         }
     }
 
@@ -97,25 +124,52 @@ class SchoolMail
     public function sendEvent(#[\SensitiveParameter] string $recipient, array $event, string $locale): void
     {
         try {
-            if (! $this->readyForEvents()) throw new \RuntimeException;
+            if (! $this->readyForEvents()) {
+                throw new \RuntimeException;
+            }
             $subject = ($locale === 'en' ? 'New school event: ' : 'Nuevo evento del colegio: ').$event['title'];
-            $mailer = $this->mailer();
+            $settings = $this->settings();
+            $mailer = $this->mailer($settings);
             $transport = $mailer->getSymfonyTransport();
-            if ($transport instanceof \Symfony\Component\Mailer\Transport\Smtp\SmtpTransport
-                && $transport->getStream() instanceof \Symfony\Component\Mailer\Transport\Smtp\Stream\SocketStream) {
+            if ($transport instanceof SmtpTransport
+                && $transport->getStream() instanceof SocketStream) {
                 $transport->getStream()->setTimeout(10);
             }
-            $sent = $mailer->send(['html' => 'mail.event', 'text' => 'mail.event-text'],
-                ['event' => $event, 'english' => $locale === 'en'], fn ($mail) => $mail->to($recipient)->subject($subject));
-            if (! $sent) throw new \RuntimeException;
+            $sent = $this->paced($settings, true, fn () => $mailer->send(['html' => 'mail.event', 'text' => 'mail.event-text'],
+                ['event' => $event, 'english' => $locale === 'en'], fn ($mail) => $mail->to($recipient)->subject($subject)));
+            if (! $sent) {
+                throw new \RuntimeException;
+            }
+        } catch (SchoolMailDeferred $deferred) {
+            throw $deferred;
         } catch (\Throwable) {
             throw new \RuntimeException('event_mail_transport_failed');
         }
     }
 
+    public function sendAula(string $recipient, string $subject, string $body): void
+    {
+        if (! $this->readyForDelivery()) {
+            throw new \RuntimeException('aula_mail_not_configured');
+        }
+        $settings = $this->settings();
+        if (! $this->paced($settings, true, fn () => $this->mailer($settings)->raw($body,
+            fn ($mail) => $mail->to($recipient)->subject($subject)))) {
+            throw new \RuntimeException('aula_mail_transport_failed');
+        }
+    }
+
     public function readyForEvents(): bool
     {
-        if ($this->settings()) return true;
+        return $this->readyForDelivery();
+    }
+
+    public function readyForDelivery(): bool
+    {
+        if ($this->settings()) {
+            return true;
+        }
+
         // A log/array (including a failover to log) is not SMTP acceptance.
         // Use a direct delivery transport or the school's configured SMTP.
         return in_array(config('mail.mailers.'.config('mail.default').'.transport'),

@@ -22,7 +22,7 @@ final class RetryEnrollmentNotices extends Command
             return self::FAILURE;
         }
         $count = $school->run(function () use ($school) {
-            $rows = Notificacion::whereNull('enviada_en')->orderBy('id')->limit(100)->get();
+            $rows = Notificacion::whereNull('enviada_en')->where('estado', 'pendiente')->orderBy('id')->limit(100)->get();
             foreach ($rows as $row) {
                 SendEnrollmentNotice::dispatch((string) $school->getKey(), $row->id);
             }

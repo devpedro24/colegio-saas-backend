@@ -212,7 +212,7 @@ trait EventWorkflowTests
         $outbox->deliverBatch();
         $this->assertSame(10, $count);
         $this->assertSame(9, EventoCorreo::where('estado', 'enviado')->count());
-        $this->assertSame('transport_failed', EventoCorreo::first()->ultimo_error);
+        $this->assertSame('transport_failed', EventoCorreo::orderBy('id')->firstOrFail()->ultimo_error);
         $outbox->deliverBatch();
         $this->assertSame(10, $count);
         $this->travel(61)->seconds();
@@ -371,7 +371,7 @@ trait EventWorkflowTests
         }
     }
 
-    public function test_event_workflow_recovers_an_interrupted_batch_and_cancels_withdrawn_recipients(): void
+    public function test_event_workflow_holds_an_interrupted_delivery_for_review_and_cancels_withdrawn_recipients(): void
     {
         $this->eventMailReady();
         $first = $this->eventStudent('interrupted@test.test');
@@ -381,10 +381,10 @@ trait EventWorkflowTests
         $this->postJson("$api/$token/publicar?opaque=1", ['version' => 1])->assertOk();
         DB::table('evento_correos')->where('estudiante_id', $first->id)->update(['estado' => 'enviando', 'updated_at' => now()->subMinutes(6)]);
         Matricula::where('estudiante_id', $second->id)->update(['estado' => 'retirada']);
-        $this->mock(SchoolMail::class, fn ($mock) => $mock->shouldReceive('sendEvent')->once()->with($first->email, \Mockery::type('array'), 'es'));
+        $this->mock(SchoolMail::class, fn ($mock) => $mock->shouldNotReceive('sendEvent'));
         Cache::flush();
         app(EventMailOutbox::class)->deliverBatch();
-        $this->assertSame('enviado', EventoCorreo::where('estudiante_id', $first->id)->value('estado'));
+        $this->assertSame('en_revision', EventoCorreo::where('estudiante_id', $first->id)->value('estado'));
         $this->assertSame('cancelado', EventoCorreo::where('estudiante_id', $second->id)->value('estado'));
     }
 

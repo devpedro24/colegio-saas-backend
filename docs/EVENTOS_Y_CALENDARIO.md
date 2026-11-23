@@ -36,11 +36,40 @@ Se cifra el correo almacenado y la instantánea de contenido. El payload del job
 Para eventos se exige transporte directo de entrega (SMTP u otro proveedor soportado), o la conexión institucional; no se acepta `log`, `array` ni un agregado/failover que pueda terminar registrando el mensaje sin entregarlo al proveedor. El socket SMTP tiene timeout de 10 segundos; el lote deja de iniciar envíos tras 120 segundos.
 
 - Cola: `event-mail`, conexión `event_mail` (database central), separada de matrículas y realtime.
-- Lotes de hasta 10, máximo un lote por colegio cada 60 segundos. `EVENT_MAIL_BATCH_SIZE` puede reducirlo; `EVENT_MAIL_BATCH_INTERVAL` puede aumentar la espera. Un lock compartido impide concurrencia entre workers del mismo colegio.
+- Cada colegio puede iniciar un lote de Aula y otro de Eventos por intervalo. Cada lote procesa hasta 10 destinatarios y entre dos lotes del mismo módulo transcurren al menos 60 segundos. `EVENT_MAIL_BATCH_SIZE` permite reducir el tamaño y `EVENT_MAIL_BATCH_INTERVAL` ampliar la espera. Los dos módulos pueden trabajar en paralelo y consumen la misma cuota del remitente.
 - Reintentos de transporte: máximo 5, esperas 60/300/1800/7200 segundos antes de los intentos siguientes. Después queda `fallido`, visible para revisión/reintento autorizado. Una dirección inválida requiere corregir el usuario antes de reintentar.
-- Estados: pendiente, enviando, enviado (aceptado por SMTP), fallido, cancelado. La pantalla actualiza conteos cada 15 segundos mientras hay pendientes.
+- El detalle del evento cuenta los correos pendientes, en envío, en revisión, aceptados por SMTP, confirmados por el colegio, fallidos y cancelados. La pantalla actualiza los conteos cada 15 segundos mientras haya correos pendientes o en envío.
 - Eliminar el evento cancela los pendientes/fallidos; un destinatario que pierde alcance se cancela al procesar. No se puede retirar un correo ya aceptado por el proveedor ni uno en tránsito.
-- Un proceso interrumpido deja `enviando`; tras cinco minutos se recupera. Si SMTP aceptó el mensaje y el proceso cayó antes de guardar el resultado, podría repetirse: SMTP no ofrece atomicidad con la BD. No se promete «exactamente una vez» en ese caso.
+- Aula y Eventos guardan `enviando` antes de contactar al transporte. Cuando un intento lleva cinco minutos sin confirmación, el siguiente ciclo de la cola lo deja `en_revision`. El mensaje queda excluido del reenvío automático y de «Reintentar correos fallidos». Esto también cubre una caída justo antes de contactar al proveedor. Para determinar si se entregó, el colegio debe contrastar la publicación, el destinatario y la hora con el correo institucional. El personal autorizado ve el conteo en el detalle del evento o del recurso. La novedad interna del estudiante sigue disponible.
+
+### Revisión manual de Aula y Eventos
+
+En **Revisar correos**, desde el recurso de Aula o el detalle del evento, selecciona el aviso del estudiante. Rectoría dispone del permiso por defecto. El permiso correspondiente (`aula.correos.revisar` o `eventos.correos.revisar`) y el alcance sobre la publicación se comprueban al consultar y al decidir.
+
+- **Confirmar que llegó** registra la comprobación del colegio y cierra el caso como `confirmado`.
+- **Autorizar un reenvío** vuelve a poner ese aviso en la cola habitual. El trabajador comprueba destinatario, alcance y cuota antes de enviarlo. Cada aviso admite una sola autorización, incluso si dos operadores lo revisan al mismo tiempo.
+- Ambas decisiones exigen un motivo. El historial conserva destinatario, responsable, fecha, decisión e intento. Si el reenvío queda con entrega incierta, el aviso vuelve a revisión y solo admite confirmación.
+
+### Cuota compartida de Aula, Eventos y Matrículas
+
+El backend reserva un intento por destinatario inmediatamente antes de llamar al transporte. Guarda las reservas en la caché de la base central y las protege con un bloqueo por cuenta remitente. Dos trabajadores, módulos o sedes que usan la misma cuenta comparten el presupuesto. Para Gmail personal se agrupan también los alias con puntos, con `+etiqueta` y con `@googlemail.com`.
+
+| Regla por remitente | Últimos 60 segundos | Últimas 24 horas |
+| --- | ---: | ---: |
+| Todos los intentos de Aula, Eventos y Matrículas con la configuración predeterminada | 10 | 400 |
+| Umbral para admitir un nuevo intento masivo de Aula o Eventos | 9 | 360 |
+
+Las ventanas son móviles. Cada intento libera su cupo al salir de la ventana correspondiente. Con los valores predeterminados, Matrículas puede utilizar el margen de 1 intento por minuto y 40 por día. Sus envíos también cuentan al decidir si cabe el siguiente aviso masivo. `SCHOOL_MAIL_PER_MINUTE` y `SCHOOL_MAIL_PER_DAY` permiten ajustar la política. Para remitentes personales de Gmail, el backend limita el presupuesto total a 500 por 24 horas incluso si se configura un valor mayor. Google cuenta también lo enviado fuera del SaaS y puede restringir la cuenta antes. [Límites de Gmail](https://support.google.com/mail/answer/22839?hl=es)
+
+Al agotarse la cuota, el mensaje queda pendiente hasta que haya cupo. Los despachadores respetan la pausa y los aplazamientos por cuota conservan los intentos de reenvío del destinatario. Si SMTP comunica un límite diario reconocido, se pausa el remitente durante 24 horas. Ante una limitación temporal de tasa reconocida, la pausa es de 15 minutos. El programador retoma los pendientes de forma automática.
+
+La prueba de carga publica un recurso y un evento para 500 estudiantes, ejecuta dos trabajadores de la cola central con PostgreSQL y registra cada aceptación en un transporte simulado. Contrasta los destinatarios de cada publicación, las ventanas móviles, la reanudación y el reprocesamiento de ambos lotes tras terminar.
+
+Con la cuota predeterminada y el remitente sin consumo previo, la prueba registró 360 aceptaciones en las primeras 24 horas simuladas, 360 en las siguientes y las 280 restantes en el tercer tramo. Cada estudiante recibió un aviso de cada módulo. Al volver a ejecutar ambos trabajos, el total permaneció en 1.000.
+
+```sh
+php scripts/test-notifications-postgres.php --aula --filter=test_concurrent_aula_and_event_workers_deliver_one_thousand_bulk_notices_once
+```
 
 ## Operación necesaria
 
@@ -66,7 +95,7 @@ La primera entrega no instaló procesos persistentes ni envió correos reales. L
 Se instaló la tarea de Windows `ColegioSaaS-Eventos-99A7559F8AE5`, limitada al usuario actual, sin guardar contraseñas. Arranca una vez al iniciar sesión mediante `wscript.exe`, que ejecuta el supervisor sin abrir una consola de PowerShell. Se retiró el disparador que relanzaba la tarea cada minuto y los reinicios automáticos de la tarea: al cerrarla ya no reaparece sola durante la sesión. Una exclusión por workspace evita duplicados. El supervisor mantiene ocultos:
 
 - `artisan schedule:work`: ejecuta el programador normal, incluido el despachador de eventos cada minuto.
-- `artisan queue:listen event_mail --queue=event-mail --sleep=3 --timeout=180 --tries=3`: exclusivamente eventos, sin consumir `default` ni `realtime`. En Windows, `queue:listen` controla el timeout del proceso hijo con Symfony; no depende de `pcntl`. Cada trabajo carga el código vigente.
+- `artisan queue:listen event_mail --queue=event-mail --sleep=3 --timeout=180 --tries=3` procesa los correos de Eventos y Aula. En Windows, `queue:listen` controla el timeout del proceso hijo con Symfony. Cada trabajo carga el código vigente.
 
 El supervisor recupera un proceso terminado cada cinco segundos. Se comprobó deteniendo únicamente el listener dedicado mientras la cola estaba vacía: reapareció con otro PID y continuó activo. El scheduler completó el despacho periódico sin errores. El lanzador `start-all.bat` reutiliza estos procesos en vez de abrir otro scheduler.
 

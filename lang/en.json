@@ -54,7 +54,7 @@
   "El grupo no corresponde al grado aprobado.": "The group does not belong to the approved grade.",
   "La solicitud ya tiene otro grupo.": "The application already has another group.",
   "La solicitud no está aprobada.": "The application is not approved.",
-  "El grupo alcanzó su cupo. Genera otra propuesta.": "The group is full. Generate another proposal.",
+  "El grupo alcanzó su cupo. La solicitud sigue aprobada y pendiente de grupo.": "The group is full. The application is still approved and awaiting group assignment.",
   "La cuenta del estudiante no está activa.": "The student account is not active.",
   "El estudiante ya tiene matrícula este año.": "The student is already enrolled for this year.",
   "No se pudo enviar el correo. Revisa la configuración institucional y vuelve a probar.": "The email could not be sent. Check the school settings and try again.",
