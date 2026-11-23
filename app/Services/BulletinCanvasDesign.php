@@ -88,7 +88,7 @@ final class BulletinCanvasDesign
 
     private static function rule(array $raw): array
     {
-        return ['enabled' => (bool) ($raw['enabled'] ?? true), 'color' => self::color($raw['color'] ?? null, '#6A23FF'),
+        return ['enabled' => (bool) ($raw['enabled'] ?? true), 'color' => self::color($raw['color'] ?? null, '#462084'),
             'width' => self::number($raw['width'] ?? null, 1, 0, 12),
             'style' => self::pick($raw['style'] ?? null, ['solid', 'dashed', 'dotted', 'double'], 'solid')];
     }
@@ -167,7 +167,7 @@ final class BulletinCanvasDesign
             'key' => self::string($raw['key'] ?? null, 'canvas-document', 80),
             'format' => self::pick($raw['format'] ?? null, ['carta', 'a4', 'oficio', 'a5'], 'carta'),
             'orientation' => self::pick($raw['orientation'] ?? null, ['portrait', 'landscape'], 'portrait'),
-            'accent' => self::color($raw['accent'] ?? null, '#6A23FF'), 'pages' => [], 'assets' => [],
+            'accent' => self::color($raw['accent'] ?? null, '#462084'), 'pages' => [], 'assets' => [],
             'designer' => ['rows' => ($raw['designer']['rows'] ?? 2) === 1 ? 1 : 2],
             'pagination' => ['enabled' => true, 'margin' => self::number($raw['pagination']['margin'] ?? null, 44, 24, 90),
                 'gap' => self::number($raw['pagination']['gap'] ?? null, 14, 0, 60), 'repeatHeader' => (bool) ($raw['pagination']['repeatHeader'] ?? true)]];

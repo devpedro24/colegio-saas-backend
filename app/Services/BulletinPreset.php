@@ -30,7 +30,11 @@ final class BulletinPreset
                     $columns = [['key' => 'subject', 'label' => 'Asignatura e indicadores', 'width' => 75], ['key' => 'grade', 'label' => 'Valoración', 'width' => 25]];
                 }
                 if ($scope === 'final') {
-                    array_splice($columns, 1, 0, [['key' => 'periods', 'label' => 'Períodos', 'width' => 25]]);
+                    // The renderer divides the periods column equally among the year's terms.
+                    $columns = [['key' => 'subject', 'label' => 'Asignatura', 'width' => 29],
+                        ['key' => 'periods', 'label' => 'P.', 'width' => 40],
+                        ['key' => 'grade', 'label' => 'Definitiva', 'width' => 14],
+                        ['key' => 'performance', 'label' => 'Desempeño', 'width' => 17]];
                 }
                 $node['table'] = ['columns' => $columns, 'indicatorsInSubject' => $key === 'periodo-indicadores'];
             }

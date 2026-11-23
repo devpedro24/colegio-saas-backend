@@ -1,11 +1,11 @@
 {
-  "version": "1.6.3",
+  "version": "1.6.4",
   "source": "colegio-saas-backend/resources/bulletin-editor",
   "files": {
     "font-catalog.js": "e8b3b1275fea9a46463bec40c40b8118d8d8de891d0ae8ed39413bc2c6f03320",
-    "model.js": "c9cf56559dcd62e899122d2cb8321ebf7565d4361dc06a4dcf17dd5d2ccbc54f",
-    "proposal-model.js": "7833caaef1a5fac5e153a2c932498dee45bafbd066265fa4518ef4b1e79be373",
-    "layout-model.js": "cad893d8f84f773e16a5b065661b140e41e00e25d49670ea73de0e3a90af332c",
+    "model.js": "7837de19c50a83546bbafa050b5428d8ca24aec46caa22da7da1d14d6437c3ef",
+    "proposal-model.js": "da177d0e0cb2a5a5cf1675e9b0aee2d3b821b561f3d91981cdabea012e59071d",
+    "layout-model.js": "1e7bab3817eb9fc28a1acbac9b0f67a9659e7dede12a11395f59505d8ffe7475",
     "field-guide.js": "50073e6395bee1333e007f581aaf08505e9a73576c044b0062c07b396328c7aa",
     "page-layout.js": "0427155486d49672243f3fd3984b2279e77b51453d54d12b4c4b4d42e15aba36",
     "report-engine.js": "5b9b0388cdad540c0790a05a220c1debbbec54ce10a95068315f67eab22aa15f",
