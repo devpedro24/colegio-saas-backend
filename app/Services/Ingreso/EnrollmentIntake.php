@@ -116,6 +116,7 @@ final class EnrollmentIntake
         $result['documentos'] = $s->documentos()->orderByDesc('version')->get()->map(fn ($d) => [
             'url_token' => OpaqueUrlToken::for('ingreso-documento', $d->id), 'requisito' => $d->requisito,
             'version' => $d->version, 'nombre' => $d->nombre, 'estado' => $d->estado, 'observacion' => $d->observacion,
+            'anexo_renovacion' => (bool) $d->anexo_renovacion,
         ])->all();
         $result['historial'] = DB::table('ingreso_historial')->where('solicitud_id', $s->id)->orderByDesc('id')->limit(100)
             ->get(['evento', 'observacion', 'created_at'])->map(fn ($event) => [
@@ -229,7 +230,8 @@ final class EnrollmentIntake
             abort_unless(in_array($s->estado, self::REVIEWABLE, true), 422, __('La solicitud no admite esta decisión.'));
             if ($data['estado'] === 'aprobada') {
                 abort_if($s->pin_manual && ! $manual && (! $s->validada_en || ! in_array($s->estado, ['validada', 'espera'], true)), 422, __('Valida primero la documentación y luego registra la admisión.'));
-                abort_if($s->estado === 'correcciones' || (! $manual && ! $s->email_verificado) || ! $s->consentimiento_en || ! $s->enviada_en,
+                $fromStudentAccount = $s->estudiante_id && ($s->consentimiento_privacidad['cuenta_estudiante'] ?? null) === $s->estudiante_id;
+                abort_if($s->estado === 'correcciones' || (! $manual && ! $s->email_verificado && ! $fromStudentAccount) || ! $s->consentimiento_en || ! $s->enviada_en,
                     422, __('El aspirante debe completar y enviar la solicitud antes de aprobarla.'));
                 $grade = $this->resolve('grado', $data['grado_token'], Grado::where('ano_lectivo_id', $year->id)->where('estado', 'activo'));
                 if ($grade->id !== ($s->grado_aprobado_id ?? $s->grado_id)) {

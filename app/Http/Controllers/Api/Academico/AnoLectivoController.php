@@ -68,6 +68,25 @@ class AnoLectivoController extends Controller
         return response()->json(['data' => $status]);
     }
 
+    public function accesoEstudiantil(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate(['habilitado' => 'required|boolean', 'motivo' => 'required|string|min:5|max:1000']);
+        $year = DB::transaction(function () use ($id, $request, $data) {
+            $year = AnoLectivo::lockForUpdate()->findOrFail($id);
+            abort_if($year->estaCerrado(), 422, 'El año lectivo está cerrado.');
+            $enabled = $request->boolean('habilitado');
+            if ($year->acceso_estudiantil !== $enabled) {
+                $before = $year->acceso_estudiantil;
+                $year->acceso_estudiantil = $enabled;
+                $year->save();
+                AuditLogger::tenant($request->user(), 'UPDATE', 'acceso_estudiantil_anual', (string) $year->id,
+                    ['habilitado' => $before], ['habilitado' => $enabled], $data['motivo']);
+            }
+            return $year;
+        });
+        return response()->json(['habilitado' => $year->acceso_estudiantil]);
+    }
+
     /** Vista previa de contenidos reutilizables, sin leer ni copiar actividad estudiantil. */
     public function resumenDuplicacion(string $id): JsonResponse
     {
@@ -161,7 +180,7 @@ class AnoLectivoController extends Controller
             'fecha_fin' => ['required', 'date', 'after:fecha_inicio'],
             'num_periodos' => ['required', 'integer', 'min:1', 'max:12'],
             'periodo_sumatorio' => ['nullable', 'boolean'],
-            'opciones' => ['required', 'array'],
+            'opciones' => ['required', 'array:'.implode(',', DuplicarAnoLectivoService::OPTIONS)],
             'opciones.*' => ['boolean'],
         ]);
         $this->validarNombreSegunCalendario($data['tipo_calendario'], $data['nombre']);
@@ -660,6 +679,7 @@ class AnoLectivoController extends Controller
             'periodo_sumatorio' => $ano->periodo_sumatorio,
             'estado' => $ano->estado,
             'created_at' => $ano->created_at?->toIso8601String(),
+            'acceso_estudiantil' => $ano->acceso_estudiantil,
         ];
         if (! $opaque) {
             $payload['id'] = $ano->id;

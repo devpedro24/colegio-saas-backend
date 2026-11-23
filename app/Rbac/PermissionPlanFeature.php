@@ -48,7 +48,8 @@ final class PermissionPlanFeature
         ], true) || str_starts_with($key, 'academico.') || str_starts_with($key, 'ingreso.')
             || str_starts_with($key, 'notas.') || str_starts_with($key, 'boletines.')
             || str_starts_with($key, 'indicadores.') || str_starts_with($key, 'observador.')
-            || str_starts_with($key, 'convivencia.') || str_starts_with($key, 'estudiantes.egreso.')) {
+            || str_starts_with($key, 'convivencia.') || str_starts_with($key, 'estudiantes.egreso.')
+            || $key === 'estudiantes.reincorporacion.autorizar') {
             return 'academico';
         }
 

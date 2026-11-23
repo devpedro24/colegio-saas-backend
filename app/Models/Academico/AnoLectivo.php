@@ -55,6 +55,20 @@ class AnoLectivo extends Model
 
     protected $table = 'anos_lectivos';
 
+    protected static function booted(): void
+    {
+        static::creating(function (self $year) {
+            // Imports of already operating years retain access. New planned years await an explicit release.
+            $year->acceso_estudiantil = isset($year->estado) && $year->estado !== self::ESTADO_PLANIFICADO;
+        });
+    }
+
+    public function scopeAccesiblesAlEstudiante(Builder $query): Builder
+    {
+        return $query->where(fn ($years) => $years->where('acceso_estudiantil', true)
+            ->orWhereIn('estado', [self::ESTADO_CERRADO, self::ESTADO_ARCHIVADO]));
+    }
+
     /**
      * @var list<string>
      */
@@ -76,6 +90,7 @@ class AnoLectivo extends Model
     {
         return [
             'siee' => 'array',
+            'acceso_estudiantil' => 'boolean',
             'fecha_inicio' => 'date',
             'fecha_fin' => 'date',
             'num_periodos' => 'integer',

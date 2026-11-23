@@ -79,7 +79,7 @@ class HorarioController extends Controller
                         ->orWhereHas('docente', fn ($teacher) => $teacher->where('name', 'like', $term)));
                 })
                 ->when(! $manage, fn ($q) => $student
-                    ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                    ? $q->whereIn('grupo_id', Matricula::conAccesoEstudiantil()->where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
                     : $q->where('docente_id', $user->id));
             if ($scheduleView) {
                 $assignments = $assignmentQuery->orderBy('id')->get();
@@ -94,7 +94,7 @@ class HorarioController extends Controller
                 ->when(isset($filters['materia_id']), fn ($q) => $q->where('materia_id', $filters['materia_id']))
                 ->when(! $scheduleView, fn ($q) => $q->whereIn('asignacion_id', $assignments->pluck('id')))
                 ->when(! $manage, fn ($q) => $student
-                    ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                    ? $q->whereIn('grupo_id', Matricula::conAccesoEstudiantil()->where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
                     : $q->where('docente_id', $user->id))->get();
         }
         $groupIds = $assignments->pluck('grupo_id')->merge($sessions->pluck('grupo_id'))->unique();
@@ -105,7 +105,7 @@ class HorarioController extends Controller
             ->when($teacherId, fn ($q) => $q->where('docente_id', $teacherId))
             ->when(isset($filters['materia_id']), fn ($q) => $q->where('materia_id', $filters['materia_id']))
             ->when(! $manage, fn ($q) => $student
-                ? $q->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                ? $q->whereIn('grupo_id', Matricula::conAccesoEstudiantil()->where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
                 : $q->where('docente_id', $user->id))->count();
         $subjectCount = $manage && $groupId === null && $teacherId === null && ! isset($filters['materia_id'])
             ? Materia::when($yearId, fn ($q) => $q->where('ano_lectivo_id', $yearId))->count()
@@ -118,7 +118,7 @@ class HorarioController extends Controller
                         ->when($teacherId, fn ($query) => $query->where('docente_id', $teacherId))
                         ->when(isset($filters['materia_id']), fn ($query) => $query->where('materia_id', $filters['materia_id']))
                         ->when(! $manage, fn ($query) => $student
-                            ? $query->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                            ? $query->whereIn('grupo_id', Matricula::conAccesoEstudiantil()->where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
                             : $query->where('docente_id', $user->id));
                     $sessionsWithSubject = SesionHorario::query()->select('materia_id')
                         ->when($yearId, fn ($query) => $query->where('ano_lectivo_id', $yearId))
@@ -126,7 +126,7 @@ class HorarioController extends Controller
                         ->when($teacherId, fn ($query) => $query->where('docente_id', $teacherId))
                         ->when(isset($filters['materia_id']), fn ($query) => $query->where('materia_id', $filters['materia_id']))
                         ->when(! $manage, fn ($query) => $student
-                            ? $query->whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
+                            ? $query->whereIn('grupo_id', Matricula::conAccesoEstudiantil()->where('estudiante_id', $user->id)->where('estado', 'activa')->select('grupo_id'))
                             : $query->where('docente_id', $user->id));
                     $q->whereIn('id', $assignmentsWithSubject)->orWhereIn('id', $sessionsWithSubject);
                 })->count();

@@ -208,6 +208,8 @@ Route::middleware(RequireOpaqueAcademicContract::class)->group(function () {
     // Años lectivos y periodos: permiso 'academico.anos.gestionar'.
     Route::middleware('can:academico.anos.gestionar')->group(function () {
         Route::get('/anos-lectivos', [AnoLectivoController::class, 'index']);
+        Route::put('/anos-lectivos/{id}/acceso-estudiantil', [AnoLectivoController::class, 'accesoEstudiantil'])
+            ->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
         Route::post('/anos-lectivos', [AnoLectivoController::class, 'store']);
         Route::post('/anos-lectivos/{id}/duplicar', [AnoLectivoController::class, 'duplicar'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
         Route::post('/anos-lectivos/{id}/copiar-configuracion', [AnoLectivoController::class, 'copiarConfiguracion'])->middleware(ResolveAcademicRouteIdentifier::class.':id,ano-lectivo');
@@ -475,6 +477,12 @@ Route::post('/usuarios/{id}/egreso', [UserController::class, 'egresar'])
 Route::get('/usuarios/egreso-candidatos', [UserController::class, 'egresoCandidates'])
     ->middleware('can:estudiantes.egreso.gestionar');
 
+Route::middleware([RequireOpaqueAcademicContract::class, 'can:estudiantes.reincorporacion.autorizar'])->group(function () {
+    Route::get('/usuarios/reincorporacion-candidatos', [UserController::class, 'reincorporacionCandidates']);
+    Route::post('/usuarios/{token}/reincorporacion', [UserController::class, 'reincorporar'])
+        ->where('token', '[A-Za-z0-9_-]{24}');
+});
+
 Route::get('/institution-context', InstitutionContextController::class);
 Route::get('/subscription/offers', SubscriptionOffersController::class);
 
@@ -490,6 +498,17 @@ Route::prefix('matriculas')->middleware(RequireOpaqueAcademicContract::class)->c
     Route::get('/{token}', 'show');
     Route::get('/{token}/documentos/{document}', 'download');
 });
+
+Route::prefix('mi-renovacion/{renewalToken}')->where(['renewalToken' => '[A-Za-z0-9_-]{24}'])
+    ->middleware(RequireOpaqueAcademicContract::class)->controller(\App\Http\Controllers\Api\IngresoPublicController::class)->group(function () {
+        Route::get('/solicitud', 'show');
+        Route::post('/solicitud/renovacion', 'renewal');
+        Route::put('/solicitud/borrador', 'draft');
+        Route::post('/solicitud', 'save')->middleware('throttle:ingreso-upload');
+        Route::post('/documentos/{requirement}', 'upload')->middleware('throttle:ingreso-upload');
+        Route::get('/documentos/{document}', 'download');
+        Route::post('/anexos', 'renewalAnnex')->middleware('throttle:ingreso-upload');
+    });
 
 Route::prefix('ingreso')->middleware(RequireOpaqueAcademicContract::class)->controller(IngresoController::class)->group(function () {
     Route::get('/catalogo', 'catalog');

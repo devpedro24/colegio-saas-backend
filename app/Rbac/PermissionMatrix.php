@@ -96,6 +96,7 @@ class PermissionMatrix
             // ---- Usuarios y Roles ----
             ['key' => 'usuarios.gestionar', 'module' => 'Usuarios y Roles', 'action' => 'Crear / editar / desactivar usuarios', 'cells' => ['rector' => 'crud']],
             ['key' => 'estudiantes.egreso.gestionar', 'module' => 'Usuarios y Roles', 'action' => 'Marcar manualmente estudiantes que no continúan como egresados', 'cells' => ['rector' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
+            ['key' => 'estudiantes.reincorporacion.autorizar', 'module' => 'Usuarios y Roles', 'action' => 'Autorizar el regreso de estudiantes egresados', 'feature' => 'academico', 'cells' => ['rector' => self::CONFIGURABLE, 'secretaria' => self::CONFIGURABLE, 'coord_academico' => self::CONFIGURABLE, 'coord_combinado' => self::CONFIGURABLE]],
             ['key' => 'usuarios.asignar_roles', 'module' => 'Usuarios y Roles', 'action' => 'Asignar roles', 'cells' => ['rector' => 'editar']],
             ['key' => 'usuarios.ajustar_permisos', 'module' => 'Usuarios y Roles', 'action' => 'Ajustar permisos configurables', 'cells' => ['rector' => 'editar']],
 

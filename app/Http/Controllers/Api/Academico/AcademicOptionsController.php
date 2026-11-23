@@ -326,7 +326,7 @@ class AcademicOptionsController extends Controller
     {
         $assignments = $teacher
             ? AsignacionDocente::where('docente_id', $user->id)
-            : AsignacionDocente::whereIn('grupo_id', Matricula::where('estudiante_id', $user->id)
+            : AsignacionDocente::whereIn('grupo_id', Matricula::conAccesoEstudiantil()->where('estudiante_id', $user->id)
                 ->where('estado', 'activa')->select('grupo_id'));
         $reportGroups = Grupo::where(fn (Builder $groups) => $groups
             ->whereIn('id', (clone $assignments)->select('grupo_id'))

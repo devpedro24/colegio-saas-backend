@@ -56,6 +56,10 @@ final class IngresoPublicController extends Controller
     private function session(Request $r, bool $lock = false): Solicitud
     {
         $this->available();
+        if ($token = $r->route('renewalToken')) {
+            $owned = app(EnrollmentRenewal::class)->forStudent($r->user());
+            return $this->intake->resolve('ingreso-solicitud', $token, $owned->when($lock, fn ($q) => $q->lockForUpdate()));
+        }
         try {
             $payload = Crypt::decryptString((string) $r->cookie('ingreso_session'));
             $p = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
@@ -311,5 +315,32 @@ final class IngresoPublicController extends Controller
         }
 
         return Storage::disk($file->disk)->download($file->path, $file->original_name, ['Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
+    }
+
+    public function renewalAnnex(Request $r, EnrollmentSubmission $submission)
+    {
+        $created = null;
+        try {
+            $s = DB::transaction(function () use ($r, $submission, &$created) {
+                $candidate = $this->session($r);
+                $year = AnoLectivo::lockForUpdate()->findOrFail($candidate->campana->ano_lectivo_id);
+                $s = $this->session($r, true);
+                $upload = $r->validate(['carga_token' => 'required|uuid'])['carga_token'];
+                if ($s->documentos()->where('anexo_renovacion', true)->where('carga_token', $upload)->exists()) {
+                    return $s;
+                }
+                abort_unless(! $year->estaCerrado() && $s->estado === 'aprobada' && ! $s->matricula_id, 422,
+                    'Los anexos se reciben mientras está pendiente la confirmación del grupo.');
+                $submission->stage($r, $s, 'anexo-'.$upload, $created, true);
+                return $s;
+            });
+        } catch (\Throwable $error) {
+            if ($created) {
+                Storage::disk($created->disk)->delete($created->path);
+                $created->forceDelete();
+            }
+            throw $error;
+        }
+        return response()->json(['data' => $this->intake->present($s)]);
     }
 }

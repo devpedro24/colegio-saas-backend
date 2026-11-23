@@ -11,7 +11,9 @@ use App\Models\Tenant;
 use App\Models\User;
 use App\Plans\PlanCatalog;
 use App\Plans\PlanPricing;
+use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 final class SchoolSubscription
@@ -24,16 +26,32 @@ final class SchoolSubscription
         }
     }
 
+    /** Reading another campus must not disconnect an enrollment transaction or release its row locks. */
+    private static function readCapacityAt(Tenant $site, Closure $read): mixed
+    {
+        if (tenant()?->getKey() === $site->getKey()) {
+            return $read(DB::getDefaultConnection());
+        }
+
+        $name = 'school-capacity-'.$site->getKey();
+        try {
+            DB::build([...$site->database()->connection(), 'name' => $name]);
+            return $read($name);
+        } finally {
+            DB::purge($name);
+        }
+    }
+
     public static function studentCount(Tenant $school): int
     {
         $owner = self::owner($school);
         $emails = [];
         foreach ([$owner, ...$owner->sedes()->whereNotIn('status', [Tenant::STATUS_DELETED, Tenant::STATUS_IN_RETENTION])->get()->all()] as $site) {
-            $site->run(function () use (&$emails): void {
-                foreach (User::where('role', 'estudiante')->where('status', 'active')->pluck('email') as $email) {
-                    $emails[strtolower($email)] = true;
-                }
-            });
+            $activeEmails = self::readCapacityAt($site, fn (string $connection) => User::on($connection)
+                ->where('role', 'estudiante')->where('status', 'active')->pluck('email'));
+            foreach ($activeEmails as $email) {
+                $emails[strtolower($email)] = true;
+            }
         }
 
         return count($emails);
@@ -42,10 +60,12 @@ final class SchoolSubscription
     public static function ensureStudentCapacity(Tenant $school): void
     {
         $owner = self::owner($school);
-        $site = $owner->run(fn () => Sede::where('tenant_id', $school->parent_id ? $school->id : null)->first());
-        if ($site?->capacidad_maxima !== null) {
-            $count = $school->run(fn () => User::where('role', 'estudiante')->where('status', 'active')->count());
-            abort_if($count >= $site->capacidad_maxima, 422, 'Se alcanzó la capacidad asignada a esta sede.');
+        $capacity = self::readCapacityAt($owner, fn (string $connection) => Sede::on($connection)
+            ->where('tenant_id', $school->parent_id ? $school->id : null)->value('capacidad_maxima'));
+        if ($capacity !== null) {
+            $count = self::readCapacityAt($school, fn (string $connection) => User::on($connection)
+                ->where('role', 'estudiante')->where('status', 'active')->count());
+            abort_if($count >= $capacity, 422, 'Se alcanzó la capacidad asignada a esta sede.');
         }
         $contract = $owner->commercial;
         if (is_array($contract)) {

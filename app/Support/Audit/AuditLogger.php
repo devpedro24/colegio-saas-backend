@@ -249,7 +249,7 @@ final class AuditLogger
      * hay suplantacion, lee el email del superadmin de la sesion activa en la
      * tabla central `impersonations` del colegio actual.
      */
-    private static function currentImpersonatedBy(): ?string
+    public static function currentImpersonatedBy(): ?string
     {
         try {
             $user = auth()->user();

@@ -11,6 +11,7 @@ use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Rbac\PermissionMatrix;
+use App\Services\SchoolSubscription;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use App\Support\PasswordPolicy;
@@ -48,10 +49,17 @@ class UserController extends Controller
         return $this->listUsers($request, true);
     }
 
-    private function listUsers(Request $request, bool $studentOnly): JsonResponse
+    public function reincorporacionCandidates(Request $request): JsonResponse
+    {
+        abort_unless(tenant(), 404);
+        return $this->listUsers($request, true, User::STATUS_EGRESADO);
+    }
+
+    private function listUsers(Request $request, bool $studentOnly, ?string $status = null): JsonResponse
     {
         $principales = User::query()
             ->whereNull('deleted_at')
+            ->when($status !== null, fn ($q) => $q->where('status', $status))
             ->where('id', '!=', $request->user()->id)
             ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL);
         if ($studentOnly) {
@@ -78,6 +86,7 @@ class UserController extends Controller
 
             $count = $this->runIn($hijo, fn () => User::query()
                 ->whereNull('deleted_at')
+                ->when($status !== null, fn ($q) => $q->where('status', $status))
                 ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
                 ->when($studentOnly, fn ($q) => $q->where('role', 'estudiante')
                     ->whereHas('roles', fn ($role) => $role->where('name', 'estudiante'))
@@ -116,8 +125,9 @@ class UserController extends Controller
 
                 continue;
             }
-            $rows = $this->runIn($hijo, function () use ($sede, $sedeToken, $offset, $remaining, $studentOnly) {
+            $rows = $this->runIn($hijo, function () use ($sede, $sedeToken, $offset, $remaining, $studentOnly, $status) {
                 return User::query()->with('roles:id,name')->whereNull('deleted_at')
+                    ->when($status !== null, fn ($q) => $q->where('status', $status))
                     ->where('email', '!=', User::PLATFORM_SUPERADMIN_EMAIL)
                     ->when($studentOnly, fn ($q) => $q->where('role', 'estudiante')
                         ->whereHas('roles', fn ($role) => $role->where('name', 'estudiante'))
@@ -360,6 +370,57 @@ class UserController extends Controller
         }
 
         return response()->json(['data' => $result['data']]);
+    }
+
+    public function reincorporar(Request $request, string $token): JsonResponse
+    {
+        $data = $request->validate([
+            'motivo' => ['required', 'string', 'min:5', 'max:1000'],
+            'sede_url_token' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_-]{24}\z/'],
+        ]);
+        $origin = tenant();
+        abort_unless($origin, 404);
+        $siteToken = $data['sede_url_token'] ?? null;
+        $target = $origin;
+        if ($siteToken !== null) {
+            abort_if($origin->parent_id !== null, 404);
+            $sede = OpaqueUrlToken::find('sede', $siteToken, Sede::whereNotNull('tenant_id'));
+            abort_unless($sede, 404);
+            $target = Tenant::where('parent_id', $origin->id)
+                ->whereNotIn('status', [Tenant::STATUS_IN_RETENTION, Tenant::STATUS_DELETED])->findOrFail($sede->tenant_id);
+        }
+        $actor = $request->user();
+        $auditActor = $siteToken !== null ? (object) ['email' => $actor->email, 'role' => $actor->role] : $actor;
+        $impersonator = AuditLogger::currentImpersonatedBy();
+        $restore = function () use ($token, $data, $target, $auditActor, $impersonator) {
+            $student = OpaqueUrlToken::find('usuario', $token, User::query());
+            abort_unless($student, 404);
+            // Capacity checks may visit other tenant databases. Finish them before locking the student's row.
+            SchoolSubscription::ensureStudentCapacity($target);
+            return DB::transaction(function () use ($student, $data, $auditActor, $impersonator) {
+                $student = User::lockForUpdate()->findOrFail($student->id);
+                abort_unless($student->status === User::STATUS_EGRESADO && $student->role === 'estudiante'
+                    && $student->hasRole('estudiante') && $student->roles()->where('name', '!=', 'estudiante')->doesntExist(),
+                    422, 'Solo se puede reincorporar a un estudiante egresado.');
+                // Keep the generic account FSM closed. Only this audited command restores access.
+                User::whereKey($student->id)->update(['status' => User::STATUS_ACTIVE]);
+                $student->tokens()->delete();
+                DB::table('sessions')->where('user_id', $student->id)->delete();
+                AuditLogger::tenant($auditActor, 'REINCORPORACION', 'usuario', (string) $student->id,
+                    ['status' => User::STATUS_EGRESADO], ['status' => User::STATUS_ACTIVE], $data['motivo'], $impersonator);
+                return ['url_token' => OpaqueUrlToken::for('usuario', $student->id), 'status' => User::STATUS_ACTIVE];
+            });
+        };
+
+        $result = $origin->getConnection()->transaction(function () use ($target, $origin, $siteToken, $restore) {
+            Tenant::whereKey($target->parent_id ?? $origin->id)->lockForUpdate()->firstOrFail();
+            return $siteToken !== null ? $this->runIn($target, $restore) : $restore();
+        });
+        app(\App\Support\Realtime\RealtimeChanges::class)->record((string) $target->id, 'users');
+        if ($siteToken !== null) {
+            TenantDataChanged::dispatch('usuario', 'updated');
+        }
+        return response()->json(['data' => $result]);
     }
 
     /**

@@ -11,12 +11,30 @@ use App\Models\Academico\PromocionAcademica;
 use App\Models\Ingreso\Solicitud;
 use App\Models\User;
 use App\Support\OpaqueUrlToken;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /** A verified private-link session may reuse an existing student only by matching email and identity. */
 final class EnrollmentRenewal
 {
+    /** Match an already linked file or an activated draft with both verified account identifiers. */
+    public function forStudent(User $student): Builder
+    {
+        abort_unless($student->status === User::STATUS_ACTIVE && $student->hasRole('estudiante'), 403);
+        $profile = DB::table('ingreso_perfiles')->where('estudiante_id', $student->id)->first();
+        return Solicitud::where(function ($owned) use ($student, $profile) {
+            $owned->where('estudiante_id', $student->id);
+            if ($profile) {
+                $lookup = app(EnrollmentWorkflow::class)->identityLookup($profile->tipo_documento, $profile->numero_documento);
+                $owned->orWhere(fn ($draft) => $draft->whereNull('estudiante_id')->where('estado', 'borrador')
+                    ->where('pin_manual', true)->whereNotNull('pin_activado_en')
+                    ->where(fn ($q) => $q->whereNull('pin_expira')->orWhere('pin_expira', '>', now()))
+                    ->where('identidad_lookup', $lookup)->whereRaw('lower(email) = ?', [mb_strtolower($student->email)]));
+            }
+        });
+    }
+
     public function find(Solicitud $application, string $type, string $number, bool $alignGrade = false): ?User
     {
         $number = mb_strtoupper(trim($number));

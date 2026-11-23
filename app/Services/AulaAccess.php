@@ -62,7 +62,7 @@ final class AulaAccess
 
     public function enrollment(User $user, Aula $aula): ?Matricula
     {
-        return Matricula::where('estudiante_id', $user->id)->where('ano_lectivo_id', $aula->ano_lectivo_id)
+        return Matricula::conAccesoEstudiantil()->where('estudiante_id', $user->id)->where('ano_lectivo_id', $aula->ano_lectivo_id)
             ->where('grupo_id', $aula->grupo_id)->where('estado', 'activa')->first();
     }
 

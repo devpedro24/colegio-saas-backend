@@ -129,7 +129,7 @@ final class AulaNotifications
 
         return $this->contexts[$key] ??= [
             'valid' => $aula->grupo !== null && $aula->materia !== null && AnoLectivo::whereKey($aula->ano_lectivo_id)->exists(),
-            'students' => Matricula::where('grupo_id', $aula->grupo_id)->where('ano_lectivo_id', $aula->ano_lectivo_id)
+            'students' => Matricula::conAccesoEstudiantil()->where('grupo_id', $aula->grupo_id)->where('ano_lectivo_id', $aula->ano_lectivo_id)
                 ->where('estado', 'activa')->pluck('estudiante_id')->all(),
             'teacher' => AsignacionDocente::where('grupo_id', $aula->grupo_id)->where('ano_lectivo_id', $aula->ano_lectivo_id)
                 ->where('materia_id', $aula->materia_id)->value('docente_id'),
