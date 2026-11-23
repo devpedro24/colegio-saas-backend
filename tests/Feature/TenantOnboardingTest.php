@@ -7,16 +7,26 @@ namespace Tests\Feature;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\TenantProvisioner;
+use App\Support\Storage\StorageService;
 use Database\Seeders\DatabaseSeeder;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Storage;
+use Stancl\Tenancy\DatabaseConfig;
 use Tests\TestCase;
 
 class TenantOnboardingTest extends TestCase
 {
-    use RefreshDatabase;
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $database = config('database.connections.pgsql.database');
+        if (config('database.default') !== 'pgsql' || ! preg_match('/^codex_sedes_test_[a-f0-9]{12}$/D', $database)) {
+            throw new \RuntimeException('Use scripts/test-sedes-postgres.php --onboarding.');
+        }
+        $this->artisan('migrate:fresh', ['--database' => 'pgsql', '--force' => true])->assertExitCode(0);
+        DatabaseConfig::generateDatabaseNamesUsing(fn ($tenant) => $database.'_t_'.substr(hash('sha256', $tenant->id), 0, 10));
+    }
 
     protected function tearDown(): void
     {
@@ -71,7 +81,7 @@ class TenantOnboardingTest extends TestCase
             'logo' => UploadedFile::fake()->image('escudo.jpg', 1200, 800),
         ])->assertOk()->assertJsonPath('required', false);
         $this->assertSame([450, 300], array_slice(getimagesizefromstring(
-            Storage::disk('tenant')->get(\App\Support\Storage\StorageService::tenantFolder($tenant).'/branding/logo.png')
+            Storage::disk('tenant')->get(StorageService::tenantFolder($tenant).'/branding/logo.png')
         ), 0, 2));
         $this->get($api.'/branding/logo')->assertOk()->assertHeader('Content-Type', 'image/png');
         $status = $this->getJson($api.'/onboarding/status')->assertOk();
@@ -91,7 +101,7 @@ class TenantOnboardingTest extends TestCase
         $this->assertNotSame($status->json('logo_url'), $newLogoUrl);
         $this->get($versionedUrl)->assertNotFound();
         $this->assertSame([300, 300], array_slice(getimagesizefromstring(
-            Storage::disk('tenant')->get(\App\Support\Storage\StorageService::tenantFolder($tenant).'/branding/logo.png')
+            Storage::disk('tenant')->get(StorageService::tenantFolder($tenant).'/branding/logo.png')
         ), 0, 2));
         $this->getJson($api.'/anos-lectivos')->assertOk();
     }
@@ -139,7 +149,7 @@ class TenantOnboardingTest extends TestCase
         return [
             'nombre' => 'Colegio Inicio', 'nit' => '900123456-7',
             'resolucion_men' => '123 de 2026', 'direccion' => 'Calle 1 # 2-3',
-            'telefono' => '6012345678', 'correo' => 'contacto@inicio.test',
+            'telefono' => '3001234567', 'correo' => 'contacto@inicio.test',
         ];
     }
 }

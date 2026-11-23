@@ -11,6 +11,7 @@ use App\Services\ConfigurationGate;
 use App\Services\LogoProcessor;
 use App\Services\TenantOnboarding;
 use App\Support\Audit\AuditLogger;
+use App\Support\InstitutionInput;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -29,14 +30,7 @@ class OnboardingController extends Controller
         abort_unless($request->user()->hasRole('rector'), 403);
         abort_if($request->user()->must_change_password, 423, 'Cambia primero la contraseña temporal.');
 
-        $data = $request->validate([
-            'nombre' => ['required', 'string', 'max:255'],
-            'nit' => ['required', 'string', 'max:60'],
-            'resolucion_men' => ['required', 'string', 'max:255'],
-            'direccion' => ['required', 'string', 'max:255'],
-            'telefono' => ['required', 'string', 'max:60'],
-            'correo' => ['required', 'email', 'max:255'],
-        ]);
+        $data = InstitutionInput::normalize($request->validate(InstitutionInput::rules()));
 
         $datos = DatosInstitucionales::query()->firstOrNew([]);
         $before = $datos->exists ? $datos->only(array_keys($data)) : null;

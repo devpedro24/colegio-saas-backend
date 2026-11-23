@@ -8,6 +8,7 @@ use App\Models\Academico\Sede;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Ingreso\EnrollmentSubmission;
+use App\Support\InstitutionInput;
 use App\Support\OpaqueUrlToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -36,18 +37,18 @@ final class SedeConfiguration
     {
         abort_if(tenant()->parent_id, 403, 'Administra las sedes desde el colegio principal.');
         $data = $request->validate([
-            'nombre' => ['required', 'string', 'max:120', Rule::unique('sedes', 'nombre')->ignore($sede?->id)->whereNull('deleted_at')],
-            'slug' => [$sede ? 'sometimes' : 'required', 'string', 'max:63', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
-            'direccion' => ['nullable', 'string', 'max:255'],
-            'telefono' => ['nullable', 'string', 'max:60'],
-            'departamento' => ['nullable', 'string', Rule::in(array_column(EnrollmentSubmission::geography(), 'codigo'))],
-            'municipio' => ['nullable', 'required_with:departamento', 'string', 'max:5'],
-            'coordinador_token' => ['nullable', 'string', 'size:24'],
-            'capacidad_maxima' => ['required', 'integer', 'min:1', 'max:100000'],
-            'estado' => ['required', Rule::in(['activa', 'inactiva', 'mantenimiento'])],
+            'nombre' => ['bail', 'required', 'string', 'max:120', InstitutionInput::name(), Rule::unique('sedes', 'nombre')->ignore($sede?->id)->whereNull('deleted_at')],
+            'slug' => ['bail', $sede ? 'sometimes' : 'required', 'string', 'max:63', 'regex:/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/D'],
+            'direccion' => ['bail', 'nullable', 'string', 'max:255', InstitutionInput::text()],
+            'telefono' => ['bail', 'nullable', 'string', 'max:32'],
+            'departamento' => ['bail', 'nullable', 'required_with:municipio', 'string', Rule::in(array_column(EnrollmentSubmission::geography(), 'codigo'))],
+            'municipio' => ['bail', 'nullable', 'required_with:departamento', 'string', 'size:5', 'regex:/\A[0-9]{5}\z/D'],
+            'coordinador_token' => ['bail', 'nullable', 'string', 'size:24', 'regex:/\A[A-Za-z0-9_-]+\z/D'],
+            'capacidad_maxima' => ['bail', 'required', 'integer', 'min:1', 'max:100000'],
+            'estado' => ['bail', 'required', 'string', Rule::in(['activa', 'inactiva', 'mantenimiento'])],
             'heredar' => ['sometimes', 'boolean'],
-            'categorias' => ['sometimes', 'array'],
-            'categorias.*' => ['string', 'distinct', Rule::in(SedeInheritance::CATEGORIES)],
+            'categorias' => ['bail', 'sometimes', 'array', 'max:'.count(SedeInheritance::CATEGORIES)],
+            'categorias.*' => ['bail', 'string', 'distinct', Rule::in(SedeInheritance::CATEGORIES)],
         ]);
         if (array_key_exists('telefono', $data)) {
             $data['telefono'] = ContactNumbers::normalize($data['telefono'],

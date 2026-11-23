@@ -106,6 +106,7 @@ Route::middleware([
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/onboarding/status', [OnboardingController::class, 'status']);
+        Route::get('/contact-options', ContactOptionsController::class);
         Route::put('/onboarding/institution', [OnboardingController::class, 'institution']);
         Route::post('/onboarding/logo', [OnboardingController::class, 'uploadLogo'])->middleware('throttle:school-uploads');
         Route::post('/account/password', [AccountController::class, 'changePassword']);
@@ -123,7 +124,6 @@ Route::middleware([
             // Ajustes de cuenta del usuario autenticado (perfil, email, clave,
             // desactivacion y vinculacion de Google).
             Route::get('/account', [AccountController::class, 'index']);
-            Route::get('/contact-options', ContactOptionsController::class);
             Route::put('/account/profile', [AccountController::class, 'updateProfile']);
             Route::post('/account/email', [AccountController::class, 'changeEmail']);
             Route::post('/account/deactivate', [AccountController::class, 'deactivate']);

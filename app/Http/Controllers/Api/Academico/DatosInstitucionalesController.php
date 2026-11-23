@@ -4,16 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\Academico;
 
-use App\Http\Controllers\Controller;
 use App\Events\TenantDataChanged;
+use App\Http\Controllers\Controller;
 use App\Models\Academico\DatosInstitucionales;
 use App\Services\ConfigurationGate;
 use App\Support\Audit\AuditLogger;
+use App\Support\InstitutionInput;
+use DateTimeImmutable;
+use DateTimeZone;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
-use DateTimeImmutable;
-use DateTimeZone;
 
 /**
  * Datos institucionales del colegio (bloque 1) — BD del tenant.
@@ -65,24 +66,19 @@ class DatosInstitucionalesController extends Controller
     /** Crea o actualiza (upsert) la unica fila de datos institucionales. */
     public function update(Request $request): JsonResponse
     {
-        $data = $request->validate([
-            'nombre' => ['required', 'string', 'max:255'],
-            'nit' => ['required', 'string', 'max:60'],
-            'resolucion_men' => ['required', 'string', 'max:255'],
-            'direccion' => ['required', 'string', 'max:255'],
-            'telefono' => ['required', 'string', 'max:60'],
-            'correo' => ['required', 'email', 'max:255'],
+        $data = $request->validate([...InstitutionInput::rules(),
             'logo_documentos' => ['nullable', 'string', 'max:2048'],
             'isotipo' => ['nullable', 'string', 'max:2048'],
             'colores' => ['nullable', 'array'],
         ]);
+        $data = InstitutionInput::normalize($data);
 
         $datos = DatosInstitucionales::query()->first();
         $existia = $datos !== null;
         $prev = $existia ? $datos->only(array_keys($data)) : null;
 
         if (! $existia) {
-            $datos = new DatosInstitucionales();
+            $datos = new DatosInstitucionales;
         }
 
         $datos->fill($data)->save();
@@ -101,7 +97,8 @@ class DatosInstitucionalesController extends Controller
 
         try {
             TenantDataChanged::dispatch('datos_institucionales', 'updated', $datos->nombre);
-        } catch (\Throwable) {}
+        } catch (\Throwable) {
+        }
 
         return response()->json(['data' => $this->present($datos)]);
     }

@@ -115,6 +115,66 @@ final class SedeConfigurationTest extends TestCase
         });
     }
 
+    public function test_institution_inputs_validate_first_creation_and_updates_in_both_entry_points(): void
+    {
+        $base = 'http://prueba-sedes.localhost/api';
+        $good = ['nombre' => 'Colegio 7 de Agosto "José Martí"', 'nit' => '900.123.456-7',
+            'resolucion_men' => 'Resolución 0123 de 2026 / MEN', 'direccion' => 'Carrera 7 # 12-34, apto. 2',
+            'telefono' => '3001234567', 'correo' => 'contacto@example.test'];
+        $invalid = [['nombre', '<script>Colegio</script>'], ['nombre', '123'], ['nombre', ['Colegio']],
+            ['nit', 'ABC123'], ['nit', '900--7'], ['nit', ['900123']], ['correo', 'sin-arroba'], ['correo', ['a@example.test']],
+            ['telefono', '30012345678'], ['telefono', ['3001234567']], ['resolucion_men', '<svg>'], ['direccion', "Calle\0 1"]];
+        $this->withMiddleware(EnsureOnboardingComplete::class)->getJson($base.'/contact-options')->assertOk();
+        $this->getJson($base.'/config/datos-institucionales')->assertStatus(423);
+        $this->withoutMiddleware(EnsureOnboardingComplete::class);
+        foreach ([false, true] as $existing) {
+            foreach (['/config/datos-institucionales', '/onboarding/institution'] as $route) {
+                foreach ($invalid as [$field, $value]) {
+                    $this->putJson($base.$route, [...$good, $field => $value])
+                        ->assertUnprocessable()->assertJsonValidationErrors($field);
+                    $this->school->run(function () use ($existing, $good): void {
+                        $this->assertSame($existing ? 1 : 0, DatosInstitucionales::count());
+                        if ($existing) {
+                            $this->assertSame($good['nombre'], DatosInstitucionales::firstOrFail()->nombre);
+                            $this->assertSame('+573001234567', DatosInstitucionales::firstOrFail()->telefono);
+                        }
+                    });
+                }
+            }
+            $created = $this->putJson($base.'/config/datos-institucionales', $good)->assertOk();
+            $created->assertJsonPath('data.nombre', $good['nombre'])->assertJsonPath('data.telefono', '+573001234567');
+            $this->assertArrayNotHasKey('id', $created->json('data'));
+        }
+        $this->putJson($base.'/onboarding/institution', [...$good, 'nombre' => 'Colegio San José (2)', 'telefono' => '+12015550123'])
+            ->assertOk()->assertJsonPath('institution.telefono', '+12015550123');
+        $this->getJson($base.'/config/datos-institucionales')->assertOk()->assertJsonPath('data.nombre', 'Colegio San José (2)');
+    }
+
+    public function test_campus_input_validation_prevents_partial_changes_and_provisioning(): void
+    {
+        $bad = [['nombre' => '<script>Sede</script>'], ['nombre' => '123'], ['nombre' => ['Sede']],
+            ['direccion' => '<img>'], ['slug' => 'sur.localhost'], ['slug' => ['sur']], ['slug' => str_repeat('s', 64)],
+            ['capacidad_maxima' => 0], ['capacidad_maxima' => '1e2'], ['capacidad_maxima' => 1.5], ['capacidad_maxima' => 100001],
+            ['telefono' => '30012345678'], ['telefono' => ['3001234567']], ['estado' => ['activa']],
+            ['municipio' => '11001'], ['departamento' => null], ['coordinador_token' => ['bad']], ['categorias' => ['unknown']]];
+        foreach ($bad as $changes) {
+            $this->postJson($this->base, $this->input($changes))->assertUnprocessable()->assertJsonValidationErrors(array_key_first($changes) === 'categorias' ? 'categorias.0' : array_key_first($changes));
+        }
+        $this->assertSame(0, Tenant::where('parent_id', $this->school->id)->count());
+        $this->school->run(fn () => $this->assertSame(1, Sede::count()));
+        $created = $this->postJson($this->base, $this->input(['nombre' => 'Sede 7 de Agosto', 'slug' => 'fase-2', 'telefono' => '3001234567']))
+            ->assertCreated()->assertJsonPath('data.nombre', 'Sede 7 de Agosto');
+        $url = $this->base.'/'.$created->json('data.url_token');
+        foreach ($bad as $changes) {
+            $this->putJson($url, $this->input($changes))->assertUnprocessable()->assertJsonValidationErrors(array_key_first($changes) === 'categorias' ? 'categorias.0' : array_key_first($changes));
+            $this->getJson($url)->assertOk()->assertJsonPath('data.nombre', 'Sede 7 de Agosto')
+                ->assertJsonPath('data.telefono', '+573001234567')->assertJsonPath('data.tenant_domain', 'fase-2.prueba-sedes.localhost');
+        }
+        $this->putJson($url, $this->input(['nombre' => 'Sede San José (2)', 'slug' => 'fase-2', 'direccion' => 'Carrera 7 # 12-34']))
+            ->assertOk()->assertJsonPath('data.nombre', 'Sede San José (2)');
+        $this->getJson($url)->assertOk()->assertJsonPath('data.nombre', 'Sede San José (2)');
+    }
+
     public function test_browser_sessions_remain_active_for_every_school_and_campus_role(): void
     {
         $this->postJson($this->base, $this->input())->assertCreated();
@@ -131,7 +191,7 @@ final class SedeConfigurationTest extends TestCase
                 $this->withServerVariables(['REMOTE_ADDR' => '192.0.2.'.($index + 1)]);
                 $email = $role.'@'.$scope.'.sesiones.test';
                 $site->run(function () use ($role, $email) {
-                    $user = User::create(['name' => 'Usuario '.$role, 'email' => $email, 'password' => 'Sedes-Test-123!',
+                    $user = User::create(['name' => 'Usuario '.str_replace('_', ' ', $role), 'email' => $email, 'password' => 'Sedes-Test-123!',
                         'role' => $role === 'director_grupo' ? 'docente' : $role, 'status' => 'active', 'must_change_password' => false]);
                     $user->assignRole($role === 'director_grupo' ? ['docente', 'director_grupo'] : [$role]);
                 });
@@ -151,7 +211,7 @@ final class SedeConfigurationTest extends TestCase
                     }
                 }
                 $this->freshBrowserRequest();
-                $this->putJson($base.'/account/profile', ['name' => 'Usuario '.$role, 'phone' => '+573001234567'])
+                $this->putJson($base.'/account/profile', ['name' => 'Usuario '.str_replace('_', ' ', $role), 'phone' => '+573001234567'])
                     ->assertOk()->assertJsonPath('user.id', $identity);
                 $this->travel(30)->minutes();
                 $this->freshBrowserRequest();
@@ -179,7 +239,7 @@ final class SedeConfigurationTest extends TestCase
         foreach (['rector', 'coord_academico', 'coord_convivencia', 'coord_combinado'] as $index => $role) {
             $this->withServerVariables(['REMOTE_ADDR' => '192.0.2.'.($index + 20)]);
             $email = $this->school->run(function () use ($role, $child) {
-                $user = User::firstOrCreate(['role' => $role], ['name' => $role, 'email' => $role.'@sesiones.test',
+                $user = User::firstOrCreate(['role' => $role], ['name' => str_replace('_', ' ', $role), 'email' => $role.'@sesiones.test',
                     'password' => 'Sedes-Test-123!', 'status' => 'active', 'must_change_password' => false]);
                 $user->update(['must_change_password' => false]);
                 $user->assignRole($role);
