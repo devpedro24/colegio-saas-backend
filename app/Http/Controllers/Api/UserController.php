@@ -14,6 +14,7 @@ use App\Rbac\PermissionMatrix;
 use App\Support\Audit\AuditLogger;
 use App\Support\OpaqueUrlToken;
 use App\Support\PasswordPolicy;
+use App\Support\PersonInput;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -460,8 +461,8 @@ class UserController extends Controller
     private function validar(Request $request, bool $crear): array
     {
         return $request->validate([
-            'name' => [Rule::when($crear, 'required'), 'string', 'max:120'],
-            'email' => [Rule::when($crear, 'required'), 'email', 'max:255'],
+            'name' => ['bail', ...($crear ? ['required'] : ['sometimes', 'required']), 'string', 'max:120', PersonInput::name()],
+            'email' => ['bail', ...($crear ? ['required'] : ['sometimes', 'required']), 'string', 'max:255', 'email:rfc'],
             'role' => [Rule::when($crear, 'required'), Rule::in(PermissionMatrix::roleKeys())],
             'sede_id' => ['nullable', function (string $attribute, mixed $value, Closure $fail): void {
                 if ((! is_string($value) && ! is_int($value)) || strlen((string) $value) > 128) {

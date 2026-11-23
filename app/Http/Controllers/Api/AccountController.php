@@ -13,6 +13,7 @@ use App\Services\SedeAccess;
 use App\Support\Account\AccountPresenter;
 use App\Support\Audit\AuditLogger;
 use App\Support\PasswordPolicy;
+use App\Support\PersonInput;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -55,9 +56,9 @@ class AccountController extends Controller
     public function updateProfile(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'name' => ['required', 'string', 'max:160'],
-            'phone' => ['nullable', 'string', 'max:32'],
-            'phone_country' => ['sometimes', 'required', 'string', 'size:2'],
+            'name' => ['bail', 'required', 'string', 'max:160', PersonInput::name()],
+            'phone' => ['bail', 'nullable', 'string', 'max:32'],
+            'phone_country' => ['bail', 'sometimes', 'required', 'string', 'size:2'],
             'roles' => ['prohibited'], 'permissions' => ['prohibited'],
             'role' => ['prohibited'], 'tenant_id' => ['prohibited'], 'plan' => ['prohibited'],
         ]);
@@ -90,8 +91,8 @@ class AccountController extends Controller
     public function changeEmail(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'email' => ['required', 'email', 'max:255'],
-            'password' => ['required', 'string'],
+            'email' => ['bail', 'required', 'string', 'max:255', 'email:rfc'],
+            'password' => ['bail', 'required', 'string', 'max:4096'],
         ]);
 
         $user = $request->user();
@@ -136,9 +137,9 @@ class AccountController extends Controller
     public function changePassword(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'current_password' => ['required', 'string'],
-            'new_password' => ['required', PasswordPolicy::rule()],
-            'new_password_confirmation' => ['required', 'same:new_password'],
+            'current_password' => ['bail', 'required', 'string', 'max:4096'],
+            'new_password' => ['bail', 'required', 'string', PasswordPolicy::rule()],
+            'new_password_confirmation' => ['bail', 'required', 'string', 'max:128', 'same:new_password'],
         ]);
 
         $user = $request->user();
@@ -206,7 +207,7 @@ class AccountController extends Controller
     public function deactivate(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'password' => ['required', 'string'],
+            'password' => ['bail', 'required', 'string', 'max:4096'],
         ]);
 
         $user = $request->user();

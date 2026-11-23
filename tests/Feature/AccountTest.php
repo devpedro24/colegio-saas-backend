@@ -99,6 +99,39 @@ class AccountTest extends TestCase
         ])->assertOk()->assertJsonPath('user.email', $longEmail);
     }
 
+    public function test_account_inputs_reject_invalid_values_without_changing_the_superadmin_or_session(): void
+    {
+        $user = $this->createSuperadmin(['name' => 'María José', 'phone' => '+573001234567']);
+        $this->withToken($this->createTokenFor($user));
+        foreach (['Ana1', '123', 'Ana_Pérez', '<script>Ana</script>', '', ['Ana'], str_repeat('a', 161)] as $invalid) {
+            $this->putJson('/api/account/profile', ['name' => $invalid, 'phone' => '+12015550123'])
+                ->assertUnprocessable()->assertJsonValidationErrors('name');
+            $this->assertSame('María José', $user->fresh()->name);
+            $this->assertSame('+573001234567', $user->fresh()->phone);
+        }
+        foreach (['+57300123456', '+5730012345678', '+1201555012', '+120155501239', ['123']] as $phone) {
+            $this->putJson('/api/account/profile', ['name' => 'Cambio rechazado', 'phone' => $phone])
+                ->assertUnprocessable()->assertJsonValidationErrors('phone');
+            $this->assertSame('María José', $user->fresh()->name);
+        }
+        foreach (['no-es-correo', 'ana@', ['ana@example.test'], str_repeat('a', 256).'@example.test'] as $email) {
+            $this->postJson('/api/account/email', ['email' => $email, 'password' => self::PASSWORD])
+                ->assertUnprocessable()->assertJsonValidationErrors('email');
+            $this->assertSame($user->email, $user->fresh()->email);
+        }
+        $this->postJson('/api/account/email', ['email' => 'cambio@example.test', 'password' => str_repeat('x', 4097)])
+            ->assertUnprocessable()->assertJsonValidationErrors('password');
+        $this->postJson('/api/account/password', ['current_password' => ['invalid'], 'new_password' => 'Correcta-123!', 'new_password_confirmation' => 'Correcta-123!'])
+            ->assertUnprocessable()->assertJsonValidationErrors('current_password');
+        $this->putJson('/api/account/profile', ['name' => "Óscar Jean-Luc O'Connor", 'phone' => '+525512345678'])
+            ->assertOk()->assertJsonPath('user.name', "Óscar Jean-Luc O'Connor")->assertJsonPath('user.phone', '+525512345678');
+        $this->getJson('/api/account')->assertOk()->assertJsonPath('user.name', "Óscar Jean-Luc O'Connor");
+        $longEmail = str_repeat('a', 63).'@'.str_repeat('b', 62).'.'.str_repeat('c', 62).'.test';
+        $this->postJson('/api/account/email', ['email' => $longEmail, 'password' => self::PASSWORD])
+            ->assertOk()->assertJsonPath('user.email', $longEmail);
+        $this->getJson('/api/me')->assertOk();
+    }
+
     public function test_cambiar_contrasena_verifica_actual_y_politica(): void
     {
         $user = $this->createSuperadmin();

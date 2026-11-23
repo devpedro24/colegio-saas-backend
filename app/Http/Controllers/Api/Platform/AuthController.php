@@ -28,8 +28,8 @@ class AuthController extends Controller
     public function login(Request $request, MfaVerifier $verifier): JsonResponse
     {
         $data = $request->validate([
-            'email' => ['required', 'email'],
-            'password' => ['required', 'string'],
+            'email' => ['bail', 'required', 'string', 'max:255', 'email:rfc'],
+            'password' => ['bail', 'required', 'string', 'max:4096'],
             'code' => ['nullable', 'string', 'max:32'],
         ]);
 

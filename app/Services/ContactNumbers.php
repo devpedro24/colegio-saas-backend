@@ -49,7 +49,7 @@ final class ContactNumbers
         return 'CO';
     }
 
-    public static function normalize(?string $value, string $country, string $field): ?string
+    public static function normalize(?string $value, string $country, string $field, bool $partial = false): ?string
     {
         if ($value === null || trim($value) === '') {
             return null;
@@ -64,6 +64,10 @@ final class ContactNumbers
         $national = str_starts_with($digits, '+'.$code) ? substr($digits, strlen($code) + 1) : $digits;
         $metadata = $phones->getMetadataForRegion($country);
         $lengths = $metadata->getMobile()->getPossibleLength() ?: $metadata->getGeneralDesc()->getPossibleLength();
+        // Autosaved drafts may contain an unfinished number, never an oversized one.
+        if ($partial && str_starts_with($digits, '+'.$code) && ctype_digit($national) && strlen($national) <= max($lengths)) {
+            return '+'.$code.$national;
+        }
         try {
             $number = $phones->parse($value, $country);
             if (ctype_digit($national) && in_array(strlen($national), $lengths, true)
@@ -76,7 +80,7 @@ final class ContactNumbers
         }
 
         throw ValidationException::withMessages([
-            $field => 'Ingresa un celular válido para +'.$code.' de '.implode(', ', $lengths).' dígitos, sin incluir el indicativo.',
+            $field => 'Ingresa un número celular válido.',
         ]);
     }
 
@@ -85,8 +89,20 @@ final class ContactNumbers
         try {
             $phones = PhoneNumberUtil::getInstance();
 
-            return $phones->getRegionCodeForNumber($phones->parse($value ?? '', $fallback)) ?: $fallback;
+            $number = $phones->parse($value ?? '', $fallback);
+
+            return $phones->getRegionCodeForNumber($number) ?: ($phones->getRegionCodeForCountryCode($number->getCountryCode()) ?: $fallback);
         } catch (NumberParseException) {
+            $digits = preg_replace('/[\s().-]/', '', $value ?? '');
+            if (str_starts_with($digits, '+')) {
+                for ($length = 1; $length <= 3; $length++) {
+                    $region = $phones->getRegionCodeForCountryCode((int) substr($digits, 1, $length));
+                    if ($region !== 'ZZ') {
+                        return $region;
+                    }
+                }
+            }
+
             return $fallback;
         }
     }
